@@ -75,6 +75,7 @@ UEpicUnrealMCPBridge::UEpicUnrealMCPBridge()
     DataTableCommands = MakeShared<FEpicUnrealMCPDataTableCommands>();
     AssetCommands = MakeShared<FEpicUnrealMCPAssetCommands>();
     DataAssetCommands = MakeShared<FEpicUnrealMCPDataAssetCommands>();
+    WidgetCommands = MakeShared<FEpicUnrealMCPWidgetCommands>();
 }
 
 UEpicUnrealMCPBridge::~UEpicUnrealMCPBridge()
@@ -86,6 +87,7 @@ UEpicUnrealMCPBridge::~UEpicUnrealMCPBridge()
     DataTableCommands.Reset();
     AssetCommands.Reset();
     DataAssetCommands.Reset();
+    WidgetCommands.Reset();
 }
 
 // Initialize subsystem
@@ -462,6 +464,21 @@ FString UEpicUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const T
                      CommandType == TEXT("rename_function"))
             {
                 ResultJson = BlueprintGraphCommands->HandleCommand(CommandType, Params);
+            }
+            // Widget Blueprint Commands
+            else if (CommandType == TEXT("get_widget_tree") ||
+                     CommandType == TEXT("add_widget") ||
+                     CommandType == TEXT("remove_widget") ||
+                     CommandType == TEXT("move_widget") ||
+                     CommandType == TEXT("rename_widget") ||
+                     CommandType == TEXT("duplicate_widget") ||
+                     CommandType == TEXT("get_widget_properties") ||
+                     CommandType == TEXT("set_widget_properties") ||
+                     CommandType == TEXT("get_slot_properties") ||
+                     CommandType == TEXT("set_slot_properties") ||
+                     CommandType == TEXT("list_widget_types"))
+            {
+                ResultJson = WidgetCommands->HandleCommand(CommandType, Params);
             }
             else
             {

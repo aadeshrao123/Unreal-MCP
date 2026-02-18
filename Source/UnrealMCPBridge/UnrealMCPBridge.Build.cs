@@ -62,7 +62,9 @@ public class UnrealMCPBridge : ModuleRules
 				"MaterialEditor",
 				"AssetTools",
 				"DataTableEditor",
-				"StructUtils"
+				"StructUtils",
+				"UMG",
+				"UMGEditor"
 			}
 		);
 
