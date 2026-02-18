@@ -158,9 +158,10 @@ def set_data_asset_properties(
 def get_property_valid_types(
     class_name: str,
     property_path: str,
+    filter: str = "",
     include_abstract: bool = False,
 ) -> str:
-    """Return every valid class/struct/enum-value the editor dropdown would show
+    """Return valid classes/structs/enum-values the editor dropdown would show
     for a given property slot on any UClass or UScriptStruct.
 
     Mirrors the exact same enumeration the Unreal Details panel uses:
@@ -176,34 +177,40 @@ def get_property_valid_types(
       property_path="Config.Traits"   →  FMassEntityConfig::Traits
       property_path="Fragments"       →  MassAssortedFragmentsTrait::Fragments
 
+    IMPORTANT: Use the 'filter' parameter to search for specific types — without
+    it, large dropdowns (e.g. Fragments = 216 entries) return ~10k tokens.
+
     Args:
         class_name:       Class or struct name, short or full path.
-                          e.g. "MassEntityConfigAsset", "MassAssortedFragmentsTrait",
-                               "/Script/MassCrowd.MassCrowdVisualizationTrait"
+                          e.g. "MassEntityConfigAsset", "MassAssortedFragmentsTrait"
         property_path:    Dot-separated property path.
-                          e.g. "Config.Traits", "Fragments", "Tags", "LODRepresentation"
+                          e.g. "Config.Traits", "Fragments", "Tags"
+        filter:           Case-insensitive substring filter applied to name and path.
+                          e.g. "Transform" → only entries whose name or path
+                          contains "Transform". Use this to avoid huge responses.
         include_abstract: Include abstract base classes in results (default False).
 
     Returns a JSON object with:
-        kind         — "instanced_object", "instanced_struct", "subclass", "enum", "struct", "primitive_*"
+        kind         — "instanced_object", "instanced_struct", "subclass", "enum", "struct"
         base_class   — name of the base class/struct constraint (where applicable)
-        count        — number of valid types found
+        count        — number of matching types after filtering
         valid_types  — array of {name, path, parent, is_abstract} (classes/structs)
                        or {name, display_name, value} (enum entries)
 
     Examples:
+        # Find Transform-related fragments
+        get_property_valid_types("MassAssortedFragmentsTrait", "Fragments", filter="Transform")
+
         # What traits can go in a MassEntityConfigAsset?
-        get_property_valid_types("MassEntityConfigAsset", "Config.Traits")
+        get_property_valid_types("MassEntityConfigAsset", "Config.Traits", filter="Crowd")
 
-        # What fragments can go in MassAssortedFragmentsTrait?
+        # All fragments (large — only do this if you need the full list)
         get_property_valid_types("MassAssortedFragmentsTrait", "Fragments")
-
-        # What tags can go in MassAssortedFragmentsTrait?
-        get_property_valid_types("MassAssortedFragmentsTrait", "Tags")
     """
     return _call("get_property_valid_types", {
         "class_name":       class_name,
         "property_path":    property_path,
+        "filter":           filter,
         "include_abstract": include_abstract,
     })
 

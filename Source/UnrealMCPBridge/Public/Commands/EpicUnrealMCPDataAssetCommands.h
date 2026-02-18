@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Json.h"
+#include "Commands/EpicUnrealMCPPropertyUtils.h"
 
 /**
  * Handler class for Data Asset MCP commands.
@@ -10,10 +11,9 @@
  *   - Enumerate available classes
  *   - Create new data assets
  *   - Read ALL FProperty values (including structs, arrays, object refs)
- *   - Write single or bulk properties with full type coverage:
- *       primitives, enums, structs (FGameplayTag, FVector…),
- *       TArray, TMap, UObject* refs, FSoftObjectPath/TSoftObjectPtr
+ *   - Write single or bulk properties via FEpicUnrealMCPPropertyUtils
  *   - List data assets in a content path
+ *   - Enumerate valid types for any property slot (editor dropdown mirror)
  */
 class UNREALMCPBRIDGE_API FEpicUnrealMCPDataAssetCommands
 {
@@ -23,63 +23,15 @@ public:
     TSharedPtr<FJsonObject> HandleCommand(const FString& CommandType, const TSharedPtr<FJsonObject>& Params);
 
 private:
-    // list all non-abstract UDataAsset subclasses that are currently loaded
     TSharedPtr<FJsonObject> HandleListDataAssetClasses(const TSharedPtr<FJsonObject>& Params);
-
-    // create a new data asset of any UDataAsset subclass
     TSharedPtr<FJsonObject> HandleCreateDataAsset(const TSharedPtr<FJsonObject>& Params);
-
-    // read ALL FProperties from a data asset (no CPF filter, full hierarchy)
     TSharedPtr<FJsonObject> HandleGetDataAssetProperties(const TSharedPtr<FJsonObject>& Params);
-
-    // set a single named property on a data asset
     TSharedPtr<FJsonObject> HandleSetDataAssetProperty(const TSharedPtr<FJsonObject>& Params);
-
-    // set multiple properties at once  { "properties": { "Name": value, ... } }
     TSharedPtr<FJsonObject> HandleSetDataAssetProperties(const TSharedPtr<FJsonObject>& Params);
-
-    // list data assets in a content path, optionally filtered by class name
     TSharedPtr<FJsonObject> HandleListDataAssets(const TSharedPtr<FJsonObject>& Params);
-
-    // For any class + property path, return every valid class/struct/enum value
-    // that the editor dropdown would show for that slot.
-    // Handles: instanced UObject* arrays, TArray<FInstancedStruct> (BaseStruct meta),
-    //          TSubclassOf<T>, single instanced UObject*, FEnumProperty.
     TSharedPtr<FJsonObject> HandleGetPropertyValidTypes(const TSharedPtr<FJsonObject>& Params);
 
-    // -----------------------------------------------------------------------
-    // Internal helpers
-    // -----------------------------------------------------------------------
-
-    // Find a loaded UClass by short name, full path, or "/Script/Module.ClassName"
+    // Find a loaded UClass that is a UDataAsset subclass.
+    // For other classes use FEpicUnrealMCPPropertyUtils::ResolveAnyClass.
     static UClass* ResolveDataAssetClass(const FString& ClassName);
-
-    // Find ANY loaded UClass (not limited to UDataAsset subclasses)
-    static UClass* ResolveAnyClass(const FString& ClassName);
-
-    // Set one FProperty on an object from a FJsonValue.
-    // Covers: primitives, enums, FStructProperty (via FJsonObjectConverter),
-    // FArrayProperty, FMapProperty, FSetProperty,
-    // FObjectProperty (load by path), FSoftObjectProperty, FSoftClassProperty,
-    // FNameProperty, FTextProperty, FDoubleProperty, FInt64Property, etc.
-    static bool SetProperty(UObject* Object, const FString& PropertyName,
-                            const TSharedPtr<FJsonValue>& Value, FString& OutError);
-
-    // Serialize all FProperties of an object to a JSON object
-    static TSharedPtr<FJsonObject> SerializeAllProperties(UObject* Object, const FString& FilterLower,
-                                                           bool bIncludeInherited);
-
-    // Apply all JSON fields to a UObject, skipping "_ClassName".
-    // Used recursively when deserializing instanced subobjects (e.g. Mass traits).
-    static void SetPropertiesFromJson(UObject* Target, const TSharedPtr<FJsonObject>& Json,
-                                      FString& OutErrors);
-
-    // Apply all JSON fields to raw struct memory (UScriptStruct + void*).
-    // Handles instanced object arrays (TArray<UObject* Instanced>) and
-    // FInstancedStruct arrays (TArray<FInstancedStruct>) that FJsonObjectConverter
-    // cannot deserialize on its own. Falls back to FJsonObjectConverter for simple fields.
-    // Outer is used as the outer for NewObject calls when creating instanced subobjects.
-    static void SetStructFieldsFromJson(UScriptStruct* Struct, void* StructData,
-                                        const TSharedPtr<FJsonObject>& Json,
-                                        UObject* Outer, FString& OutErrors);
 };
