@@ -73,4 +73,13 @@ private:
     // Used recursively when deserializing instanced subobjects (e.g. Mass traits).
     static void SetPropertiesFromJson(UObject* Target, const TSharedPtr<FJsonObject>& Json,
                                       FString& OutErrors);
+
+    // Apply all JSON fields to raw struct memory (UScriptStruct + void*).
+    // Handles instanced object arrays (TArray<UObject* Instanced>) and
+    // FInstancedStruct arrays (TArray<FInstancedStruct>) that FJsonObjectConverter
+    // cannot deserialize on its own. Falls back to FJsonObjectConverter for simple fields.
+    // Outer is used as the outer for NewObject calls when creating instanced subobjects.
+    static void SetStructFieldsFromJson(UScriptStruct* Struct, void* StructData,
+                                        const TSharedPtr<FJsonObject>& Json,
+                                        UObject* Outer, FString& OutErrors);
 };

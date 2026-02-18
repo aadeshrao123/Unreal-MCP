@@ -61,7 +61,8 @@ public class UnrealMCPBridge : ModuleRules
 				"PythonScriptPlugin",
 				"MaterialEditor",
 				"AssetTools",
-				"DataTableEditor"
+				"DataTableEditor",
+				"StructUtils"
 			}
 		);
 

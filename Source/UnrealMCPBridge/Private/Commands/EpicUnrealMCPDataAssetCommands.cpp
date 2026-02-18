@@ -12,6 +12,8 @@
 #include "UObject/Field.h"
 #include "UObject/UnrealType.h"
 #include "UObject/UObjectIterator.h"
+#include "InstancedStruct.h"
+#include "StructUtils/InstancedStruct.h"
 
 // ---------------------------------------------------------------------------
 // Constructor
@@ -120,6 +122,137 @@ void FEpicUnrealMCPDataAssetCommands::SetPropertiesFromJson(
         FString Err;
         if (!SetProperty(Target, Pair.Key, Pair.Value, Err))
             OutErrors += FString::Printf(TEXT("[%s: %s] "), *Pair.Key, *Err);
+    }
+}
+
+// ===========================================================================
+// INTERNAL: SetStructFieldsFromJson
+// Like SetPropertiesFromJson but works on raw struct memory (UScriptStruct + void*).
+// Needed when a top-level FStructProperty (e.g. FMassEntityConfig) contains
+// instanced object arrays or FInstancedStruct arrays that FJsonObjectConverter
+// cannot deserialize. Falls through to FJsonObjectConverter for simple fields.
+// ===========================================================================
+void FEpicUnrealMCPDataAssetCommands::SetStructFieldsFromJson(
+    UScriptStruct* Struct, void* StructData,
+    const TSharedPtr<FJsonObject>& Json, UObject* Outer, FString& OutErrors)
+{
+    if (!Struct || !StructData || !Json.IsValid()) return;
+
+    for (const auto& Pair : Json->Values)
+    {
+        if (Pair.Key == TEXT("_ClassName")) continue;
+
+        FProperty* FieldProp = nullptr;
+        for (UStruct* S = Struct; S && !FieldProp; S = S->GetSuperStruct())
+            FieldProp = S->FindPropertyByName(*Pair.Key);
+
+        if (!FieldProp)
+        {
+            OutErrors += FString::Printf(TEXT("[field '%s' not found] "), *Pair.Key);
+            continue;
+        }
+
+        void* FieldAddr = FieldProp->ContainerPtrToValuePtr<void>(StructData);
+
+        // ---------------------------------------------------------------
+        // Special case: FArrayProperty — check for instanced object arrays
+        // and FInstancedStruct arrays that need manual handling
+        // ---------------------------------------------------------------
+        if (FArrayProperty* ArrProp = CastField<FArrayProperty>(FieldProp))
+        {
+            // Instanced object array (e.g. TArray<UMassEntityTraitBase*> with Instanced)
+            FObjectProperty* InnerObj = CastField<FObjectProperty>(ArrProp->Inner);
+            if (InnerObj
+                && InnerObj->HasAnyPropertyFlags(CPF_PersistentInstance | CPF_InstancedReference)
+                && Pair.Value->Type == EJson::Array)
+            {
+                const TArray<TSharedPtr<FJsonValue>>& JsonArr = Pair.Value->AsArray();
+                FScriptArrayHelper ArrHelper(ArrProp, FieldAddr);
+                ArrHelper.EmptyValues();
+                ArrHelper.AddValues(JsonArr.Num());
+                for (int32 i = 0; i < JsonArr.Num(); ++i)
+                {
+                    const TSharedPtr<FJsonValue>& Elem = JsonArr[i];
+                    void* ElemAddr = ArrHelper.GetRawPtr(i);
+                    if (Elem->Type == EJson::Object)
+                    {
+                        const TSharedPtr<FJsonObject>& ElemJson = Elem->AsObject();
+                        FString ClassPath;
+                        ElemJson->TryGetStringField(TEXT("_ClassName"), ClassPath);
+                        UClass* ElemClass = InnerObj->PropertyClass;
+                        if (!ClassPath.IsEmpty() && ClassPath != TEXT("None"))
+                        {
+                            UClass* R = FindObject<UClass>(nullptr, *ClassPath);
+                            if (!R) R = LoadObject<UClass>(nullptr, *ClassPath);
+                            if (R) ElemClass = R;
+                        }
+                        UObject* SubObj = NewObject<UObject>(Outer, ElemClass);
+                        FString SubErrors;
+                        SetPropertiesFromJson(SubObj, ElemJson, SubErrors);
+                        InnerObj->SetObjectPropertyValue(ElemAddr, SubObj);
+                    }
+                    else if (Elem->Type == EJson::String)
+                    {
+                        FString ElemPath = Elem->AsString();
+                        if (!ElemPath.IsEmpty() && ElemPath != TEXT("None"))
+                        {
+                            UObject* Loaded = StaticLoadObject(InnerObj->PropertyClass, nullptr, *ElemPath);
+                            InnerObj->SetObjectPropertyValue(ElemAddr, Loaded);
+                        }
+                    }
+                }
+                continue;
+            }
+
+            // FInstancedStruct array (e.g. TArray<FInstancedStruct> Fragments)
+            FStructProperty* InnerSP = CastField<FStructProperty>(ArrProp->Inner);
+            if (InnerSP && InnerSP->Struct
+                && InnerSP->Struct->GetName() == TEXT("InstancedStruct")
+                && Pair.Value->Type == EJson::Array)
+            {
+                const TArray<TSharedPtr<FJsonValue>>& JsonArr = Pair.Value->AsArray();
+                FScriptArrayHelper ArrHelper(ArrProp, FieldAddr);
+                ArrHelper.EmptyValues();
+                ArrHelper.AddValues(JsonArr.Num());
+                for (int32 i = 0; i < JsonArr.Num(); ++i)
+                {
+                    const TSharedPtr<FJsonValue>& Elem = JsonArr[i];
+                    void* ElemAddr = ArrHelper.GetRawPtr(i);
+                    FInstancedStruct* InstStruct = reinterpret_cast<FInstancedStruct*>(ElemAddr);
+
+                    FString StructPath;
+                    if (Elem->Type == EJson::Object)
+                        Elem->AsObject()->TryGetStringField(TEXT("_ClassName"), StructPath);
+                    else if (Elem->Type == EJson::String)
+                        StructPath = Elem->AsString();
+
+                    if (!StructPath.IsEmpty() && StructPath != TEXT("None"))
+                    {
+                        UScriptStruct* TargetStruct = FindObject<UScriptStruct>(nullptr, *StructPath);
+                        if (!TargetStruct) TargetStruct = LoadObject<UScriptStruct>(nullptr, *StructPath);
+                        if (!TargetStruct)
+                        {
+                            for (TObjectIterator<UScriptStruct> It; It; ++It)
+                            {
+                                const FString N = (*It)->GetName();
+                                if (N == StructPath || N == (TEXT("F") + StructPath) ||
+                                    (StructPath.StartsWith(TEXT("F")) && N == StructPath.RightChop(1)) ||
+                                    (*It)->GetPathName() == StructPath)
+                                {
+                                    TargetStruct = *It; break;
+                                }
+                            }
+                        }
+                        if (TargetStruct)
+                            InstStruct->InitializeAs(TargetStruct);
+                    }
+                }
+                continue;
+            }
+        }
+
+        // Fall back to FJsonObjectConverter for all other field types
+        FJsonObjectConverter::JsonValueToUProperty(Pair.Value, FieldProp, FieldAddr);
     }
 }
 
@@ -349,18 +482,21 @@ bool FEpicUnrealMCPDataAssetCommands::SetProperty(UObject* Object, const FString
     }
 
     // -----------------------------------------------------------------------
-    // 8. FStructProperty — FJsonObjectConverter handles all structs:
-    //    FGameplayTag, FVector, FRotator, FColor, FLinearColor, FTransform,
-    //    FDataTableRowHandle, custom structs, etc.
+    // 8. FStructProperty — use SetStructFieldsFromJson so that nested instanced
+    //    object arrays (e.g. FMassEntityConfig::Traits) and FInstancedStruct
+    //    arrays (e.g. MassAssortedFragmentsTrait::Fragments) are handled
+    //    correctly. Simple struct fields fall through to FJsonObjectConverter.
     // -----------------------------------------------------------------------
     if (FStructProperty* StructProp = CastField<FStructProperty>(Prop))
     {
         if (Value->Type == EJson::Object)
         {
-            if (FJsonObjectConverter::JsonValueToUProperty(Value, Prop, PropAddr))
-                return true;
-            OutError = FString::Printf(TEXT("Failed to set struct property '%s'"), *PropertyName);
-            return false;
+            FString SubErrors;
+            SetStructFieldsFromJson(StructProp->Struct, PropAddr, Value->AsObject(), Object, SubErrors);
+            if (!SubErrors.IsEmpty())
+                UE_LOG(LogTemp, Warning, TEXT("SetProperty '%s' struct warnings: %s"),
+                       *PropertyName, *SubErrors);
+            return true;
         }
         OutError = FString::Printf(TEXT("Expected JSON object for struct property '%s'"), *PropertyName);
         return false;
@@ -425,6 +561,91 @@ bool FEpicUnrealMCPDataAssetCommands::SetProperty(UObject* Object, const FString
                         UObject* LoadedObj = StaticLoadObject(InnerObj->PropertyClass, nullptr, *ElemPath);
                         InnerObj->SetObjectPropertyValue(ElemAddr, LoadedObj);
                     }
+                }
+            }
+            return true;
+        }
+
+        // FInstancedStruct array (TArray<FInstancedStruct>): inner is FStructProperty
+        // whose Struct is named "InstancedStruct". Each JSON element specifies a
+        // UScriptStruct via "_ClassName" and the FInstancedStruct is zero-initialised
+        // to that type (matching what the editor does when you pick a struct in a dropdown).
+        FStructProperty* InnerStructProp = CastField<FStructProperty>(ArrProp->Inner);
+        if (InnerStructProp
+            && InnerStructProp->Struct
+            && InnerStructProp->Struct->GetName() == TEXT("InstancedStruct")
+            && Value->Type == EJson::Array)
+        {
+            const TArray<TSharedPtr<FJsonValue>>& JsonArr = Value->AsArray();
+            FScriptArrayHelper ArrHelper(ArrProp, PropAddr);
+            ArrHelper.EmptyValues();
+            ArrHelper.AddValues(JsonArr.Num());
+
+            for (int32 i = 0; i < JsonArr.Num(); ++i)
+            {
+                const TSharedPtr<FJsonValue>& Elem = JsonArr[i];
+                void* ElemAddr = ArrHelper.GetRawPtr(i);
+                FInstancedStruct* InstStruct = reinterpret_cast<FInstancedStruct*>(ElemAddr);
+
+                auto ResolveScriptStruct = [](const FString& StructPath) -> UScriptStruct*
+                {
+                    if (StructPath.IsEmpty() || StructPath == TEXT("None")) return nullptr;
+                    // Full path
+                    UScriptStruct* S = FindObject<UScriptStruct>(nullptr, *StructPath);
+                    if (S) return S;
+                    S = LoadObject<UScriptStruct>(nullptr, *StructPath);
+                    if (S) return S;
+                    // Short name fallback
+                    for (TObjectIterator<UScriptStruct> It; It; ++It)
+                    {
+                        const FString N = (*It)->GetName();
+                        if (N == StructPath || N == (TEXT("F") + StructPath) ||
+                            (StructPath.StartsWith(TEXT("F")) && N == StructPath.RightChop(1)) ||
+                            (*It)->GetPathName() == StructPath)
+                        {
+                            return *It;
+                        }
+                    }
+                    return nullptr;
+                };
+
+                if (Elem->Type == EJson::Object)
+                {
+                    const TSharedPtr<FJsonObject>& ElemJson = Elem->AsObject();
+                    FString StructPath;
+                    ElemJson->TryGetStringField(TEXT("_ClassName"), StructPath);
+
+                    UScriptStruct* TargetStruct = ResolveScriptStruct(StructPath);
+                    if (TargetStruct)
+                    {
+                        InstStruct->InitializeAs(TargetStruct);
+
+                        // Apply any additional JSON fields onto the struct memory
+                        uint8* StructMem = InstStruct->GetMutableMemory();
+                        if (StructMem)
+                        {
+                            for (const auto& Pair : ElemJson->Values)
+                            {
+                                if (Pair.Key == TEXT("_ClassName")) continue;
+                                FProperty* FieldProp = TargetStruct->FindPropertyByName(*Pair.Key);
+                                if (!FieldProp) continue;
+                                void* FieldAddr = FieldProp->ContainerPtrToValuePtr<void>(StructMem);
+                                FJsonObjectConverter::JsonValueToUProperty(Pair.Value, FieldProp, FieldAddr);
+                            }
+                        }
+                    }
+                    else if (!StructPath.IsEmpty())
+                    {
+                        UE_LOG(LogTemp, Warning,
+                               TEXT("SetProperty '%s'[%d]: could not resolve struct '%s'"),
+                               *PropertyName, i, *StructPath);
+                    }
+                }
+                else if (Elem->Type == EJson::String)
+                {
+                    UScriptStruct* TargetStruct = ResolveScriptStruct(Elem->AsString());
+                    if (TargetStruct)
+                        InstStruct->InitializeAs(TargetStruct);
                 }
             }
             return true;
