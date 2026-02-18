@@ -1,5 +1,6 @@
 #include "Commands/EpicUnrealMCPEditorCommands.h"
 #include "Commands/EpicUnrealMCPCommonUtils.h"
+#include "JsonObjectConverter.h"
 #include "Editor.h"
 #include "EditorViewportClient.h"
 #include "LevelEditorViewport.h"
@@ -22,6 +23,7 @@
 #include "Engine/BlueprintGeneratedClass.h"
 #include "EditorAssetLibrary.h"
 #include "Commands/EpicUnrealMCPBlueprintCommands.h"
+#include "EngineUtils.h"
 
 FEpicUnrealMCPEditorCommands::FEpicUnrealMCPEditorCommands()
 {
@@ -68,6 +70,10 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCommand(const FStrin
     else if (CommandType == TEXT("spawn_actor_from_class"))
     {
         return HandleSpawnActorFromClass(Params);
+    }
+    else if (CommandType == TEXT("get_actor_properties"))
+    {
+        return HandleGetActorProperties(Params);
     }
 
     return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown editor command: %s"), *CommandType));
@@ -437,4 +443,92 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleSpawnActorFromClass(
             FString::Printf(TEXT("Failed to spawn — class not found or invalid: %s"), *ClassName));
 
     return FEpicUnrealMCPCommonUtils::ActorToJsonObject(NewActor, true);
+}
+
+// ---------------------------------------------------------------------------
+// get_actor_properties
+// Reads ALL FProperty values from a LIVE world actor instance — not the CDO.
+// Captures per-instance overrides set in the editor (e.g. ResourceType on a
+// specific BP_ResourceNode placed in the level).
+// Also serialises each component's properties if include_components is true.
+// ---------------------------------------------------------------------------
+static TSharedPtr<FJsonObject> SerializeObjectProperties(UObject* Obj, const FString& FilterLower)
+{
+    TSharedPtr<FJsonObject> Props = MakeShared<FJsonObject>();
+    for (TFieldIterator<FProperty> It(Obj->GetClass(), EFieldIteratorFlags::IncludeSuper); It; ++It)
+    {
+        FProperty* Prop = *It;
+        const FString Name = Prop->GetName();
+        if (!FilterLower.IsEmpty() && !Name.ToLower().Contains(FilterLower))
+            continue;
+
+        const void* Addr = Prop->ContainerPtrToValuePtr<void>(Obj);
+        TSharedPtr<FJsonValue> Val = FJsonObjectConverter::UPropertyToJsonValue(Prop, Addr);
+        if (Val.IsValid())
+            Props->SetField(Name, Val);
+    }
+    return Props;
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleGetActorProperties(const TSharedPtr<FJsonObject>& Params)
+{
+    FString ActorLabel;
+    if (!Params->TryGetStringField(TEXT("actor_label"), ActorLabel))
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'actor_label' parameter"));
+
+    // Optional substring filter on property names (case-insensitive)
+    FString Filter;
+    Params->TryGetStringField(TEXT("filter"), Filter);
+    const FString FilterLower = Filter.ToLower();
+
+    // Optional: also dump component properties
+    bool bIncludeComponents = false;
+    Params->TryGetBoolField(TEXT("include_components"), bIncludeComponents);
+
+    UWorld* World = GEditor->GetEditorWorldContext().World();
+    if (!World)
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get editor world"));
+
+    // Find actor by label (editor display name) or fall back to internal name
+    AActor* Target = nullptr;
+    for (TActorIterator<AActor> It(World); It; ++It)
+    {
+        AActor* A = *It;
+        if (A && (A->GetActorLabel() == ActorLabel || A->GetName() == ActorLabel))
+        {
+            Target = A;
+            break;
+        }
+    }
+
+    if (!Target)
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Actor not found in level: '%s'"), *ActorLabel));
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"),      true);
+    Result->SetStringField(TEXT("actor_name"), Target->GetName());
+    Result->SetStringField(TEXT("actor_label"),Target->GetActorLabel());
+    Result->SetStringField(TEXT("class"),      Target->GetClass()->GetName());
+
+    // Actor's own properties (all FProperties, no flag filter)
+    Result->SetObjectField(TEXT("properties"), SerializeObjectProperties(Target, FilterLower));
+
+    // Optionally add per-component property maps
+    if (bIncludeComponents)
+    {
+        TArray<UActorComponent*> Components;
+        Target->GetComponents(Components);
+
+        TSharedPtr<FJsonObject> CompMap = MakeShared<FJsonObject>();
+        for (UActorComponent* Comp : Components)
+        {
+            if (!Comp) continue;
+            const FString CompKey = Comp->GetName() + TEXT(" (") + Comp->GetClass()->GetName() + TEXT(")");
+            CompMap->SetObjectField(CompKey, SerializeObjectProperties(Comp, FilterLower));
+        }
+        Result->SetObjectField(TEXT("components"), CompMap);
+    }
+
+    return Result;
 }

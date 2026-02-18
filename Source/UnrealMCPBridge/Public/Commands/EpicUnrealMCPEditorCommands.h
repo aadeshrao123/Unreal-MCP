@@ -32,4 +32,7 @@ private:
 
     // Flexible actor spawn from class name or blueprint path
     TSharedPtr<FJsonObject> HandleSpawnActorFromClass(const TSharedPtr<FJsonObject>& Params);
+
+    // Read ALL FProperties from a live world actor instance (or its components)
+    TSharedPtr<FJsonObject> HandleGetActorProperties(const TSharedPtr<FJsonObject>& Params);
 };

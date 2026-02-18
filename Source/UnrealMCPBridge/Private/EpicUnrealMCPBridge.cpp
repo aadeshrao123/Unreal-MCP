@@ -366,7 +366,8 @@ FString UEpicUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const T
                      CommandType == TEXT("spawn_blueprint_actor") ||
                      CommandType == TEXT("get_selected_actors") ||
                      CommandType == TEXT("get_world_info") ||
-                     CommandType == TEXT("spawn_actor_from_class"))
+                     CommandType == TEXT("spawn_actor_from_class") ||
+                     CommandType == TEXT("get_actor_properties"))
             {
                 ResultJson = EditorCommands->HandleCommand(CommandType, Params);
             }

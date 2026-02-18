@@ -54,3 +54,34 @@ def get_selected_actors() -> str:
 def get_world_info() -> str:
     """Get information about the current editor level (world name, actor count, actor list)."""
     return _call("get_world_info", {})
+
+
+@mcp.tool()
+def get_actor_properties(
+    actor_label: str,
+    filter: str = "",
+    include_components: bool = False,
+) -> str:
+    """Get ALL property values from a live actor instance placed in the world.
+
+    Unlike get_blueprint_class_defaults (which reads CDO/default values),
+    this reads the ACTUAL placed instance — so per-instance overrides set
+    in the editor (e.g. a specific ResourceType on one BP_ResourceNode) are
+    returned correctly.
+
+    Iterates every FProperty on the actor and its C++ parent classes with no
+    flag filter, so Blueprint variables AND C++ properties are both returned.
+
+    Args:
+        actor_label: The actor's display label in the editor (shown in the
+                     Outliner). Also accepts the internal UObject name.
+        filter: Optional substring to filter property names (case-insensitive).
+                E.g. "resource" to only return ResourceType and TotalAmount.
+        include_components: If True, also return property maps for each
+                            attached component.
+    """
+    return _call("get_actor_properties", {
+        "actor_label":        actor_label,
+        "filter":             filter,
+        "include_components": include_components,
+    })
