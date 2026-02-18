@@ -57,6 +57,7 @@
 #include "Commands/EpicUnrealMCPCommonUtils.h"
 #include "Commands/EpicUnrealMCPDataTableCommands.h"
 #include "Commands/EpicUnrealMCPAssetCommands.h"
+#include "Commands/EpicUnrealMCPDataAssetCommands.h"
 #include "IPythonScriptPlugin.h"
 #include "PythonScriptTypes.h"
 #include "Misc/Base64.h"
@@ -73,6 +74,7 @@ UEpicUnrealMCPBridge::UEpicUnrealMCPBridge()
     MaterialCommands = MakeShared<FEpicUnrealMCPMaterialCommands>();
     DataTableCommands = MakeShared<FEpicUnrealMCPDataTableCommands>();
     AssetCommands = MakeShared<FEpicUnrealMCPAssetCommands>();
+    DataAssetCommands = MakeShared<FEpicUnrealMCPDataAssetCommands>();
 }
 
 UEpicUnrealMCPBridge::~UEpicUnrealMCPBridge()
@@ -83,6 +85,7 @@ UEpicUnrealMCPBridge::~UEpicUnrealMCPBridge()
     MaterialCommands.Reset();
     DataTableCommands.Reset();
     AssetCommands.Reset();
+    DataAssetCommands.Reset();
 }
 
 // Initialize subsystem
@@ -432,6 +435,16 @@ FString UEpicUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const T
                      CommandType == TEXT("rename_data_table_row"))
             {
                 ResultJson = DataTableCommands->HandleCommand(CommandType, Params);
+            }
+            // Data Asset Commands
+            else if (CommandType == TEXT("list_data_asset_classes") ||
+                     CommandType == TEXT("create_data_asset") ||
+                     CommandType == TEXT("get_data_asset_properties") ||
+                     CommandType == TEXT("set_data_asset_property") ||
+                     CommandType == TEXT("set_data_asset_properties") ||
+                     CommandType == TEXT("list_data_assets"))
+            {
+                ResultJson = DataAssetCommands->HandleCommand(CommandType, Params);
             }
             // Blueprint Graph Commands
             else if (CommandType == TEXT("add_blueprint_node") ||
