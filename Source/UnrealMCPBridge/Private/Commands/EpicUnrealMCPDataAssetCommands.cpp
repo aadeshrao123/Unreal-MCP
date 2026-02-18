@@ -70,6 +70,24 @@ UClass* FEpicUnrealMCPDataAssetCommands::ResolveDataAssetClass(const FString& Cl
 }
 
 // ===========================================================================
+// INTERNAL: SetPropertiesFromJson
+// Applies all JSON fields from a JSON object to a UObject, skipping the
+// "_ClassName" discriminator key. Called recursively for instanced subobjects.
+// ===========================================================================
+void FEpicUnrealMCPDataAssetCommands::SetPropertiesFromJson(
+    UObject* Target, const TSharedPtr<FJsonObject>& Json, FString& OutErrors)
+{
+    if (!Target || !Json.IsValid()) return;
+    for (const auto& Pair : Json->Values)
+    {
+        if (Pair.Key == TEXT("_ClassName")) continue;
+        FString Err;
+        if (!SetProperty(Target, Pair.Key, Pair.Value, Err))
+            OutErrors += FString::Printf(TEXT("[%s: %s] "), *Pair.Key, *Err);
+    }
+}
+
+// ===========================================================================
 // INTERNAL: SetProperty
 // Comprehensive property setter covering all UE5 property types.
 // ===========================================================================
@@ -97,7 +115,61 @@ bool FEpicUnrealMCPDataAssetCommands::SetProperty(UObject* Object, const FString
     void* PropAddr = Prop->ContainerPtrToValuePtr<void>(Object);
 
     // -----------------------------------------------------------------------
-    // 1. FObjectProperty / FWeakObjectProperty — load UObject by path string
+    // 1a. FObjectProperty — instanced subobject (JSON object with _ClassName)
+    //     OR non-instanced (path string / null)
+    // -----------------------------------------------------------------------
+    if (FObjectProperty* ObjProp = CastField<FObjectProperty>(Prop))
+    {
+        // Instanced subobject: value is a JSON object → NewObject + recurse
+        if (ObjProp->HasAnyPropertyFlags(CPF_PersistentInstance | CPF_InstancedReference)
+            && Value->Type == EJson::Object)
+        {
+            const TSharedPtr<FJsonObject>& JsonObj = Value->AsObject();
+            FString ClassPath;
+            JsonObj->TryGetStringField(TEXT("_ClassName"), ClassPath);
+
+            UClass* SubClass = ObjProp->PropertyClass;
+            if (!ClassPath.IsEmpty() && ClassPath != TEXT("None"))
+            {
+                UClass* Resolved = FindObject<UClass>(nullptr, *ClassPath);
+                if (!Resolved) Resolved = LoadObject<UClass>(nullptr, *ClassPath);
+                if (Resolved) SubClass = Resolved;
+            }
+
+            UObject* SubObj = NewObject<UObject>(Object, SubClass);
+            FString SubErrors;
+            SetPropertiesFromJson(SubObj, JsonObj, SubErrors);
+            ObjProp->SetObjectPropertyValue(PropAddr, SubObj);
+            if (!SubErrors.IsEmpty())
+                UE_LOG(LogTemp, Warning, TEXT("SetProperty '%s' subobject warnings: %s"),
+                       *PropertyName, *SubErrors);
+            return true;
+        }
+
+        // Null / clear
+        if (Value->Type == EJson::Null || Value->AsString() == TEXT("None") || Value->AsString().IsEmpty())
+        {
+            ObjProp->SetObjectPropertyValue(PropAddr, nullptr);
+            return true;
+        }
+
+        // Non-instanced: load by path
+        FString PathStr = Value->AsString();
+        UObject* LoadedObj = StaticLoadObject(ObjProp->PropertyClass, nullptr, *PathStr);
+        if (!LoadedObj) LoadedObj = UEditorAssetLibrary::LoadAsset(PathStr);
+        if (!LoadedObj)
+        {
+            OutError = FString::Printf(TEXT("Could not load object '%s' for property '%s'"),
+                                       *PathStr, *PropertyName);
+            return false;
+        }
+        ObjProp->SetObjectPropertyValue(PropAddr, LoadedObj);
+        return true;
+    }
+
+    // -----------------------------------------------------------------------
+    // 1b. Other FObjectPropertyBase subclasses (FWeakObjectProperty, etc.)
+    //     — always path-string based
     // -----------------------------------------------------------------------
     if (FObjectPropertyBase* ObjProp = CastField<FObjectPropertyBase>(Prop))
     {
@@ -108,11 +180,10 @@ bool FEpicUnrealMCPDataAssetCommands::SetProperty(UObject* Object, const FString
         }
         FString PathStr = Value->AsString();
         UObject* LoadedObj = StaticLoadObject(ObjProp->PropertyClass, nullptr, *PathStr);
-        if (!LoadedObj)
-            LoadedObj = UEditorAssetLibrary::LoadAsset(PathStr);
+        if (!LoadedObj) LoadedObj = UEditorAssetLibrary::LoadAsset(PathStr);
         if (!LoadedObj)
         {
-            OutError = FString::Printf(TEXT("Could not load object at path '%s' for property '%s'"),
+            OutError = FString::Printf(TEXT("Could not load object '%s' for property '%s'"),
                                        *PathStr, *PropertyName);
             return false;
         }
@@ -260,9 +331,77 @@ bool FEpicUnrealMCPDataAssetCommands::SetProperty(UObject* Object, const FString
     }
 
     // -----------------------------------------------------------------------
-    // 9. FArrayProperty — JSON array → TArray<T>
+    // 9. FArrayProperty — instanced object arrays get special handling;
+    //    all other arrays/sets/maps fall through to FJsonObjectConverter.
     // -----------------------------------------------------------------------
-    if (Prop->IsA<FArrayProperty>() || Prop->IsA<FSetProperty>() || Prop->IsA<FMapProperty>())
+    if (FArrayProperty* ArrProp = CastField<FArrayProperty>(Prop))
+    {
+        FObjectProperty* InnerObj = CastField<FObjectProperty>(ArrProp->Inner);
+
+        // Instanced object array: each JSON element is either an object with
+        // "_ClassName" (→ NewObject + SetPropertiesFromJson) or a path string.
+        if (InnerObj
+            && InnerObj->HasAnyPropertyFlags(CPF_PersistentInstance | CPF_InstancedReference)
+            && Value->Type == EJson::Array)
+        {
+            const TArray<TSharedPtr<FJsonValue>>& JsonArr = Value->AsArray();
+            FScriptArrayHelper ArrHelper(ArrProp, PropAddr);
+            ArrHelper.EmptyValues();
+            ArrHelper.AddValues(JsonArr.Num());
+
+            for (int32 i = 0; i < JsonArr.Num(); ++i)
+            {
+                const TSharedPtr<FJsonValue>& Elem = JsonArr[i];
+                void* ElemAddr = ArrHelper.GetRawPtr(i);
+
+                if (Elem->Type == EJson::Object)
+                {
+                    const TSharedPtr<FJsonObject>& ElemJson = Elem->AsObject();
+
+                    // Resolve the concrete class from "_ClassName"
+                    FString ClassPath;
+                    ElemJson->TryGetStringField(TEXT("_ClassName"), ClassPath);
+
+                    UClass* ElemClass = InnerObj->PropertyClass;
+                    if (!ClassPath.IsEmpty() && ClassPath != TEXT("None"))
+                    {
+                        UClass* Resolved = FindObject<UClass>(nullptr, *ClassPath);
+                        if (!Resolved) Resolved = LoadObject<UClass>(nullptr, *ClassPath);
+                        if (Resolved) ElemClass = Resolved;
+                    }
+
+                    // Create the subobject and apply all JSON properties to it
+                    UObject* SubObj = NewObject<UObject>(Object, ElemClass);
+                    FString SubErrors;
+                    SetPropertiesFromJson(SubObj, ElemJson, SubErrors);
+                    InnerObj->SetObjectPropertyValue(ElemAddr, SubObj);
+
+                    if (!SubErrors.IsEmpty())
+                        UE_LOG(LogTemp, Warning,
+                               TEXT("SetProperty '%s'[%d] subobject warnings: %s"),
+                               *PropertyName, i, *SubErrors);
+                }
+                else if (Elem->Type == EJson::String)
+                {
+                    FString ElemPath = Elem->AsString();
+                    if (!ElemPath.IsEmpty() && ElemPath != TEXT("None"))
+                    {
+                        UObject* LoadedObj = StaticLoadObject(InnerObj->PropertyClass, nullptr, *ElemPath);
+                        InnerObj->SetObjectPropertyValue(ElemAddr, LoadedObj);
+                    }
+                }
+            }
+            return true;
+        }
+
+        // Non-instanced array (structs, primitives, etc.)
+        if (FJsonObjectConverter::JsonValueToUProperty(Value, Prop, PropAddr))
+            return true;
+        OutError = FString::Printf(TEXT("Failed to set array property '%s'"), *PropertyName);
+        return false;
+    }
+
+    if (Prop->IsA<FSetProperty>() || Prop->IsA<FMapProperty>())
     {
         if (FJsonObjectConverter::JsonValueToUProperty(Value, Prop, PropAddr))
             return true;

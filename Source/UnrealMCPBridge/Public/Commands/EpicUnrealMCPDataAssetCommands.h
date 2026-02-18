@@ -59,4 +59,9 @@ private:
     // Serialize all FProperties of an object to a JSON object
     static TSharedPtr<FJsonObject> SerializeAllProperties(UObject* Object, const FString& FilterLower,
                                                            bool bIncludeInherited);
+
+    // Apply all JSON fields to a UObject, skipping "_ClassName".
+    // Used recursively when deserializing instanced subobjects (e.g. Mass traits).
+    static void SetPropertiesFromJson(UObject* Target, const TSharedPtr<FJsonObject>& Json,
+                                      FString& OutErrors);
 };
