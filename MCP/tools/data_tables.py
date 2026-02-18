@@ -49,18 +49,21 @@ def get_data_table_schema(data_table_path: str) -> str:
 def add_data_table_row(
     data_table_path: str,
     row_name: str,
-    data: dict | None = None,
+    data: str = "",
 ) -> str:
     """Add a new row to a Data Table, optionally setting initial field values.
 
     Args:
         data_table_path: Full content-browser path to the data table
         row_name: Name for the new row (must be unique)
-        data: Optional dict mapping field names to initial values
+        data: JSON string mapping field names to initial values, e.g. '{"FieldA": 1}'
     """
     params: dict = {"data_table_path": data_table_path, "row_name": row_name}
     if data:
-        params["data"] = data
+        try:
+            params["data"] = json.loads(data) if isinstance(data, str) else data
+        except json.JSONDecodeError as e:
+            return json.dumps({"status": "error", "error": f"Invalid JSON in data: {e}"})
     return _call("add_data_table_row", params)
 
 
@@ -68,7 +71,7 @@ def add_data_table_row(
 def update_data_table_row(
     data_table_path: str,
     row_name: str,
-    data: dict,
+    data: str,
 ) -> str:
     """Update specific fields on an existing Data Table row.
 
@@ -78,12 +81,16 @@ def update_data_table_row(
     Args:
         data_table_path: Full content-browser path to the data table
         row_name: Name of the row to update
-        data: Dict mapping field names to new values
+        data: JSON string mapping field names to new values, e.g. '{"DisplayName": "Miner"}'
     """
+    try:
+        data_dict = json.loads(data) if isinstance(data, str) else data
+    except json.JSONDecodeError as e:
+        return json.dumps({"status": "error", "error": f"Invalid JSON in data: {e}"})
     return _call("update_data_table_row", {
         "data_table_path": data_table_path,
         "row_name": row_name,
-        "data": data,
+        "data": data_dict,
     })
 
 
