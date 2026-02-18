@@ -49,3 +49,28 @@ def add_component_to_blueprint(
         "component_type": component_class,
         "component_name": component_name,
     })
+
+
+@mcp.tool()
+def get_blueprint_class_defaults(
+    blueprint_path: str,
+    filter: str = "",
+    include_inherited: bool = True,
+) -> str:
+    """Get all default property values from a Blueprint's generated class CDO.
+
+    Unlike get_blueprint_variable_details (which only shows Blueprint-defined
+    variables), this reads the Class Default Object of the generated class and
+    returns ALL editable/blueprint-visible properties — including those defined
+    in the C++ parent class.
+
+    Args:
+        blueprint_path: Full content path (e.g. "/Game/Blueprints/BP_MyActor")
+        filter: Optional substring to filter property names (case-insensitive)
+        include_inherited: Include properties inherited from C++ parent (default True)
+    """
+    return _call("get_blueprint_class_defaults", {
+        "blueprint_path": blueprint_path,
+        "filter": filter,
+        "include_inherited": include_inherited,
+    })

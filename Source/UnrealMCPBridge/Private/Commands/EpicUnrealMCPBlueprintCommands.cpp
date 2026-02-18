@@ -1,5 +1,6 @@
 #include "Commands/EpicUnrealMCPBlueprintCommands.h"
 #include "Commands/EpicUnrealMCPCommonUtils.h"
+#include "JsonObjectConverter.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Factories/BlueprintFactory.h"
@@ -100,6 +101,10 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleCommand(const FSt
     else if (CommandType == TEXT("get_blueprint_function_details"))
     {
         return HandleGetBlueprintFunctionDetails(Params);
+    }
+    else if (CommandType == TEXT("get_blueprint_class_defaults"))
+    {
+        return HandleGetBlueprintClassDefaults(Params);
     }
 
     return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown blueprint command: %s"), *CommandType));
@@ -1647,4 +1652,77 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleGetBlueprintFunct
 
     ResultObj->SetBoolField(TEXT("success"), true);
     return ResultObj;
+}
+
+// ---------------------------------------------------------------------------
+// get_blueprint_class_defaults
+// Reads CDO properties of the generated class — includes ALL properties,
+// both Blueprint-defined and inherited from the C++ parent class.
+// ---------------------------------------------------------------------------
+TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleGetBlueprintClassDefaults(const TSharedPtr<FJsonObject>& Params)
+{
+    FString BlueprintPath;
+    if (!Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath))
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_path' parameter"));
+
+    // Optional filter: only show properties matching this substring (case-insensitive)
+    FString Filter;
+    Params->TryGetStringField(TEXT("filter"), Filter);
+    const FString FilterLower = Filter.ToLower();
+
+    // Optional: include inherited C++ properties (default true)
+    bool bIncludeInherited = true;
+    Params->TryGetBoolField(TEXT("include_inherited"), bIncludeInherited);
+
+    // Load the UBlueprint asset
+    UBlueprint* Blueprint = Cast<UBlueprint>(UEditorAssetLibrary::LoadAsset(BlueprintPath));
+    if (!Blueprint)
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Failed to load blueprint: %s"), *BlueprintPath));
+
+    // Get the generated class
+    UClass* GenClass = Blueprint->GeneratedClass;
+    if (!GenClass)
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            TEXT("Blueprint has no GeneratedClass — compile the blueprint first"));
+
+    // CDO holds the default property values
+    UObject* CDO = GenClass->GetDefaultObject(/*bCreateIfNeeded=*/false);
+    if (!CDO)
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get Class Default Object"));
+
+    TSharedPtr<FJsonObject> PropsObj = MakeShared<FJsonObject>();
+
+    // TFieldIterator with IncludeSuper walks the full hierarchy including C++ parent props
+    const EFieldIteratorFlags::SuperClassFlags SuperFlag =
+        bIncludeInherited ? EFieldIteratorFlags::IncludeSuper : EFieldIteratorFlags::ExcludeSuper;
+
+    for (TFieldIterator<FProperty> PropIt(GenClass, SuperFlag); PropIt; ++PropIt)
+    {
+        FProperty* Prop = *PropIt;
+
+        // Only expose editor/blueprint-visible properties
+        if (!Prop->HasAnyPropertyFlags(CPF_Edit | CPF_BlueprintVisible))
+            continue;
+
+        const FString PropName = Prop->GetName();
+
+        // Apply optional name filter
+        if (!FilterLower.IsEmpty() && !PropName.ToLower().Contains(FilterLower))
+            continue;
+
+        const void* PropAddr = Prop->ContainerPtrToValuePtr<void>(CDO);
+        TSharedPtr<FJsonValue> JsonValue = FJsonObjectConverter::UPropertyToJsonValue(Prop, PropAddr);
+        if (JsonValue.IsValid())
+            PropsObj->SetField(PropName, JsonValue);
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"),           true);
+    Result->SetStringField(TEXT("blueprint_path"),  BlueprintPath);
+    Result->SetStringField(TEXT("class"),           GenClass->GetName());
+    Result->SetStringField(TEXT("parent_class"),    GenClass->GetSuperClass() ? GenClass->GetSuperClass()->GetName() : TEXT("None"));
+    Result->SetBoolField(TEXT("include_inherited"),  bIncludeInherited);
+    Result->SetObjectField(TEXT("defaults"),        PropsObj);
+    return Result;
 }
