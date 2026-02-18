@@ -51,6 +51,10 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPDataTableCommands::HandleCommand(
 	{
 		return HandleDuplicateDataTableRow(Params);
 	}
+	else if (CommandType == TEXT("rename_data_table_row"))
+	{
+		return HandleRenameDataTableRow(Params);
+	}
 
 	return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
 		FString::Printf(TEXT("Unknown data table command: %s"), *CommandType));
@@ -487,5 +491,65 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPDataTableCommands::HandleDuplicateDataTabl
 	Result->SetBoolField(TEXT("success"), true);
 	Result->SetStringField(TEXT("source_row"), SourceRowName);
 	Result->SetStringField(TEXT("new_row"), NewRowName);
+	return Result;
+}
+
+// ---------------------------------------------------------------------------
+// rename_data_table_row — rename a row in-place (preserves order)
+// ---------------------------------------------------------------------------
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPDataTableCommands::HandleRenameDataTableRow(
+	const TSharedPtr<FJsonObject>& Params)
+{
+	FString DataTablePath, OldRowName, NewRowName;
+	if (!Params->TryGetStringField(TEXT("data_table_path"), DataTablePath))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'data_table_path' parameter"));
+	}
+	if (!Params->TryGetStringField(TEXT("old_row_name"), OldRowName))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'old_row_name' parameter"));
+	}
+	if (!Params->TryGetStringField(TEXT("new_row_name"), NewRowName))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'new_row_name' parameter"));
+	}
+
+	UObject* Asset = UEditorAssetLibrary::LoadAsset(DataTablePath);
+	UDataTable* DataTable = Cast<UDataTable>(Asset);
+	if (!DataTable)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Data table not found: %s"), *DataTablePath));
+	}
+
+	FName OldFName(*OldRowName);
+	FName NewFName(*NewRowName);
+
+	if (!DataTable->FindRowUnchecked(OldFName))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Row '%s' not found"), *OldRowName));
+	}
+	if (DataTable->FindRowUnchecked(NewFName))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Row '%s' already exists"), *NewRowName));
+	}
+
+	// FDataTableEditorUtils::RenameRow renames in-place, preserving row order
+	if (!FDataTableEditorUtils::RenameRow(DataTable, OldFName, NewFName))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Failed to rename row '%s' to '%s'"), *OldRowName, *NewRowName));
+	}
+
+	DataTable->MarkPackageDirty();
+	UEditorAssetLibrary::SaveAsset(DataTablePath);
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetBoolField(TEXT("success"), true);
+	Result->SetStringField(TEXT("old_row_name"), OldRowName);
+	Result->SetStringField(TEXT("new_row_name"), NewRowName);
 	return Result;
 }

@@ -401,7 +401,8 @@ FString UEpicUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const T
                      CommandType == TEXT("add_data_table_row") ||
                      CommandType == TEXT("update_data_table_row") ||
                      CommandType == TEXT("delete_data_table_row") ||
-                     CommandType == TEXT("duplicate_data_table_row"))
+                     CommandType == TEXT("duplicate_data_table_row") ||
+                     CommandType == TEXT("rename_data_table_row"))
             {
                 ResultJson = DataTableCommands->HandleCommand(CommandType, Params);
             }

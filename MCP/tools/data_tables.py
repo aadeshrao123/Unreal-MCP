@@ -109,6 +109,26 @@ def delete_data_table_row(data_table_path: str, row_name: str) -> str:
 
 
 @mcp.tool()
+def rename_data_table_row(
+    data_table_path: str,
+    old_row_name: str,
+    new_row_name: str,
+) -> str:
+    """Rename a row in a Data Table in-place (preserves row order).
+
+    Args:
+        data_table_path: Full content-browser path to the data table
+        old_row_name: Current name of the row
+        new_row_name: New name for the row (must be unique)
+    """
+    return _call("rename_data_table_row", {
+        "data_table_path": data_table_path,
+        "old_row_name": old_row_name,
+        "new_row_name": new_row_name,
+    })
+
+
+@mcp.tool()
 def duplicate_data_table_row(
     data_table_path: str,
     source_row_name: str,

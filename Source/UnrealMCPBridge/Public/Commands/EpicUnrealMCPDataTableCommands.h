@@ -16,6 +16,7 @@
  *   update_data_table_row    - Update fields on an existing row
  *   delete_data_table_row    - Remove a row by name
  *   duplicate_data_table_row - Copy a row under a new name
+ *   rename_data_table_row    - Rename a row in-place (preserves order)
  */
 class UNREALMCPBRIDGE_API FEpicUnrealMCPDataTableCommands
 {
@@ -32,6 +33,7 @@ private:
 	TSharedPtr<FJsonObject> HandleUpdateDataTableRow(const TSharedPtr<FJsonObject>& Params);
 	TSharedPtr<FJsonObject> HandleDeleteDataTableRow(const TSharedPtr<FJsonObject>& Params);
 	TSharedPtr<FJsonObject> HandleDuplicateDataTableRow(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleRenameDataTableRow(const TSharedPtr<FJsonObject>& Params);
 
 	// Serialises one row's data into a JSON object keyed by field name
 	static TSharedPtr<FJsonObject> RowToJson(FName RowName, const uint8* RowData, const UScriptStruct* RowStruct);
