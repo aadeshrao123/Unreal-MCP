@@ -155,6 +155,60 @@ def set_data_asset_properties(
 
 
 @mcp.tool()
+def get_property_valid_types(
+    class_name: str,
+    property_path: str,
+    include_abstract: bool = False,
+) -> str:
+    """Return every valid class/struct/enum-value the editor dropdown would show
+    for a given property slot on any UClass or UScriptStruct.
+
+    Mirrors the exact same enumeration the Unreal Details panel uses:
+    - Instanced UObject* / TArray<UObject*>  → GetDerivedClasses(PropertyClass)
+    - TSubclassOf<T>                          → GetDerivedClasses(MetaClass)
+    - TArray<FInstancedStruct> with BaseStruct meta
+                                              → all UScriptStruct descendants
+                                                of BaseStruct (ExcludeBaseStruct
+                                                flag is respected)
+    - FEnumProperty / TEnumAsByte             → all named enum entries + values
+
+    Supports dot-notation property paths to navigate into nested structs/objects:
+      property_path="Config.Traits"   →  FMassEntityConfig::Traits
+      property_path="Fragments"       →  MassAssortedFragmentsTrait::Fragments
+
+    Args:
+        class_name:       Class or struct name, short or full path.
+                          e.g. "MassEntityConfigAsset", "MassAssortedFragmentsTrait",
+                               "/Script/MassCrowd.MassCrowdVisualizationTrait"
+        property_path:    Dot-separated property path.
+                          e.g. "Config.Traits", "Fragments", "Tags", "LODRepresentation"
+        include_abstract: Include abstract base classes in results (default False).
+
+    Returns a JSON object with:
+        kind         — "instanced_object", "instanced_struct", "subclass", "enum", "struct", "primitive_*"
+        base_class   — name of the base class/struct constraint (where applicable)
+        count        — number of valid types found
+        valid_types  — array of {name, path, parent, is_abstract} (classes/structs)
+                       or {name, display_name, value} (enum entries)
+
+    Examples:
+        # What traits can go in a MassEntityConfigAsset?
+        get_property_valid_types("MassEntityConfigAsset", "Config.Traits")
+
+        # What fragments can go in MassAssortedFragmentsTrait?
+        get_property_valid_types("MassAssortedFragmentsTrait", "Fragments")
+
+        # What tags can go in MassAssortedFragmentsTrait?
+        get_property_valid_types("MassAssortedFragmentsTrait", "Tags")
+    """
+    return _call("get_property_valid_types", {
+        "class_name":       class_name,
+        "property_path":    property_path,
+        "include_abstract": include_abstract,
+    })
+
+
+@mcp.tool()
 def list_data_assets(
     path: str = "/Game",
     class_filter: str = "",

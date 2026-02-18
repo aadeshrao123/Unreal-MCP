@@ -26,12 +26,13 @@ FEpicUnrealMCPDataAssetCommands::FEpicUnrealMCPDataAssetCommands()
 TSharedPtr<FJsonObject> FEpicUnrealMCPDataAssetCommands::HandleCommand(
     const FString& CommandType, const TSharedPtr<FJsonObject>& Params)
 {
-    if (CommandType == TEXT("list_data_asset_classes"))   return HandleListDataAssetClasses(Params);
-    if (CommandType == TEXT("create_data_asset"))         return HandleCreateDataAsset(Params);
-    if (CommandType == TEXT("get_data_asset_properties")) return HandleGetDataAssetProperties(Params);
-    if (CommandType == TEXT("set_data_asset_property"))   return HandleSetDataAssetProperty(Params);
-    if (CommandType == TEXT("set_data_asset_properties")) return HandleSetDataAssetProperties(Params);
-    if (CommandType == TEXT("list_data_assets"))          return HandleListDataAssets(Params);
+    if (CommandType == TEXT("list_data_asset_classes"))     return HandleListDataAssetClasses(Params);
+    if (CommandType == TEXT("create_data_asset"))           return HandleCreateDataAsset(Params);
+    if (CommandType == TEXT("get_data_asset_properties"))   return HandleGetDataAssetProperties(Params);
+    if (CommandType == TEXT("set_data_asset_property"))     return HandleSetDataAssetProperty(Params);
+    if (CommandType == TEXT("set_data_asset_properties"))   return HandleSetDataAssetProperties(Params);
+    if (CommandType == TEXT("list_data_assets"))            return HandleListDataAssets(Params);
+    if (CommandType == TEXT("get_property_valid_types"))    return HandleGetPropertyValidTypes(Params);
 
     return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
         FString::Printf(TEXT("Unknown data asset command: %s"), *CommandType));
@@ -66,6 +67,41 @@ UClass* FEpicUnrealMCPDataAssetCommands::ResolveDataAssetClass(const FString& Cl
         }
     }
 
+    return nullptr;
+}
+
+// ===========================================================================
+// INTERNAL: ResolveAnyClass
+// Finds ANY loaded UClass — not limited to UDataAsset subclasses.
+// Accepts full path ("/Script/MassCrowd.MassCrowdVisualizationTrait"),
+// short name ("MassCrowdVisualizationTrait"), or with/without "U" prefix.
+// ===========================================================================
+UClass* FEpicUnrealMCPDataAssetCommands::ResolveAnyClass(const FString& ClassName)
+{
+    if (ClassName.IsEmpty()) return nullptr;
+
+    // 1. Full path
+    if (ClassName.Contains(TEXT(".")))
+    {
+        UClass* C = FindObject<UClass>(nullptr, *ClassName);
+        if (C) return C;
+        C = LoadObject<UClass>(nullptr, *ClassName);
+        if (C) return C;
+    }
+
+    // 2. Short name — iterate all loaded classes (fast in-editor)
+    for (TObjectIterator<UClass> It; It; ++It)
+    {
+        UClass* C = *It;
+        if (!C) continue;
+        const FString Name = C->GetName();
+        if (Name == ClassName ||
+            Name == (TEXT("U") + ClassName) ||
+            (ClassName.StartsWith(TEXT("U")) && Name == ClassName.RightChop(1)))
+        {
+            return C;
+        }
+    }
     return nullptr;
 }
 
@@ -444,6 +480,309 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPDataAssetCommands::SerializeAllProperties(
             Props->SetField(Name, Val);
     }
     return Props;
+}
+
+// ===========================================================================
+// get_property_valid_types
+// Returns the exact set of classes/structs/enum-values the editor dropdown
+// would show for a given property slot on any UClass.
+//
+// Handles:
+//  • TArray<UObject*> Instanced / single UObject* Instanced
+//      → GetDerivedClasses(PropertyClass) — same as editor's class picker
+//  • TSubclassOf<T> (FClassProperty)
+//      → GetDerivedClasses(MetaClass)
+//  • TArray<FInstancedStruct> with meta=(BaseStruct=...)
+//      → TObjectIterator<UScriptStruct> filtered by IsChildOf(BaseStruct)
+//      → reads ExcludeBaseStruct meta flag to mirror the editor picker
+//  • FEnumProperty / FByteProperty with enum
+//      → returns all named enum entries
+//
+// property_path supports dot-notation to navigate into structs/objects:
+//  "Config.Traits"  →  finds "Config" (FStructProperty → FMassEntityConfig),
+//                       then "Traits" inside it
+// ===========================================================================
+TSharedPtr<FJsonObject> FEpicUnrealMCPDataAssetCommands::HandleGetPropertyValidTypes(
+    const TSharedPtr<FJsonObject>& Params)
+{
+    FString ClassName, PropertyPath;
+    if (!Params->TryGetStringField(TEXT("class_name"), ClassName))
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'class_name'"));
+    if (!Params->TryGetStringField(TEXT("property_path"), PropertyPath))
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'property_path'"));
+
+    bool bIncludeAbstract = false;
+    Params->TryGetBoolField(TEXT("include_abstract"), bIncludeAbstract);
+
+    // ------------------------------------------------------------------
+    // 1. Resolve the starting UStruct (UClass is a UStruct)
+    // ------------------------------------------------------------------
+    UStruct* CurrentStruct = ResolveAnyClass(ClassName);
+    if (!CurrentStruct)
+    {
+        // Also try as a UScriptStruct (e.g. "MassEntityConfig")
+        for (TObjectIterator<UScriptStruct> It; It; ++It)
+        {
+            const FString N = (*It)->GetName();
+            if (N == ClassName || N == (TEXT("F") + ClassName) ||
+                (ClassName.StartsWith(TEXT("F")) && N == ClassName.RightChop(1)))
+            {
+                CurrentStruct = *It;
+                break;
+            }
+        }
+    }
+    if (!CurrentStruct)
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Class/struct not found: '%s'"), *ClassName));
+
+    // ------------------------------------------------------------------
+    // 2. Navigate dot-separated property path
+    //    e.g. "Config.Traits"  →  Config (FStructProperty), then Traits
+    // ------------------------------------------------------------------
+    TArray<FString> Parts;
+    PropertyPath.ParseIntoArray(Parts, TEXT("."), true);
+
+    FProperty* TargetProp = nullptr;
+    for (int32 i = 0; i < Parts.Num(); ++i)
+    {
+        TargetProp = CurrentStruct->FindPropertyByName(FName(*Parts[i]));
+        if (!TargetProp)
+            return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+                FString::Printf(TEXT("Property '%s' not found on '%s'"),
+                                *Parts[i], *CurrentStruct->GetName()));
+
+        // If not the last segment, drill into the property's struct/class
+        if (i < Parts.Num() - 1)
+        {
+            // Unwrap array to get at the inner property type
+            FProperty* Inner = TargetProp;
+            if (FArrayProperty* ArrProp = CastField<FArrayProperty>(TargetProp))
+                Inner = ArrProp->Inner;
+
+            if (FStructProperty* SP = CastField<FStructProperty>(Inner))
+                CurrentStruct = SP->Struct;
+            else if (FObjectProperty* OP = CastField<FObjectProperty>(Inner))
+                CurrentStruct = OP->PropertyClass;
+            else
+                return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+                    FString::Printf(TEXT("Cannot navigate into property '%s' (not struct/object)"),
+                                    *Parts[i]));
+        }
+    }
+
+    if (!TargetProp)
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Property path '%s' resolved to null"), *PropertyPath));
+
+    // ------------------------------------------------------------------
+    // 3. Unwrap outer array to inspect the element type
+    // ------------------------------------------------------------------
+    FProperty* ElementProp = TargetProp;
+    bool bIsArray = false;
+    if (FArrayProperty* ArrProp = CastField<FArrayProperty>(TargetProp))
+    {
+        ElementProp = ArrProp->Inner;
+        bIsArray = true;
+    }
+
+    // ------------------------------------------------------------------
+    // Helper: build a class entry JSON object
+    // ------------------------------------------------------------------
+    auto MakeClassEntry = [](UClass* C) -> TSharedPtr<FJsonObject>
+    {
+        TSharedPtr<FJsonObject> Obj = MakeShared<FJsonObject>();
+        Obj->SetStringField(TEXT("name"),         C->GetName());
+        Obj->SetStringField(TEXT("path"),         C->GetPathName());
+        Obj->SetStringField(TEXT("parent"),       C->GetSuperClass()
+                                                   ? C->GetSuperClass()->GetName()
+                                                   : TEXT("None"));
+        Obj->SetBoolField(TEXT("is_abstract"),    C->HasAnyClassFlags(CLASS_Abstract));
+        Obj->SetBoolField(TEXT("is_deprecated"),  C->HasAnyClassFlags(CLASS_Deprecated));
+        return Obj;
+    };
+
+    auto MakeStructEntry = [](UScriptStruct* S) -> TSharedPtr<FJsonObject>
+    {
+        TSharedPtr<FJsonObject> Obj = MakeShared<FJsonObject>();
+        Obj->SetStringField(TEXT("name"),   S->GetName());
+        Obj->SetStringField(TEXT("path"),   S->GetPathName());
+        Obj->SetStringField(TEXT("parent"), S->GetSuperStruct()
+                                            ? S->GetSuperStruct()->GetName()
+                                            : TEXT("None"));
+        return Obj;
+    };
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetStringField(TEXT("class_name"),     ClassName);
+    Result->SetStringField(TEXT("property_path"),  PropertyPath);
+    Result->SetBoolField(TEXT("is_array"),          bIsArray);
+
+    // ------------------------------------------------------------------
+    // 4a. FClassProperty (TSubclassOf<T>) — enumerate MetaClass descendants
+    // ------------------------------------------------------------------
+    if (FClassProperty* ClassProp = CastField<FClassProperty>(ElementProp))
+    {
+        Result->SetStringField(TEXT("kind"),      TEXT("subclass"));
+        Result->SetStringField(TEXT("base_class"), ClassProp->MetaClass
+                                                    ? ClassProp->MetaClass->GetName()
+                                                    : TEXT("UObject"));
+        TArray<UClass*> Derived;
+        if (ClassProp->MetaClass)
+            GetDerivedClasses(ClassProp->MetaClass, Derived, true);
+
+        TArray<TSharedPtr<FJsonValue>> Items;
+        for (UClass* C : Derived)
+        {
+            if (!C) continue;
+            if (!bIncludeAbstract && C->HasAnyClassFlags(CLASS_Abstract)) continue;
+            if (C->HasAnyClassFlags(CLASS_Deprecated)) continue;
+            Items.Add(MakeShared<FJsonValueObject>(MakeClassEntry(C)));
+        }
+        Result->SetNumberField(TEXT("count"), Items.Num());
+        Result->SetArrayField(TEXT("valid_types"), Items);
+        return Result;
+    }
+
+    // ------------------------------------------------------------------
+    // 4b. FObjectProperty (instanced or plain) — GetDerivedClasses(PropertyClass)
+    // ------------------------------------------------------------------
+    if (FObjectProperty* ObjProp = CastField<FObjectProperty>(ElementProp))
+    {
+        const bool bInstanced = ObjProp->HasAnyPropertyFlags(
+            CPF_PersistentInstance | CPF_InstancedReference);
+        Result->SetStringField(TEXT("kind"),       bInstanced
+                                                    ? TEXT("instanced_object")
+                                                    : TEXT("object_reference"));
+        Result->SetStringField(TEXT("base_class"), ObjProp->PropertyClass
+                                                    ? ObjProp->PropertyClass->GetName()
+                                                    : TEXT("UObject"));
+
+        TArray<UClass*> Derived;
+        if (ObjProp->PropertyClass)
+            GetDerivedClasses(ObjProp->PropertyClass, Derived, true);
+
+        // Also include the base class itself if it's concrete
+        if (ObjProp->PropertyClass &&
+            !ObjProp->PropertyClass->HasAnyClassFlags(CLASS_Abstract))
+            Derived.AddUnique(ObjProp->PropertyClass);
+
+        TArray<TSharedPtr<FJsonValue>> Items;
+        for (UClass* C : Derived)
+        {
+            if (!C) continue;
+            if (!bIncludeAbstract && C->HasAnyClassFlags(CLASS_Abstract)) continue;
+            if (C->HasAnyClassFlags(CLASS_Deprecated)) continue;
+            Items.Add(MakeShared<FJsonValueObject>(MakeClassEntry(C)));
+        }
+        Result->SetNumberField(TEXT("count"), Items.Num());
+        Result->SetArrayField(TEXT("valid_types"), Items);
+        return Result;
+    }
+
+    // ------------------------------------------------------------------
+    // 4c. FStructProperty where Struct == FInstancedStruct
+    //     Uses TObjectIterator<UScriptStruct> + BaseStruct meta,
+    //     mirroring SStructViewer.cpp line 940 and FInstancedStructFilter
+    // ------------------------------------------------------------------
+    if (FStructProperty* StructProp = CastField<FStructProperty>(ElementProp))
+    {
+        if (StructProp->Struct && StructProp->Struct->GetName() == TEXT("InstancedStruct"))
+        {
+            // Read BaseStruct metadata from the ARRAY property (not the inner)
+            // so we catch meta=(BaseStruct=...) on the TArray declaration
+            FProperty* MetaSource = bIsArray ? TargetProp : TargetProp;
+            FString BaseStructMeta = MetaSource->GetMetaData(TEXT("BaseStruct"));
+            const bool bExcludeBase = MetaSource->HasMetaData(TEXT("ExcludeBaseStruct"));
+
+            UScriptStruct* BaseStruct = nullptr;
+            if (!BaseStructMeta.IsEmpty())
+            {
+                // Try full path first, then short name (matches FInstancedStructDetails)
+                BaseStruct = FindObject<UScriptStruct>(nullptr, *BaseStructMeta);
+                if (!BaseStruct)
+                {
+                    for (TObjectIterator<UScriptStruct> It; It; ++It)
+                    {
+                        const FString N = (*It)->GetName();
+                        if (N == BaseStructMeta ||
+                            N == (TEXT("F") + BaseStructMeta) ||
+                            (*It)->GetPathName() == BaseStructMeta)
+                        {
+                            BaseStruct = *It;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            Result->SetStringField(TEXT("kind"),        TEXT("instanced_struct"));
+            Result->SetStringField(TEXT("base_struct"),  BaseStruct
+                                                         ? BaseStruct->GetName()
+                                                         : TEXT("(any)"));
+
+            // Enumerate: mirrors TObjectIterator<UScriptStruct> in SStructViewer.cpp
+            TArray<TSharedPtr<FJsonValue>> Items;
+            for (TObjectIterator<UScriptStruct> It; It; ++It)
+            {
+                UScriptStruct* S = *It;
+                if (!S) continue;
+                if (S->GetOutermost() == GetTransientPackage()) continue;
+                if (BaseStruct && !S->IsChildOf(BaseStruct)) continue;
+                if (bExcludeBase && S == BaseStruct) continue;
+                Items.Add(MakeShared<FJsonValueObject>(MakeStructEntry(S)));
+            }
+            Result->SetNumberField(TEXT("count"), Items.Num());
+            Result->SetArrayField(TEXT("valid_types"), Items);
+            return Result;
+        }
+
+        // Plain struct — not a dropdown, but report the struct type
+        Result->SetStringField(TEXT("kind"),        TEXT("struct"));
+        Result->SetStringField(TEXT("struct_type"),  StructProp->Struct
+                                                      ? StructProp->Struct->GetName()
+                                                      : TEXT("unknown"));
+        Result->SetNumberField(TEXT("count"), 0);
+        Result->SetArrayField(TEXT("valid_types"), TArray<TSharedPtr<FJsonValue>>());
+        return Result;
+    }
+
+    // ------------------------------------------------------------------
+    // 4d. FEnumProperty / FByteProperty — return all named enum entries
+    // ------------------------------------------------------------------
+    auto SerialiseEnum = [&](UEnum* Enum) -> TSharedPtr<FJsonObject>
+    {
+        TArray<TSharedPtr<FJsonValue>> Items;
+        for (int32 i = 0; i < Enum->NumEnums() - 1; ++i)  // skip _MAX
+        {
+            TSharedPtr<FJsonObject> Obj = MakeShared<FJsonObject>();
+            Obj->SetStringField(TEXT("name"),        Enum->GetNameStringByIndex(i));
+            Obj->SetStringField(TEXT("display_name"), Enum->GetDisplayNameTextByIndex(i).ToString());
+            Obj->SetNumberField(TEXT("value"),       static_cast<double>(Enum->GetValueByIndex(i)));
+            Items.Add(MakeShared<FJsonValueObject>(Obj));
+        }
+        Result->SetStringField(TEXT("kind"),       TEXT("enum"));
+        Result->SetStringField(TEXT("enum_name"),   Enum->GetName());
+        Result->SetNumberField(TEXT("count"),       Items.Num());
+        Result->SetArrayField(TEXT("valid_types"),  Items);
+        return Result;
+    };
+
+    if (FEnumProperty* EnumProp = CastField<FEnumProperty>(ElementProp))
+        return SerialiseEnum(EnumProp->GetEnum());
+
+    if (FByteProperty* ByteProp = CastField<FByteProperty>(ElementProp))
+        if (UEnum* Enum = ByteProp->GetIntPropertyEnum())
+            return SerialiseEnum(Enum);
+
+    // ------------------------------------------------------------------
+    // 4e. Anything else — report the property type but no dropdown
+    // ------------------------------------------------------------------
+    Result->SetStringField(TEXT("kind"),  FString::Printf(TEXT("primitive_%s"),
+                                          *ElementProp->GetClass()->GetName()));
+    Result->SetNumberField(TEXT("count"), 0);
+    Result->SetArrayField(TEXT("valid_types"), TArray<TSharedPtr<FJsonValue>>());
+    return Result;
 }
 
 // ===========================================================================

@@ -41,12 +41,21 @@ private:
     // list data assets in a content path, optionally filtered by class name
     TSharedPtr<FJsonObject> HandleListDataAssets(const TSharedPtr<FJsonObject>& Params);
 
+    // For any class + property path, return every valid class/struct/enum value
+    // that the editor dropdown would show for that slot.
+    // Handles: instanced UObject* arrays, TArray<FInstancedStruct> (BaseStruct meta),
+    //          TSubclassOf<T>, single instanced UObject*, FEnumProperty.
+    TSharedPtr<FJsonObject> HandleGetPropertyValidTypes(const TSharedPtr<FJsonObject>& Params);
+
     // -----------------------------------------------------------------------
     // Internal helpers
     // -----------------------------------------------------------------------
 
     // Find a loaded UClass by short name, full path, or "/Script/Module.ClassName"
     static UClass* ResolveDataAssetClass(const FString& ClassName);
+
+    // Find ANY loaded UClass (not limited to UDataAsset subclasses)
+    static UClass* ResolveAnyClass(const FString& ClassName);
 
     // Set one FProperty on an object from a FJsonValue.
     // Covers: primitives, enums, FStructProperty (via FJsonObjectConverter),
