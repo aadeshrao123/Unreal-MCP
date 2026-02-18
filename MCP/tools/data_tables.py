@@ -1,24 +1,121 @@
-"""Data Table tools — inspect rows and data."""
+"""Data Table tools — native C++ commands via the TCP bridge."""
 
-import textwrap
+import json
 
-from _bridge import mcp, _send
+from _bridge import mcp
+from _tcp_bridge import _tcp_send_raw
+
+
+def _call(command: str, params: dict) -> str:
+    resp = _tcp_send_raw(command, params)
+    return json.dumps(resp, default=str, indent=2)
 
 
 @mcp.tool()
 def get_data_table_rows(data_table_path: str) -> str:
-    """Get all row names and data from a Data Table asset.
+    """Get all rows and their field data from a Data Table asset.
 
     Args:
-        data_table_path: Full path to data table (e.g. "/Game/Data/DT_Items")
+        data_table_path: Full content-browser path (e.g. "/Game/Data/DT_Items")
     """
-    code = textwrap.dedent(f"""\
-        import unreal
-        dt = unreal.EditorAssetLibrary.load_asset('{data_table_path}')
-        if not dt:
-            result = 'Error: Data table not found'
-        else:
-            row_names = unreal.DataTableFunctionLibrary.get_data_table_column_as_string(dt, 'Name')
-            result = {{'table': '{data_table_path}', 'row_names': list(dt.get_editor_property('row_map').keys()) if hasattr(dt, 'get_editor_property') else row_names}}
-    """)
-    return _send(code)
+    return _call("get_data_table_rows", {"data_table_path": data_table_path})
+
+
+@mcp.tool()
+def get_data_table_row(data_table_path: str, row_name: str) -> str:
+    """Get a single row from a Data Table by its row name.
+
+    Args:
+        data_table_path: Full content-browser path to the data table
+        row_name: Exact name of the row to retrieve
+    """
+    return _call("get_data_table_row", {
+        "data_table_path": data_table_path,
+        "row_name": row_name,
+    })
+
+
+@mcp.tool()
+def get_data_table_schema(data_table_path: str) -> str:
+    """Get the column names and types defined by a Data Table's row struct.
+
+    Args:
+        data_table_path: Full content-browser path to the data table
+    """
+    return _call("get_data_table_schema", {"data_table_path": data_table_path})
+
+
+@mcp.tool()
+def add_data_table_row(
+    data_table_path: str,
+    row_name: str,
+    data: dict | None = None,
+) -> str:
+    """Add a new row to a Data Table, optionally setting initial field values.
+
+    Args:
+        data_table_path: Full content-browser path to the data table
+        row_name: Name for the new row (must be unique)
+        data: Optional dict mapping field names to initial values
+    """
+    params: dict = {"data_table_path": data_table_path, "row_name": row_name}
+    if data:
+        params["data"] = data
+    return _call("add_data_table_row", params)
+
+
+@mcp.tool()
+def update_data_table_row(
+    data_table_path: str,
+    row_name: str,
+    data: dict,
+) -> str:
+    """Update specific fields on an existing Data Table row.
+
+    Only the fields present in *data* are modified; all other fields
+    keep their current values.
+
+    Args:
+        data_table_path: Full content-browser path to the data table
+        row_name: Name of the row to update
+        data: Dict mapping field names to new values
+    """
+    return _call("update_data_table_row", {
+        "data_table_path": data_table_path,
+        "row_name": row_name,
+        "data": data,
+    })
+
+
+@mcp.tool()
+def delete_data_table_row(data_table_path: str, row_name: str) -> str:
+    """Delete a row from a Data Table by name.
+
+    Args:
+        data_table_path: Full content-browser path to the data table
+        row_name: Name of the row to delete
+    """
+    return _call("delete_data_table_row", {
+        "data_table_path": data_table_path,
+        "row_name": row_name,
+    })
+
+
+@mcp.tool()
+def duplicate_data_table_row(
+    data_table_path: str,
+    source_row_name: str,
+    new_row_name: str,
+) -> str:
+    """Copy an existing Data Table row under a new name.
+
+    Args:
+        data_table_path: Full content-browser path to the data table
+        source_row_name: Name of the row to copy
+        new_row_name: Name for the new duplicated row (must be unique)
+    """
+    return _call("duplicate_data_table_row", {
+        "data_table_path": data_table_path,
+        "source_row_name": source_row_name,
+        "new_row_name": new_row_name,
+    })

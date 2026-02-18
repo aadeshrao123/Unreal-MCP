@@ -35,6 +35,7 @@ LARGE_OPERATION_COMMANDS = {
     "get_available_materials",
     "read_blueprint_content",
     "analyze_blueprint_graph",
+    "build_material_graph",
 }
 
 

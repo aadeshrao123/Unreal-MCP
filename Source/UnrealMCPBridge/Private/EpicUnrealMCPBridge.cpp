@@ -55,6 +55,7 @@
 #include "Commands/EpicUnrealMCPBlueprintCommands.h"
 #include "Commands/EpicUnrealMCPBlueprintGraphCommands.h"
 #include "Commands/EpicUnrealMCPCommonUtils.h"
+#include "Commands/EpicUnrealMCPDataTableCommands.h"
 #include "IPythonScriptPlugin.h"
 #include "PythonScriptTypes.h"
 #include "Misc/Base64.h"
@@ -68,6 +69,8 @@ UEpicUnrealMCPBridge::UEpicUnrealMCPBridge()
     EditorCommands = MakeShared<FEpicUnrealMCPEditorCommands>();
     BlueprintCommands = MakeShared<FEpicUnrealMCPBlueprintCommands>();
     BlueprintGraphCommands = MakeShared<FEpicUnrealMCPBlueprintGraphCommands>();
+    MaterialCommands = MakeShared<FEpicUnrealMCPMaterialCommands>();
+    DataTableCommands = MakeShared<FEpicUnrealMCPDataTableCommands>();
 }
 
 UEpicUnrealMCPBridge::~UEpicUnrealMCPBridge()
@@ -75,6 +78,8 @@ UEpicUnrealMCPBridge::~UEpicUnrealMCPBridge()
     EditorCommands.Reset();
     BlueprintCommands.Reset();
     BlueprintGraphCommands.Reset();
+    MaterialCommands.Reset();
+    DataTableCommands.Reset();
 }
 
 // Initialize subsystem
@@ -377,6 +382,28 @@ FString UEpicUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const T
                      CommandType == TEXT("get_blueprint_function_details"))
             {
                 ResultJson = BlueprintCommands->HandleCommand(CommandType, Params);
+            }
+            // Material Commands
+            else if (CommandType == TEXT("create_material") ||
+                     CommandType == TEXT("create_material_instance") ||
+                     CommandType == TEXT("build_material_graph") ||
+                     CommandType == TEXT("get_material_info") ||
+                     CommandType == TEXT("recompile_material") ||
+                     CommandType == TEXT("set_material_properties") ||
+                     CommandType == TEXT("add_material_comments"))
+            {
+                ResultJson = MaterialCommands->HandleCommand(CommandType, Params);
+            }
+            // Data Table Commands
+            else if (CommandType == TEXT("get_data_table_rows") ||
+                     CommandType == TEXT("get_data_table_row") ||
+                     CommandType == TEXT("get_data_table_schema") ||
+                     CommandType == TEXT("add_data_table_row") ||
+                     CommandType == TEXT("update_data_table_row") ||
+                     CommandType == TEXT("delete_data_table_row") ||
+                     CommandType == TEXT("duplicate_data_table_row"))
+            {
+                ResultJson = DataTableCommands->HandleCommand(CommandType, Params);
             }
             // Blueprint Graph Commands
             else if (CommandType == TEXT("add_blueprint_node") ||

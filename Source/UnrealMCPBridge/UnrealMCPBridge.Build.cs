@@ -58,7 +58,10 @@ public class UnrealMCPBridge : ModuleRules
 				"Kismet",
 				"Projects",
 				"AssetRegistry",
-				"PythonScriptPlugin"
+				"PythonScriptPlugin",
+				"MaterialEditor",
+				"AssetTools",
+				"DataTableEditor"
 			}
 		);
 
