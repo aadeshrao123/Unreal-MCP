@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+Binaries/
+Intermediate/
+Content/

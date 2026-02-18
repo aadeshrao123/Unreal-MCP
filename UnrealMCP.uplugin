@@ -1,0 +1,29 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0",
+	"FriendlyName": "Unreal MCP Bridge",
+	"Description": "Exposes UE5 editor to Claude Code via MCP (Model Context Protocol). Drop into any project's Plugins folder, enable PythonScriptPlugin, and connect.",
+	"Category": "Editor",
+	"CreatedBy": "UnrealMCP",
+	"EnabledByDefault": true,
+	"CanContainContent": true,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "UnrealMCPBridge",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "PythonScriptPlugin",
+			"Enabled": true
+		},
+		{
+			"Name": "EditorScriptingUtilities",
+			"Enabled": true
+		}
+	]
+}
