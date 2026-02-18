@@ -72,7 +72,8 @@ public class UnrealMCPBridge : ModuleRules
 				{
 					"PropertyEditor",
 					"ToolMenus",
-					"BlueprintEditorLibrary"
+					"BlueprintEditorLibrary",
+					"Blutility"
 				}
 			);
 		}

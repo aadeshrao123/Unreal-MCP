@@ -56,6 +56,7 @@
 #include "Commands/EpicUnrealMCPBlueprintGraphCommands.h"
 #include "Commands/EpicUnrealMCPCommonUtils.h"
 #include "Commands/EpicUnrealMCPDataTableCommands.h"
+#include "Commands/EpicUnrealMCPAssetCommands.h"
 #include "IPythonScriptPlugin.h"
 #include "PythonScriptTypes.h"
 #include "Misc/Base64.h"
@@ -71,6 +72,7 @@ UEpicUnrealMCPBridge::UEpicUnrealMCPBridge()
     BlueprintGraphCommands = MakeShared<FEpicUnrealMCPBlueprintGraphCommands>();
     MaterialCommands = MakeShared<FEpicUnrealMCPMaterialCommands>();
     DataTableCommands = MakeShared<FEpicUnrealMCPDataTableCommands>();
+    AssetCommands = MakeShared<FEpicUnrealMCPAssetCommands>();
 }
 
 UEpicUnrealMCPBridge::~UEpicUnrealMCPBridge()
@@ -80,6 +82,7 @@ UEpicUnrealMCPBridge::~UEpicUnrealMCPBridge()
     BlueprintGraphCommands.Reset();
     MaterialCommands.Reset();
     DataTableCommands.Reset();
+    AssetCommands.Reset();
 }
 
 // Initialize subsystem
@@ -354,15 +357,37 @@ FString UEpicUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const T
                 ResultJson->SetStringField(TEXT("status"), TEXT("ok"));
                 ResultJson->SetStringField(TEXT("editor"), TEXT("UnrealEngine5"));
             }
-            // Editor Commands (including actor manipulation)
-            else if (CommandType == TEXT("get_actors_in_level") || 
+            // Editor Commands (actor manipulation + world queries)
+            else if (CommandType == TEXT("get_actors_in_level") ||
                      CommandType == TEXT("find_actors_by_name") ||
                      CommandType == TEXT("spawn_actor") ||
-                     CommandType == TEXT("delete_actor") || 
+                     CommandType == TEXT("delete_actor") ||
                      CommandType == TEXT("set_actor_transform") ||
-                     CommandType == TEXT("spawn_blueprint_actor"))
+                     CommandType == TEXT("spawn_blueprint_actor") ||
+                     CommandType == TEXT("get_selected_actors") ||
+                     CommandType == TEXT("get_world_info") ||
+                     CommandType == TEXT("spawn_actor_from_class"))
             {
                 ResultJson = EditorCommands->HandleCommand(CommandType, Params);
+            }
+            // Asset Commands
+            else if (CommandType == TEXT("find_assets") ||
+                     CommandType == TEXT("list_assets") ||
+                     CommandType == TEXT("open_asset") ||
+                     CommandType == TEXT("get_asset_info") ||
+                     CommandType == TEXT("get_asset_properties") ||
+                     CommandType == TEXT("set_asset_property") ||
+                     CommandType == TEXT("find_references") ||
+                     CommandType == TEXT("duplicate_asset") ||
+                     CommandType == TEXT("rename_asset") ||
+                     CommandType == TEXT("delete_asset") ||
+                     CommandType == TEXT("save_asset") ||
+                     CommandType == TEXT("save_all") ||
+                     CommandType == TEXT("import_asset") ||
+                     CommandType == TEXT("get_selected_assets") ||
+                     CommandType == TEXT("sync_browser"))
+            {
+                ResultJson = AssetCommands->HandleCommand(CommandType, Params);
             }
             // Blueprint Commands
             else if (CommandType == TEXT("create_blueprint") ||

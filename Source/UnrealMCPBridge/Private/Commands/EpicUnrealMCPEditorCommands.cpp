@@ -55,7 +55,21 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCommand(const FStrin
     {
         return HandleSpawnBlueprintActor(Params);
     }
-    
+    // Level / world queries
+    else if (CommandType == TEXT("get_selected_actors"))
+    {
+        return HandleGetSelectedActors(Params);
+    }
+    else if (CommandType == TEXT("get_world_info"))
+    {
+        return HandleGetWorldInfo(Params);
+    }
+    // Flexible class-based spawn
+    else if (CommandType == TEXT("spawn_actor_from_class"))
+    {
+        return HandleSpawnActorFromClass(Params);
+    }
+
     return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown editor command: %s"), *CommandType));
 }
 
@@ -305,4 +319,122 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleSpawnBlueprintActor(
     // This function will now correctly call the implementation in BlueprintCommands
     FEpicUnrealMCPBlueprintCommands BlueprintCommands;
     return BlueprintCommands.HandleCommand(TEXT("spawn_blueprint_actor"), Params);
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleGetSelectedActors(const TSharedPtr<FJsonObject>& Params)
+{
+    TArray<TSharedPtr<FJsonValue>> ActorArray;
+
+    USelection* Selection = GEditor->GetSelectedActors();
+    for (FSelectionIterator It(*Selection); It; ++It)
+    {
+        AActor* Actor = Cast<AActor>(*It);
+        if (!Actor) continue;
+
+        TSharedPtr<FJsonObject> ActorObj = MakeShared<FJsonObject>();
+        ActorObj->SetStringField(TEXT("name"),  Actor->GetName());
+        ActorObj->SetStringField(TEXT("label"), Actor->GetActorLabel());
+        ActorObj->SetStringField(TEXT("class"), Actor->GetClass()->GetName());
+        const FVector Loc = Actor->GetActorLocation();
+        ActorObj->SetStringField(TEXT("location"),
+            FString::Printf(TEXT("(%.1f, %.1f, %.1f)"), Loc.X, Loc.Y, Loc.Z));
+        ActorArray.Add(MakeShared<FJsonValueObject>(ActorObj));
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetArrayField(TEXT("actors"), ActorArray);
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleGetWorldInfo(const TSharedPtr<FJsonObject>& Params)
+{
+    UWorld* World = GEditor->GetEditorWorldContext().World();
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetStringField(TEXT("world"), World ? World->GetName() : TEXT("None"));
+
+    if (World)
+    {
+        TArray<AActor*> AllActors;
+        UGameplayStatics::GetAllActorsOfClass(World, AActor::StaticClass(), AllActors);
+        Result->SetNumberField(TEXT("actor_count"), AllActors.Num());
+
+        const int32 ShowCount = FMath::Min(AllActors.Num(), 100);
+        TArray<TSharedPtr<FJsonValue>> ActorArray;
+        for (int32 i = 0; i < ShowCount; i++)
+        {
+            AActor* Actor = AllActors[i];
+            if (!Actor) continue;
+            TSharedPtr<FJsonObject> Obj = MakeShared<FJsonObject>();
+            Obj->SetStringField(TEXT("name"),  Actor->GetName());
+            Obj->SetStringField(TEXT("class"), Actor->GetClass()->GetName());
+            ActorArray.Add(MakeShared<FJsonValueObject>(Obj));
+        }
+        Result->SetArrayField(TEXT("actors"), ActorArray);
+
+        if (AllActors.Num() > 100)
+            Result->SetStringField(TEXT("note"),
+                FString::Printf(TEXT("Showing 100 of %d actors"), AllActors.Num()));
+    }
+
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleSpawnActorFromClass(const TSharedPtr<FJsonObject>& Params)
+{
+    FString ClassName;
+    if (!Params->TryGetStringField(TEXT("class_name"), ClassName))
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'class_name' parameter"));
+
+    double LocationX = 0.0, LocationY = 0.0, LocationZ = 0.0;
+    double RotYaw = 0.0, RotPitch = 0.0, RotRoll = 0.0;
+    Params->TryGetNumberField(TEXT("location_x"),    LocationX);
+    Params->TryGetNumberField(TEXT("location_y"),    LocationY);
+    Params->TryGetNumberField(TEXT("location_z"),    LocationZ);
+    Params->TryGetNumberField(TEXT("rotation_yaw"),  RotYaw);
+    Params->TryGetNumberField(TEXT("rotation_pitch"), RotPitch);
+    Params->TryGetNumberField(TEXT("rotation_roll"), RotRoll);
+
+    const FVector   Location(LocationX, LocationY, LocationZ);
+    const FRotator  Rotation(RotPitch, RotYaw, RotRoll);
+
+    UWorld* World = GEditor->GetEditorWorldContext().World();
+    if (!World)
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get editor world"));
+
+    FActorSpawnParameters SpawnParams;
+    AActor* NewActor = nullptr;
+
+    // --- Blueprint path (starts with "/") ---
+    if (ClassName.StartsWith(TEXT("/")))
+    {
+        UObject* Asset = UEditorAssetLibrary::LoadAsset(ClassName);
+        UBlueprint* Blueprint = Cast<UBlueprint>(Asset);
+        if (Blueprint && Blueprint->GeneratedClass)
+            NewActor = World->SpawnActor<AActor>(Blueprint->GeneratedClass, Location, Rotation, SpawnParams);
+    }
+
+    // --- Native UClass (try common module paths) ---
+    if (!NewActor)
+    {
+        static const TCHAR* Modules[] =
+        {
+            TEXT("/Script/Engine."),
+            TEXT("/Script/Runtime/Engine/Classes."),
+        };
+        UClass* Class = nullptr;
+        for (const TCHAR* Prefix : Modules)
+        {
+            Class = FindObject<UClass>(nullptr, *(FString(Prefix) + ClassName));
+            if (Class) break;
+        }
+        if (Class && Class->IsChildOf(AActor::StaticClass()))
+            NewActor = World->SpawnActor<AActor>(Class, Location, Rotation, SpawnParams);
+    }
+
+    if (!NewActor)
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Failed to spawn — class not found or invalid: %s"), *ClassName));
+
+    return FEpicUnrealMCPCommonUtils::ActorToJsonObject(NewActor, true);
 }
