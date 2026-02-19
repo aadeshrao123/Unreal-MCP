@@ -7,6 +7,9 @@
 #include "Materials/MaterialExpressionComment.h"
 #include "Materials/MaterialExpression.h"
 #include "MaterialEditingLibrary.h"
+#include "MaterialEditor/MaterialEditorInstanceConstant.h"
+#include "MaterialShared.h"
+#include "RHIShaderPlatform.h"
 #include "EditorAssetLibrary.h"
 #include "AssetToolsModule.h"
 #include "IAssetTools.h"
@@ -42,6 +45,7 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleCommand(
 	else if (CommandType == TEXT("get_material_graph_nodes"))     return HandleGetMaterialGraphNodes(Params);
 	else if (CommandType == TEXT("get_material_expression_info")) return HandleGetMaterialExpressionInfo(Params);
 	else if (CommandType == TEXT("get_material_property_connections")) return HandleGetMaterialPropertyConnections(Params);
+	else if (CommandType == TEXT("get_material_errors"))             return HandleGetMaterialErrors(Params);
 	// ---- Node Mutations ----
 	else if (CommandType == TEXT("add_material_expression"))      return HandleAddMaterialExpression(Params);
 	else if (CommandType == TEXT("set_material_expression_property")) return HandleSetMaterialExpressionProperty(Params);
@@ -948,6 +952,104 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleRecompileMaterial(
 }
 
 // ---------------------------------------------------------------------------
+// HandleGetMaterialErrors
+// ---------------------------------------------------------------------------
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleGetMaterialErrors(
+	const TSharedPtr<FJsonObject>& Params)
+{
+	FString MaterialPath;
+	if (!Params->TryGetStringField(TEXT("material_path"), MaterialPath))
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'material_path'"));
+
+	UObject* Asset = UEditorAssetLibrary::LoadAsset(MaterialPath);
+	UMaterial* Material = Cast<UMaterial>(Asset);
+	if (!Material)
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Material not found: %s"), *MaterialPath));
+
+	// Optional: recompile first to get fresh errors
+	bool bRecompile = false;
+	Params->TryGetBoolField(TEXT("recompile"), bRecompile);
+	if (bRecompile)
+	{
+		UMaterialEditingLibrary::RecompileMaterial(Material);
+	}
+
+	// Build expression index map so we can report error node indices
+	FMaterialExpressionCollection& Collection = Material->GetExpressionCollection();
+	TMap<UMaterialExpression*, int32> ExprIndexMap;
+	ExprIndexMap.Reserve(Collection.Expressions.Num());
+	for (int32 i = 0; i < Collection.Expressions.Num(); ++i)
+	{
+		if (UMaterialExpression* E = Collection.Expressions[i])
+		{
+			ExprIndexMap.Add(E, i);
+		}
+	}
+
+	// Gather errors across all quality levels for the current shader platform
+	TArray<TSharedPtr<FJsonValue>> ErrorsArray;
+	TSet<FString> SeenErrors; // Deduplicate
+
+	const EShaderPlatform ShaderPlatform = GMaxRHIShaderPlatform;
+
+	for (int32 QualityIdx = 0; QualityIdx < EMaterialQualityLevel::Num; ++QualityIdx)
+	{
+		const FMaterialResource* MatResource = Material->GetMaterialResource(
+			ShaderPlatform, static_cast<EMaterialQualityLevel::Type>(QualityIdx));
+
+		if (!MatResource)
+			continue;
+
+		const TArray<FString>& CompileErrors = MatResource->GetCompileErrors();
+		for (const FString& Error : CompileErrors)
+		{
+			if (SeenErrors.Contains(Error))
+				continue;
+			SeenErrors.Add(Error);
+
+			auto ErrObj = MakeShared<FJsonObject>();
+			ErrObj->SetStringField(TEXT("message"), Error);
+			ErrObj->SetNumberField(TEXT("quality_level"), QualityIdx);
+			ErrorsArray.Add(MakeShared<FJsonValueObject>(ErrObj));
+		}
+
+		// Map error expressions to node indices
+		const TArray<UMaterialExpression*>& ErrorExprs = MatResource->GetErrorExpressions();
+		if (ErrorExprs.Num() > 0 && ErrorsArray.Num() > 0)
+		{
+			// Attach error node info to the last error entry for this quality level
+			TArray<TSharedPtr<FJsonValue>> ErrorNodeIndices;
+			for (UMaterialExpression* ErrExpr : ErrorExprs)
+			{
+				if (const int32* IdxPtr = ExprIndexMap.Find(ErrExpr))
+				{
+					auto NodeObj = MakeShared<FJsonObject>();
+					NodeObj->SetNumberField(TEXT("node_index"), *IdxPtr);
+					NodeObj->SetStringField(TEXT("node_type"),
+						ErrExpr->GetClass()->GetName().Replace(TEXT("MaterialExpression"), TEXT("")));
+					ErrorNodeIndices.Add(MakeShared<FJsonValueObject>(NodeObj));
+				}
+			}
+			if (ErrorNodeIndices.Num() > 0)
+			{
+				// Attach to last error in this batch
+				ErrorsArray.Last()->AsObject()->SetArrayField(TEXT("error_nodes"), ErrorNodeIndices);
+			}
+		}
+	}
+
+	auto R = MakeShared<FJsonObject>();
+	R->SetBoolField(TEXT("success"), true);
+	R->SetStringField(TEXT("path"), MaterialPath);
+	R->SetBoolField(TEXT("has_errors"), ErrorsArray.Num() > 0);
+	R->SetNumberField(TEXT("error_count"), ErrorsArray.Num());
+	R->SetArrayField(TEXT("errors"), ErrorsArray);
+	return R;
+}
+
+// ---------------------------------------------------------------------------
 // HandleSetMaterialProperties
 // ---------------------------------------------------------------------------
 
@@ -1790,23 +1892,68 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleSetMaterialInstanc
 
 	if (Lower == TEXT("scalar") || Lower == TEXT("float"))
 	{
+		// UE5 bug: SetMaterialInstanceScalarParameterValue never sets bResult=true.
+		// Call SetScalarParameterValueEditorOnly directly.
 		double Val;
-		if (!Params->TryGetNumberField(TEXT("value"), Val))
-			ErrMsg = TEXT("Missing 'value' number");
+		if (Params->TryGetNumberField(TEXT("value"), Val))
+		{
+			MI->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(ParamFName), (float)Val);
+			bSuccess = true;
+		}
 		else
-			bSuccess = UMaterialEditingLibrary::SetMaterialInstanceScalarParameterValue(MI, ParamFName, (float)Val);
+		{
+			// value may arrive as a string (e.g. "0.5") — parse it
+			FString ValStr;
+			if (Params->TryGetStringField(TEXT("value"), ValStr) && FCString::IsNumeric(*ValStr))
+			{
+				MI->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(ParamFName), FCString::Atof(*ValStr));
+				bSuccess = true;
+			}
+			else
+				ErrMsg = TEXT("Missing 'value' number");
+		}
 	}
 	else if (Lower == TEXT("vector") || Lower == TEXT("color"))
 	{
-		const TArray<TSharedPtr<FJsonValue>>* Arr;
-		if (!Params->TryGetArrayField(TEXT("value"), Arr) || Arr->Num() < 3)
+		// Try direct JSON array first, then fall back to parsing a string-encoded array
+		const TArray<TSharedPtr<FJsonValue>>* Arr = nullptr;
+		TSharedPtr<FJsonValue> ParsedValue;
+		TArray<TSharedPtr<FJsonValue>> ParsedArray;
+
+		if (Params->TryGetArrayField(TEXT("value"), Arr) && Arr && Arr->Num() >= 3)
+		{
+			// Direct JSON array — use as-is
+		}
+		else
+		{
+			// value is likely a string like "[1.0, 0.1, 0.05, 1.0]" — parse it
+			FString ValStr;
+			if (Params->TryGetStringField(TEXT("value"), ValStr))
+			{
+				TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(ValStr);
+				if (FJsonSerializer::Deserialize(Reader, ParsedValue) && ParsedValue.IsValid()
+					&& ParsedValue->Type == EJson::Array)
+				{
+					ParsedArray = ParsedValue->AsArray();
+					Arr = &ParsedArray;
+				}
+			}
+		}
+
+		if (!Arr || Arr->Num() < 3)
+		{
 			ErrMsg = TEXT("Missing 'value' [r,g,b] or [r,g,b,a] array");
+		}
 		else
 		{
 			FLinearColor C(
 				(float)(*Arr)[0]->AsNumber(), (float)(*Arr)[1]->AsNumber(), (float)(*Arr)[2]->AsNumber(),
 				Arr->Num() > 3 ? (float)(*Arr)[3]->AsNumber() : 1.0f);
-			bSuccess = UMaterialEditingLibrary::SetMaterialInstanceVectorParameterValue(MI, ParamFName, C);
+			// UE5 bug: UMaterialEditingLibrary::SetMaterialInstanceVectorParameterValue
+			// never sets bResult=true, always returns false even on success.
+			// Call SetVectorParameterValueEditorOnly directly to work around it.
+			MI->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(ParamFName), C);
+			bSuccess = true;
 		}
 	}
 	else if (Lower == TEXT("texture"))
@@ -1818,7 +1965,12 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleSetMaterialInstanc
 		{
 			UTexture* Tex = Cast<UTexture>(UEditorAssetLibrary::LoadAsset(TexPath));
 			if (!Tex) ErrMsg = FString::Printf(TEXT("Texture not found: %s"), *TexPath);
-			else bSuccess = UMaterialEditingLibrary::SetMaterialInstanceTextureParameterValue(MI, ParamFName, Tex);
+			else
+			{
+				// UE5 bug: same bResult issue as scalar/vector — call directly.
+				MI->SetTextureParameterValueEditorOnly(FMaterialParameterInfo(ParamFName), Tex);
+				bSuccess = true;
+			}
 		}
 	}
 	else if (Lower == TEXT("static_switch") || Lower == TEXT("switch") || Lower == TEXT("bool"))
@@ -1837,7 +1989,25 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleSetMaterialInstanc
 
 	if (bSuccess)
 	{
+		// Mirror what the static switch setter does (MaterialEditingLibrary.cpp:1285-1286):
+		// Create a transient UMaterialEditorInstanceConstant and call SetSourceInstance().
+		// This triggers RegenerateArrays() which properly registers parameter overrides
+		// so the MI editor doesn't wipe values on first open.
+		UMaterialEditorInstanceConstant* EditorInst = NewObject<UMaterialEditorInstanceConstant>(
+			GetTransientPackage(), NAME_None, RF_Transactional);
+		EditorInst->SetSourceInstance(MI);
+
 		UMaterialEditingLibrary::UpdateMaterialInstance(MI);
+
+		// Rebuild any already-open MI editors so parameter checkboxes refresh immediately.
+		// UpdateMaterialInstance only calls NotifyExternalMaterialChange->Refresh which
+		// does NOT call RegenerateArrays(). RebuildMaterialInstanceEditors does.
+		UMaterial* BaseMaterial = MI->GetMaterial();
+		if (BaseMaterial)
+		{
+			UMaterialEditingLibrary::RebuildMaterialInstanceEditors(BaseMaterial);
+		}
+
 		UEditorAssetLibrary::SaveAsset(AssetPath);
 	}
 

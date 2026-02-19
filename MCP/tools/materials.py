@@ -160,6 +160,24 @@ def recompile_material(material_path: str) -> str:
 
 
 @mcp.tool()
+def get_material_errors(material_path: str, recompile: bool = True) -> str:
+    """Get shader compilation errors for a material.
+
+    Returns any shader compilation errors with error messages and the node
+    indices that caused them. Use after modifying a material to verify it
+    compiles cleanly.
+
+    Args:
+        material_path: Full path to the material (e.g. "/Game/Materials/M_Portal")
+        recompile: Recompile the material first to get fresh errors (default True)
+    """
+    return _call("get_material_errors", {
+        "material_path": material_path,
+        "recompile": recompile,
+    })
+
+
+@mcp.tool()
 def set_material_properties(
     material_path: str,
     blend_mode: Optional[str] = None,

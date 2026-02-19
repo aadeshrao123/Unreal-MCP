@@ -37,6 +37,7 @@ private:
 	TSharedPtr<FJsonObject> HandleGetMaterialGraphNodes(const TSharedPtr<FJsonObject>& Params);
 	TSharedPtr<FJsonObject> HandleGetMaterialExpressionInfo(const TSharedPtr<FJsonObject>& Params);
 	TSharedPtr<FJsonObject> HandleGetMaterialPropertyConnections(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleGetMaterialErrors(const TSharedPtr<FJsonObject>& Params);
 
 	// ---- Individual Node Mutations ----
 	TSharedPtr<FJsonObject> HandleAddMaterialExpression(const TSharedPtr<FJsonObject>& Params);

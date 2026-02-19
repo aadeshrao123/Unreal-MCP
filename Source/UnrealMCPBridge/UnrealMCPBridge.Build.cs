@@ -42,6 +42,7 @@ public class UnrealMCPBridge : ModuleRules
 				"JsonUtilities",
 				"DeveloperSettings",
 				"PhysicsCore",
+				"RHI",
 				"UnrealEd",
 				"BlueprintGraph",
 				"KismetCompiler"
