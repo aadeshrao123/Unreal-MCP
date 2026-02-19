@@ -7,6 +7,13 @@
 #include "UObject/UnrealType.h"
 #include "UObject/UObjectIterator.h"
 
+// SEH crash guard support (Windows)
+#if PLATFORM_WINDOWS
+#ifndef EXCEPTION_EXECUTE_HANDLER
+#define EXCEPTION_EXECUTE_HANDLER 1
+#endif
+#endif
+
 // ===========================================================================
 // ResolveAnyClass
 // Finds ANY loaded UClass — not limited to UDataAsset subclasses.
@@ -550,6 +557,115 @@ bool FEpicUnrealMCPPropertyUtils::SetProperty(UObject* Object, const FString& Pr
 }
 
 // ===========================================================================
+// Property serialization safety helpers
+// ===========================================================================
+
+namespace MCPPropertySafety
+{
+    /** Returns true if the property type is known to be dangerous to serialize
+     *  via FJsonObjectConverter (delegates, weak refs, etc.). */
+    static bool ShouldSkipPropertyType(FProperty* Prop)
+    {
+        if (!Prop) return true;
+
+        // Delegates hold function pointers that may be invalid at design time
+        if (Prop->IsA<FDelegateProperty>())              return true;
+        if (Prop->IsA<FMulticastDelegateProperty>())      return true;
+
+        // Interface properties can reference transient objects
+        if (Prop->IsA<FInterfaceProperty>())              return true;
+
+        // Weak/lazy object pointers may reference GC'd objects
+        if (Prop->IsA<FWeakObjectProperty>())             return true;
+        if (Prop->IsA<FLazyObjectProperty>())             return true;
+
+        // Field path properties can have stale paths
+        if (Prop->IsA<FFieldPathProperty>())              return true;
+
+        // Deprecated properties may have uninitialised memory
+        if (Prop->HasAnyPropertyFlags(CPF_Deprecated))    return true;
+
+        // For object properties, skip references to Slate internal types
+        if (const FObjectProperty* ObjProp = CastField<FObjectProperty>(Prop))
+        {
+            if (ObjProp->PropertyClass)
+            {
+                const FString ClassName = ObjProp->PropertyClass->GetName();
+                if (ClassName.StartsWith(TEXT("SWidget")) ||
+                    ClassName.StartsWith(TEXT("Slate")))
+                    return true;
+            }
+        }
+
+        return false;
+    }
+
+    // -----------------------------------------------------------------------
+    // SEH crash guard (Windows only)
+    //
+    // FJsonObjectConverter::UPropertyToJsonValue can crash on UMG widgets
+    // when deeply nested struct fields have corrupt FName entries or
+    // dangling object references.  We catch the access violation per-property
+    // so the editor stays alive; the bad property is simply skipped.
+    // -----------------------------------------------------------------------
+
+    /** Context passed through the void* trampoline. */
+    struct FSerializeCtx
+    {
+        FProperty*              Prop;
+        const void*             ValueAddr;
+        TSharedPtr<FJsonValue>* OutValue;   // points to caller's stack
+    };
+
+    /** Worker — may contain C++ objects with destructors. */
+    static void DoSerialize(void* RawCtx)
+    {
+        FSerializeCtx* Ctx = static_cast<FSerializeCtx*>(RawCtx);
+        *(Ctx->OutValue) = FJsonObjectConverter::UPropertyToJsonValue(
+                               Ctx->Prop, Ctx->ValueAddr);
+    }
+
+#if PLATFORM_WINDOWS
+    /** SEH trampoline — NO local C++ objects with non-trivial destructors.
+     *  Called functions (DoSerialize) may have them; their temporaries leak
+     *  on the crash path, which is acceptable for an error-recovery scenario. */
+    static int CrashGuardedCall(void (*Func)(void*), void* Context)
+    {
+        __try
+        {
+            Func(Context);
+            return 1;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return 0;
+        }
+    }
+#endif
+
+    /** Serialize one property value, catching access violations on Windows. */
+    static TSharedPtr<FJsonValue> SafeSerialize(FProperty* Prop, const void* Addr)
+    {
+        TSharedPtr<FJsonValue> Val;
+
+#if PLATFORM_WINDOWS
+        FSerializeCtx Ctx { Prop, Addr, &Val };
+        if (!CrashGuardedCall(&DoSerialize, &Ctx))
+        {
+            UE_LOG(LogTemp, Warning,
+                TEXT("MCP: Access violation serializing property '%s' — skipped"),
+                *Prop->GetName());
+            Val.Reset();
+        }
+#else
+        Val = FJsonObjectConverter::UPropertyToJsonValue(Prop, Addr);
+#endif
+
+        return Val;
+    }
+}
+
+// ===========================================================================
 // SerializeAllProperties
 // ===========================================================================
 TSharedPtr<FJsonObject> FEpicUnrealMCPPropertyUtils::SerializeAllProperties(
@@ -563,12 +679,18 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPPropertyUtils::SerializeAllProperties(
     for (TFieldIterator<FProperty> It(Object->GetClass(), SuperFlag); It; ++It)
     {
         FProperty* Prop = *It;
+
+        // Layer 1: skip property types known to crash during serialization
+        if (MCPPropertySafety::ShouldSkipPropertyType(Prop))
+            continue;
+
         const FString Name = Prop->GetName();
         if (!FilterLower.IsEmpty() && !Name.ToLower().Contains(FilterLower))
             continue;
 
+        // Layer 2: crash-guarded serialization (catches access violations)
         const void* Addr = Prop->ContainerPtrToValuePtr<void>(Object);
-        TSharedPtr<FJsonValue> Val = FJsonObjectConverter::UPropertyToJsonValue(Prop, Addr);
+        TSharedPtr<FJsonValue> Val = MCPPropertySafety::SafeSerialize(Prop, Addr);
         if (Val.IsValid())
             Props->SetField(Name, Val);
     }
