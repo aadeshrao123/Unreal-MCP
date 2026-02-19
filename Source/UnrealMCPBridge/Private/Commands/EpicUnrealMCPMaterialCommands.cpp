@@ -7,6 +7,7 @@
 #include "Materials/MaterialExpressionComment.h"
 #include "Materials/MaterialExpression.h"
 #include "MaterialEditingLibrary.h"
+#include "EdGraph/EdGraphNode.h"
 #include "MaterialEditor/MaterialEditorInstanceConstant.h"
 #include "MaterialShared.h"
 #include "RHIShaderPlatform.h"
@@ -296,6 +297,9 @@ void FEpicUnrealMCPMaterialCommands::HandleCustomHLSLNode(
 			Custom->OutputType = CMOT_MaterialAttributes;
 	}
 
+	bool bInputsChanged = false;
+
+	// "inputs" — replace all inputs (breaks existing connections)
 	const TArray<TSharedPtr<FJsonValue>>* InputsArr;
 	if (NodeDef->TryGetArrayField(TEXT("inputs"), InputsArr))
 	{
@@ -306,7 +310,33 @@ void FEpicUnrealMCPMaterialCommands::HandleCustomHLSLNode(
 			NewInput.InputName = FName(*V->AsString());
 			Custom->Inputs.Add(NewInput);
 		}
+		bInputsChanged = true;
 	}
+
+	// "add_inputs" — append new inputs without disturbing existing ones or their connections
+	const TArray<TSharedPtr<FJsonValue>>* AddInputsArr;
+	if (NodeDef->TryGetArrayField(TEXT("add_inputs"), AddInputsArr))
+	{
+		for (const TSharedPtr<FJsonValue>& V : *AddInputsArr)
+		{
+			FName NewName(*V->AsString());
+			// Skip if an input with this name already exists
+			bool bExists = false;
+			for (const FCustomInput& Existing : Custom->Inputs)
+			{
+				if (Existing.InputName == NewName) { bExists = true; break; }
+			}
+			if (!bExists)
+			{
+				FCustomInput NewInput;
+				NewInput.InputName = NewName;
+				Custom->Inputs.Add(NewInput);
+				bInputsChanged = true;
+			}
+		}
+	}
+
+	bool bOutputsChanged = false;
 
 	const TArray<TSharedPtr<FJsonValue>>* OutputsArr;
 	if (NodeDef->TryGetArrayField(TEXT("outputs"), OutputsArr))
@@ -332,6 +362,19 @@ void FEpicUnrealMCPMaterialCommands::HandleCustomHLSLNode(
 			}
 			Custom->AdditionalOutputs.Add(NewOut);
 		}
+		bOutputsChanged = true;
+	}
+
+	// Rebuild outputs and reconstruct the graph node pins after input/output changes
+	if (bInputsChanged || bOutputsChanged)
+	{
+		Custom->RebuildOutputs();
+#if WITH_EDITOR
+		if (Custom->GraphNode)
+		{
+			Custom->GraphNode->ReconstructNode();
+		}
+#endif
 	}
 }
 
@@ -1454,12 +1497,33 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleSetMaterialExpress
 	// Allow passing Custom HLSL fields directly on the params object or via a "node" sub-object
 	if (Cast<UMaterialExpressionCustom>(Expr))
 	{
-		// Try top-level code/description/inputs/outputs fields
+		// When using property_name/property_value mode with a Custom-specific field,
+		// promote it to a top-level field so HandleCustomHLSLNode can find it.
+		FString PropName;
+		TSharedPtr<FJsonValue> PropVal = Params->TryGetField(TEXT("property_value"));
+		if (Params->TryGetStringField(TEXT("property_name"), PropName) && PropVal.IsValid())
+		{
+			static const TSet<FString> CustomFields = {
+				TEXT("code"), TEXT("description"), TEXT("output_type"),
+				TEXT("inputs"), TEXT("add_inputs"), TEXT("outputs")
+			};
+			if (CustomFields.Contains(PropName))
+			{
+				// Build a node-def object with the field under its proper name
+				auto NodeDef = MakeShared<FJsonObject>();
+				NodeDef->SetField(PropName, PropVal);
+				HandleCustomHLSLNode(Expr, NodeDef);
+				// Mark as handled so SetExpressionProperty doesn't also try it
+				Params->RemoveField(TEXT("property_name"));
+			}
+		}
+
+		// Also handle direct top-level fields or "node" sub-object
 		const TSharedPtr<FJsonObject>* NodeDefPtr;
 		if (Params->TryGetObjectField(TEXT("node"), NodeDefPtr))
 			HandleCustomHLSLNode(Expr, *NodeDefPtr);
 		else
-			HandleCustomHLSLNode(Expr, Params); // fallback: use the whole params as node def
+			HandleCustomHLSLNode(Expr, Params);
 	}
 
 	TArray<FString> PropErrors;

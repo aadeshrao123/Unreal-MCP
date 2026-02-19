@@ -594,6 +594,11 @@ bool FEpicUnrealMCPCommonUtils::SetObjectProperty(UObject* Object, const FString
         ((FFloatProperty*)Property)->SetPropertyValue(PropertyAddr, Value->AsNumber());
         return true;
     }
+    else if (Property->IsA<FNameProperty>())
+    {
+        ((FNameProperty*)Property)->SetPropertyValue(PropertyAddr, FName(*Value->AsString()));
+        return true;
+    }
     else if (Property->IsA<FStrProperty>())
     {
         ((FStrProperty*)Property)->SetPropertyValue(PropertyAddr, Value->AsString());

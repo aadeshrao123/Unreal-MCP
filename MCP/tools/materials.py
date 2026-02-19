@@ -29,7 +29,7 @@ def create_material(
     """Create a new Material asset.
 
     Args:
-        name: Material name (e.g. "M_MyMaterial")
+        name: Material name (e.g. "M_MyMaterial")   
         path: Content Browser path
         blend_mode: opaque | masked | translucent | additive | modulate | alpha_composite | alpha_holdout
         shading_model: default_lit | unlit | subsurface | clear_coat | subsurface_profile |
@@ -429,7 +429,10 @@ def set_material_expression_property(
       TextureSample:    texture ("/Game/path"), sampler_type
       Constant:         R (float)
       Constant3Vector:  Constant ([r,g,b,a])
-      Custom (HLSL):    code (str), description (str)
+      Custom (HLSL):    code (str), description (str), output_type (str),
+                        inputs (replaces all: ["Name1","Name2"]),
+                        add_inputs (appends: ["NewName1","NewName2"]),
+                        outputs ([{"name":"X","type":"float"}])
       Panner:           SpeedX (float), SpeedY (float)
       TextureCoordinate: CoordinateIndex (int)
 
