@@ -422,7 +422,19 @@ FString UEpicUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const T
                      CommandType == TEXT("get_material_info") ||
                      CommandType == TEXT("recompile_material") ||
                      CommandType == TEXT("set_material_properties") ||
-                     CommandType == TEXT("add_material_comments"))
+                     CommandType == TEXT("add_material_comments") ||
+                     CommandType == TEXT("get_material_graph_nodes") ||
+                     CommandType == TEXT("get_material_expression_info") ||
+                     CommandType == TEXT("get_material_property_connections") ||
+                     CommandType == TEXT("add_material_expression") ||
+                     CommandType == TEXT("set_material_expression_property") ||
+                     CommandType == TEXT("move_material_expression") ||
+                     CommandType == TEXT("duplicate_material_expression") ||
+                     CommandType == TEXT("connect_material_expressions") ||
+                     CommandType == TEXT("delete_material_expression") ||
+                     CommandType == TEXT("layout_material_expressions") ||
+                     CommandType == TEXT("get_material_instance_parameters") ||
+                     CommandType == TEXT("set_material_instance_parameter"))
             {
                 ResultJson = MaterialCommands->HandleCommand(CommandType, Params);
             }

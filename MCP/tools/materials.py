@@ -200,6 +200,125 @@ def set_material_properties(
 
 
 @mcp.tool()
+def get_material_graph_nodes(material_path: str) -> str:
+    """Read all expression nodes in a material graph — types, positions, properties, and connections.
+
+    Returns every node with:
+      - index: stable int index used by add/connect/delete_material_expression
+      - type: short node type ("ScalarParameter", "Custom", "Multiply", "Time", etc.)
+      - pos_x, pos_y: graph position
+      - properties: type-specific dict —
+          Custom nodes: code (full HLSL), description, output_type, inputs[], outputs[]
+          ScalarParameter: parameter_name, default_value, group, slider_min, slider_max
+          VectorParameter: parameter_name, default_value [r,g,b,a], group
+          Constant: R
+          Constant2Vector: R, G
+          Constant3Vector/4Vector: Constant [r,g,b,a]
+          TextureCoordinate: CoordinateIndex
+      - input_connections: dict of {pin_name: {from_node: int, from_pin: str}}
+
+    Use this instead of execute_python to read HLSL code from Custom nodes or
+    to understand the existing graph before modifying it.
+
+    Args:
+        material_path: Full asset path (e.g. "/Game/Materials/M_Portal")
+    """
+    return _call("get_material_graph_nodes", {"material_path": material_path})
+
+
+@mcp.tool()
+def add_material_expression(
+    material_path: str,
+    node: str,
+) -> str:
+    """Add a single expression node to an existing material without clearing other nodes.
+
+    Returns the node_index of the newly created node. Use that index with
+    connect_material_expressions to wire it up.
+
+    Args:
+        material_path: Full asset path (e.g. "/Game/Materials/M_Portal")
+        node: JSON object defining the node:
+            {
+              "type": "ScalarParameter",   // Short name — auto-prefixed with MaterialExpression
+              "pos_x": -1200,
+              "pos_y": -400,
+              "properties": {              // Type-specific properties
+                "parameter_name": "Speed",
+                "default_value": 0.5
+              }
+            }
+            For Custom HLSL nodes use type "Custom" and include top-level fields:
+              "code": "...",
+              "description": "My Node",
+              "output_type": "float3",
+              "inputs": ["UV", "Time"],
+              "outputs": [{"name": "Alpha", "type": "float"}]
+    """
+    return _call("add_material_expression", {
+        "material_path": material_path,
+        "node": json.loads(node),
+    })
+
+
+@mcp.tool()
+def connect_material_expressions(
+    material_path: str,
+    from_node: int,
+    to_node: str,
+    to_pin: str,
+    from_pin: str = "",
+) -> str:
+    """Connect two expression nodes in a material graph using their indices.
+
+    Node indices come from get_material_graph_nodes (existing nodes) or
+    add_material_expression (newly added nodes).
+
+    Args:
+        material_path: Full asset path (e.g. "/Game/Materials/M_Portal")
+        from_node: Source node index (int)
+        to_node: Target node index as string (e.g. "5") OR "material" to connect
+            to a material output slot
+        to_pin: Input pin name on the target node (e.g. "A", "B", "Alpha"),
+            or a material output property when to_node="material":
+            BaseColor | Metallic | Roughness | EmissiveColor | Opacity |
+            OpacityMask | Normal | Specular | AmbientOcclusion |
+            WorldPositionOffset | SubsurfaceColor | Refraction
+        from_pin: Output pin name on the source node.
+            "" (default) = the node's primary output.
+            Named outputs (e.g. "Alpha" from a Custom node's additional outputs).
+    """
+    return _call("connect_material_expressions", {
+        "material_path": material_path,
+        "from_node": from_node,
+        "from_pin": from_pin,
+        "to_node": to_node,
+        "to_pin": to_pin,
+    })
+
+
+@mcp.tool()
+def delete_material_expression(
+    material_path: str,
+    node_index: int,
+) -> str:
+    """Delete a single expression node from a material by its index.
+
+    After deletion the material is recompiled and saved. Indices of remaining
+    nodes may shift — re-query with get_material_graph_nodes if you need to
+    reference them afterwards.
+
+    Args:
+        material_path: Full asset path (e.g. "/Game/Materials/M_Portal")
+        node_index: Index of the node to delete (from get_material_graph_nodes)
+    """
+    return _call("delete_material_expression", {
+        "material_path": material_path,
+        "node_index": node_index,
+    })
+
+
+@mcp.tool()
 def add_material_comments(
     material_path: str,
     comments: str,
@@ -224,4 +343,198 @@ def add_material_comments(
     return _call("add_material_comments", {
         "material_path": material_path,
         "comments": json.loads(comments),
+    })
+
+
+@mcp.tool()
+def get_material_expression_info(
+    material_path: str,
+    node_index: int,
+) -> str:
+    """Get detailed info for a single material expression node, including all available pins.
+
+    Returns full node data with:
+      - type, pos_x, pos_y, properties (same as get_material_graph_nodes)
+      - available_inputs: list of all input pin names (connected or not)
+      - available_outputs: list of all output pin names (connected or not)
+      - input_connections: which other nodes feed each input pin
+
+    Use this before connecting nodes to discover exact pin names for a node type.
+
+    Args:
+        material_path: Full asset path (e.g. "/Game/Materials/M_Portal")
+        node_index: Node index from get_material_graph_nodes
+    """
+    return _call("get_material_expression_info", {
+        "material_path": material_path,
+        "node_index": node_index,
+    })
+
+
+@mcp.tool()
+def get_material_property_connections(material_path: str) -> str:
+    """Query which expression node feeds each material output slot.
+
+    Returns a dict of material output properties and the node/pin that drives them.
+    Only lists slots that have something connected.
+
+    Output format:
+        {
+          "connections": {
+            "BaseColor": {"node_index": 3, "node_type": "Multiply", "from_pin": ""},
+            "Roughness":  {"node_index": 1, "node_type": "ScalarParameter", "from_pin": ""}
+          }
+        }
+
+    Args:
+        material_path: Full asset path (e.g. "/Game/Materials/M_Portal")
+    """
+    return _call("get_material_property_connections", {"material_path": material_path})
+
+
+@mcp.tool()
+def set_material_expression_property(
+    material_path: str,
+    node_index: int,
+    property_name: str,
+    property_value: str,
+) -> str:
+    """Set a single property on an existing material expression node.
+
+    Accepts snake_case property names (e.g. "parameter_name") or PascalCase
+    (e.g. "ParameterName") — both are handled correctly.
+
+    Common properties by node type:
+      ScalarParameter:  parameter_name (str), default_value (float),
+                        slider_min, slider_max, group, sort_priority
+      VectorParameter:  parameter_name (str), default_value ([r,g,b,a]), group
+      TextureSample:    texture ("/Game/path"), sampler_type
+      Constant:         R (float)
+      Constant3Vector:  Constant ([r,g,b,a])
+      Custom (HLSL):    code (str), description (str)
+      Panner:           SpeedX (float), SpeedY (float)
+      TextureCoordinate: CoordinateIndex (int)
+
+    For asset references (textures, etc.), pass the full content path as a string
+    starting with "/" (e.g. "/Game/Textures/T_Wood").
+
+    Args:
+        material_path: Full asset path (e.g. "/Game/Materials/M_Portal")
+        node_index: Node index from get_material_graph_nodes
+        property_name: Property name (snake_case or PascalCase)
+        property_value: JSON-encoded value — string, number, bool, or array
+    """
+    return _call("set_material_expression_property", {
+        "material_path": material_path,
+        "node_index": node_index,
+        "property_name": property_name,
+        "property_value": json.loads(property_value),
+    })
+
+
+@mcp.tool()
+def move_material_expression(
+    material_path: str,
+    node_index: int,
+    pos_x: int,
+    pos_y: int,
+) -> str:
+    """Move a material expression node to a new graph position.
+
+    Args:
+        material_path: Full asset path (e.g. "/Game/Materials/M_Portal")
+        node_index: Node index from get_material_graph_nodes
+        pos_x: New X position in the material graph (negative = left of output)
+        pos_y: New Y position in the material graph
+    """
+    return _call("move_material_expression", {
+        "material_path": material_path,
+        "node_index": node_index,
+        "pos_x": pos_x,
+        "pos_y": pos_y,
+    })
+
+
+@mcp.tool()
+def duplicate_material_expression(
+    material_path: str,
+    node_index: int,
+    offset_x: int = 0,
+    offset_y: int = 150,
+) -> str:
+    """Duplicate an existing material expression node.
+
+    Creates an exact copy of the node (same type and properties) offset from
+    the original. Returns the new node's index.
+
+    Connections are NOT copied — wire the new node separately with
+    connect_material_expressions.
+
+    Args:
+        material_path: Full asset path (e.g. "/Game/Materials/M_Portal")
+        node_index: Index of the node to duplicate
+        offset_x: X offset from the original node's position (default 0)
+        offset_y: Y offset from the original node's position (default 150)
+    """
+    return _call("duplicate_material_expression", {
+        "material_path": material_path,
+        "node_index": node_index,
+        "offset_x": offset_x,
+        "offset_y": offset_y,
+    })
+
+
+@mcp.tool()
+def layout_material_expressions(material_path: str) -> str:
+    """Auto-layout all expression nodes in a material graph.
+
+    Uses Unreal's built-in layout algorithm to arrange nodes neatly.
+    Useful after building a graph programmatically to make it readable in
+    the material editor.
+
+    Args:
+        material_path: Full asset path (e.g. "/Game/Materials/M_Portal")
+    """
+    return _call("layout_material_expressions", {"material_path": material_path})
+
+
+@mcp.tool()
+def get_material_instance_parameters(material_path: str) -> str:
+    """Get all overridable parameters from a Material Instance.
+
+    Returns all scalar, vector, texture, and static switch parameters
+    with their current override values (or the parent default if not overridden).
+
+    Args:
+        material_path: Full asset path to the Material Instance
+                       (e.g. "/Game/Materials/MI_Rock")
+    """
+    return _call("get_material_instance_parameters", {"material_path": material_path})
+
+
+@mcp.tool()
+def set_material_instance_parameter(
+    material_path: str,
+    param_name: str,
+    param_type: str,
+    value: str,
+) -> str:
+    """Set a single parameter override on a Material Instance.
+
+    Args:
+        material_path: Full asset path to the Material Instance
+                       (e.g. "/Game/Materials/MI_Rock")
+        param_name: Parameter name as defined in the parent material
+        param_type: One of: scalar | vector | texture | static_switch
+        value: JSON-encoded value:
+            scalar:        float number (e.g. "0.5")
+            vector:        [r, g, b, a] array (e.g. "[1.0, 0.0, 0.0, 1.0]")
+            texture:       content path string (e.g. '"/Game/Textures/T_Wood"')
+            static_switch: bool (e.g. "true" or "false")
+    """
+    return _call("set_material_instance_parameter", {
+        "material_path": material_path,
+        "param_name": param_name,
+        "param_type": param_type,
+        "value": json.loads(value),
     })

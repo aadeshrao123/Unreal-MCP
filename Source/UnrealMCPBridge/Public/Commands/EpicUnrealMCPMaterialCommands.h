@@ -4,11 +4,17 @@
 #include "Json.h"
 
 class UMaterialExpression;
+class UMaterial;
+class UMaterialInstanceConstant;
 
 /**
  * Handler class for Material-related MCP commands.
+ *
  * Implements native C++ material creation, graph building, and inspection
  * without going through the Python scripting plugin.
+ *
+ * All operations use UMaterialEditingLibrary and direct UE5 reflection APIs
+ * (GetInput/GetInputName/GetOutputs) for correctness.
  */
 class UNREALMCPBRIDGE_API FEpicUnrealMCPMaterialCommands
 {
@@ -18,22 +24,77 @@ public:
 	TSharedPtr<FJsonObject> HandleCommand(const FString& CommandType, const TSharedPtr<FJsonObject>& Params);
 
 private:
+	// ---- Material Creation & Bulk Operations ----
 	TSharedPtr<FJsonObject> HandleCreateMaterial(const TSharedPtr<FJsonObject>& Params);
 	TSharedPtr<FJsonObject> HandleCreateMaterialInstance(const TSharedPtr<FJsonObject>& Params);
 	TSharedPtr<FJsonObject> HandleBuildMaterialGraph(const TSharedPtr<FJsonObject>& Params);
-	TSharedPtr<FJsonObject> HandleGetMaterialInfo(const TSharedPtr<FJsonObject>& Params);
-	TSharedPtr<FJsonObject> HandleRecompileMaterial(const TSharedPtr<FJsonObject>& Params);
 	TSharedPtr<FJsonObject> HandleSetMaterialProperties(const TSharedPtr<FJsonObject>& Params);
 	TSharedPtr<FJsonObject> HandleAddMaterialComments(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleRecompileMaterial(const TSharedPtr<FJsonObject>& Params);
 
-	// Helpers
+	// ---- Graph Read Operations ----
+	TSharedPtr<FJsonObject> HandleGetMaterialInfo(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleGetMaterialGraphNodes(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleGetMaterialExpressionInfo(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleGetMaterialPropertyConnections(const TSharedPtr<FJsonObject>& Params);
+
+	// ---- Individual Node Mutations ----
+	TSharedPtr<FJsonObject> HandleAddMaterialExpression(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleSetMaterialExpressionProperty(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleMoveMaterialExpression(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleDuplicateMaterialExpression(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleDeleteMaterialExpression(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleConnectMaterialExpressions(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleLayoutMaterialExpressions(const TSharedPtr<FJsonObject>& Params);
+
+	// ---- Material Instance ----
+	TSharedPtr<FJsonObject> HandleGetMaterialInstanceParameters(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleSetMaterialInstanceParameter(const TSharedPtr<FJsonObject>& Params);
+
+	// ---- Internal Helpers ----
+
+	/** Find a UMaterialExpression subclass by short name (e.g. "Multiply" → UMaterialExpressionMultiply). */
 	static UClass* FindExpressionClass(const FString& TypeName);
+
+	/**
+	 * Set a property on a material expression node.
+	 * Accepts snake_case names (parameter_name) and normalises them to PascalCase (ParameterName).
+	 * Handles asset paths (string starting with "/"), FLinearColor arrays, FVector2D arrays,
+	 * and delegates to FEpicUnrealMCPCommonUtils::SetObjectProperty for scalar/enum/bool.
+	 */
 	static bool SetExpressionProperty(UMaterialExpression* Expr, const FString& PropName,
 	                                   const TSharedPtr<FJsonValue>& Value, FString& OutError);
+
+	/**
+	 * Configure a Custom HLSL node (UMaterialExpressionCustom) from a JSON definition.
+	 * Handles: code, description, output_type, inputs[], outputs[].
+	 */
 	static void HandleCustomHLSLNode(UMaterialExpression* Expr, const TSharedPtr<FJsonObject>& NodeDef);
 
-	// Enum resolution helpers
-	static EBlendMode ResolveBlendMode(const FString& Name);
+	/**
+	 * Serialise one expression node to a JSON object.
+	 * @param bIncludeAvailablePins  When true, adds "available_inputs" and "available_outputs" arrays
+	 *                               showing all pins regardless of whether they are connected.
+	 *                               Set false for compact bulk responses (get_material_graph_nodes default).
+	 *                               Set true for detailed single-node responses (get_material_expression_info).
+	 */
+	static TSharedPtr<FJsonObject> SerializeMaterialExpression(
+		UMaterialExpression* Expr, int32 Index,
+		const TMap<UMaterialExpression*, int32>& ExprIndexMap,
+		bool bIncludeAvailablePins = false);
+
+	/**
+	 * Resolve snake_case or exact property name to the PascalCase name that UE reflection expects.
+	 * Returns the normalised name (or the original if no PascalCase equivalent was found).
+	 */
+	static FString NormalizePropName(UMaterialExpression* Expr, const FString& Name);
+
+	/** Parse an integer from a JSON value that may be EJson::Number or a numeric EJson::String. */
+	static bool TryParseIntFromJson(const TSharedPtr<FJsonValue>& Val, int32& OutInt);
+
+	// ---- Enum Resolution ----
+	static EBlendMode         ResolveBlendMode(const FString& Name);
 	static EMaterialShadingModel ResolveShadingModel(const FString& Name);
-	static EMaterialProperty ResolveMaterialProperty(const FString& Name);
+	static EMaterialProperty  ResolveMaterialProperty(const FString& Name);
+	static FString            MaterialPropertyToString(EMaterialProperty Prop);
 };
