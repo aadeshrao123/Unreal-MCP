@@ -66,4 +66,8 @@ public:
     static TSharedPtr<FJsonObject> SerializeAllProperties(UObject* Object,
                                                            const FString& FilterLower,
                                                            bool bIncludeInherited);
+
+    /** Safely serialize a single property to JSON, handling recursion and
+     *  skipping unsafe/internal types that might crash. */
+    static TSharedPtr<FJsonValue> SafePropertyToJsonValue(FProperty* Property, const void* Value);
 };

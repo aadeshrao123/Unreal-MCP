@@ -172,41 +172,9 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPWidgetCommands::SerializeSlotProperties(UP
 		if (CastField<FDelegateProperty>(Prop) || CastField<FMulticastDelegateProperty>(Prop))
 			continue;
 
-		// Guard enum properties against out-of-range values
-		if (FEnumProperty* EnumProp = CastField<FEnumProperty>(Prop))
-		{
-			if (UEnum* Enum = EnumProp->GetEnum())
-			{
-				const void* Addr = Prop->ContainerPtrToValuePtr<void>(Slot);
-				FNumericProperty* UnderlyingProp = EnumProp->GetUnderlyingProperty();
-				const int64 IntValue = UnderlyingProp->GetSignedIntPropertyValue(Addr);
-				const int32 Idx = Enum->GetIndexByValue(IntValue);
-				if (Idx == INDEX_NONE)
-				{
-					Props->SetStringField(Prop->GetName(),
-						FString::Printf(TEXT("<invalid enum %lld>"), IntValue));
-					continue;
-				}
-			}
-		}
-		if (FByteProperty* ByteProp = CastField<FByteProperty>(Prop))
-		{
-			if (UEnum* Enum = ByteProp->GetIntPropertyEnum())
-			{
-				const void* Addr = Prop->ContainerPtrToValuePtr<void>(Slot);
-				const int64 IntValue = ByteProp->GetSignedIntPropertyValue(Addr);
-				const int32 Idx = Enum->GetIndexByValue(IntValue);
-				if (Idx == INDEX_NONE)
-				{
-					Props->SetStringField(Prop->GetName(),
-						FString::Printf(TEXT("<invalid enum %lld>"), IntValue));
-					continue;
-				}
-			}
-		}
-
 		const void* Addr = Prop->ContainerPtrToValuePtr<void>(Slot);
-		TSharedPtr<FJsonValue> Val = FJsonObjectConverter::UPropertyToJsonValue(Prop, Addr);
+		TSharedPtr<FJsonValue> Val = PU::SafePropertyToJsonValue(Prop, Addr);
+		
 		if (Val.IsValid())
 			Props->SetField(Prop->GetName(), Val);
 	}
