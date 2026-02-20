@@ -585,6 +585,11 @@ namespace MCPPropertySafety
         // Deprecated properties may have uninitialised memory
         if (Prop->HasAnyPropertyFlags(CPF_Deprecated))    return true;
 
+        // SKIP internal UMG bookkeeping that often contains uninitialised or corrupt data
+        const FString PropName = Prop->GetName();
+        if (PropName == TEXT("Slot") || PropName == TEXT("Navigation"))
+            return true;
+
         // For object properties, skip references to Slate internal types
         if (const FObjectProperty* ObjProp = CastField<FObjectProperty>(Prop))
         {
@@ -600,36 +605,10 @@ namespace MCPPropertySafety
         return false;
     }
 
-    // -----------------------------------------------------------------------
-    // SEH crash guard (Windows only)
-    //
-    // FJsonObjectConverter::UPropertyToJsonValue can crash on UMG widgets
-    // when deeply nested struct fields have corrupt FName entries or
-    // dangling object references.  We catch the access violation per-property
-    // so the editor stays alive; the bad property is simply skipped.
-    // -----------------------------------------------------------------------
-
-    /** Context passed through the void* trampoline. */
-    struct FSerializeCtx
-    {
-        FProperty*              Prop;
-        const void*             ValueAddr;
-        TSharedPtr<FJsonValue>* OutValue;   // points to caller's stack
-    };
-
-    /** Worker — may contain C++ objects with destructors. */
-    static void DoSerialize(void* RawCtx)
-    {
-        FSerializeCtx* Ctx = static_cast<FSerializeCtx*>(RawCtx);
-        *(Ctx->OutValue) = FJsonObjectConverter::UPropertyToJsonValue(
-                               Ctx->Prop, Ctx->ValueAddr);
-    }
-
 #if PLATFORM_WINDOWS
-    /** SEH trampoline — NO local C++ objects with non-trivial destructors.
-     *  Called functions (DoSerialize) may have them; their temporaries leak
-     *  on the crash path, which is acceptable for an error-recovery scenario. */
-    static int CrashGuardedCall(void (*Func)(void*), void* Context)
+    /** SEH trampoline — MUST NOT have local C++ objects with non-trivial destructors
+     *  in the same function as __try. Only pointers and primitives allowed here. */
+    static int WindowsExecuteGuarded(void (*Func)(void*), void* Context)
     {
         __try
         {
@@ -643,26 +622,210 @@ namespace MCPPropertySafety
     }
 #endif
 
-    /** Serialize one property value, catching access violations on Windows. */
-    static TSharedPtr<FJsonValue> SafeSerialize(FProperty* Prop, const void* Addr)
+    /** Struct for FName context passing through trampoline */
+    struct FNameToStringCtx
     {
-        TSharedPtr<FJsonValue> Val;
+        const FName* Name;
+        FString* OutString;
+    };
+
+    /** Worker for FName conversion — safe to have destructors inside here. */
+    static void DoNameToString(void* Context)
+    {
+        FNameToStringCtx* Ctx = static_cast<FNameToStringCtx*>(Context);
+        *(Ctx->OutString) = Ctx->Name->ToString();
+    }
+}
+
+// ===========================================================================
+// SafePropertyToJsonValue
+// Recursively safe serializer that avoids FJsonObjectConverter for complex
+// types to ensure safety checks apply at every level.
+// ===========================================================================
+TSharedPtr<FJsonValue> FEpicUnrealMCPPropertyUtils::SafePropertyToJsonValue(FProperty* Property, const void* Value)
+{
+    if (!Property || MCPPropertySafety::ShouldSkipPropertyType(Property))
+        return MakeShared<FJsonValueNull>();
+
+    // 1. Primitives
+    if (FBoolProperty* BoolProp = CastField<FBoolProperty>(Property))
+        return MakeShared<FJsonValueBoolean>(BoolProp->GetPropertyValue(Value));
+
+    if (FIntProperty* IntProp = CastField<FIntProperty>(Property))
+        return MakeShared<FJsonValueNumber>(IntProp->GetPropertyValue(Value));
+
+    if (FInt64Property* Int64Prop = CastField<FInt64Property>(Property))
+        return MakeShared<FJsonValueNumber>(Int64Prop->GetPropertyValue(Value));
+
+    if (FFloatProperty* FloatProp = CastField<FFloatProperty>(Property))
+        return MakeShared<FJsonValueNumber>(FloatProp->GetPropertyValue(Value));
+
+    if (FDoubleProperty* DoubleProp = CastField<FDoubleProperty>(Property))
+        return MakeShared<FJsonValueNumber>(DoubleProp->GetPropertyValue(Value));
+
+    if (FStrProperty* StrProp = CastField<FStrProperty>(Property))
+        return MakeShared<FJsonValueString>(StrProp->GetPropertyValue(Value));
+
+    if (FNameProperty* NameProp = CastField<FNameProperty>(Property))
+    {
+        FString Result;
+        const FName Name = NameProp->GetPropertyValue(Value);
 
 #if PLATFORM_WINDOWS
-        FSerializeCtx Ctx { Prop, Addr, &Val };
-        if (!CrashGuardedCall(&DoSerialize, &Ctx))
+        MCPPropertySafety::FNameToStringCtx Ctx { &Name, &Result };
+        if (!MCPPropertySafety::WindowsExecuteGuarded(&MCPPropertySafety::DoNameToString, &Ctx))
         {
-            UE_LOG(LogTemp, Warning,
-                TEXT("MCP: Access violation serializing property '%s' — skipped"),
-                *Prop->GetName());
-            Val.Reset();
+            Result = TEXT("<invalid name>");
         }
 #else
-        Val = FJsonObjectConverter::UPropertyToJsonValue(Prop, Addr);
+        Result = Name.ToString();
 #endif
-
-        return Val;
+        return MakeShared<FJsonValueString>(Result);
     }
+
+    if (FTextProperty* TextProp = CastField<FTextProperty>(Property))
+        return MakeShared<FJsonValueString>(TextProp->GetPropertyValue(Value).ToString());
+
+    // 2. Enums (with safety check)
+    if (FEnumProperty* EnumProp = CastField<FEnumProperty>(Property))
+    {
+        if (UEnum* Enum = EnumProp->GetEnum())
+        {
+            FNumericProperty* UnderlyingProp = EnumProp->GetUnderlyingProperty();
+            const int64 IntValue = UnderlyingProp->GetSignedIntPropertyValue(Value);
+            if (Enum->GetIndexByValue(IntValue) != INDEX_NONE)
+            {
+                // Safe to get name
+                return MakeShared<FJsonValueString>(Enum->GetNameStringByValue(IntValue));
+            }
+            return MakeShared<FJsonValueString>(FString::Printf(TEXT("<invalid enum %lld>"), IntValue));
+        }
+    }
+    if (FByteProperty* ByteProp = CastField<FByteProperty>(Property))
+    {
+        if (UEnum* Enum = ByteProp->GetIntPropertyEnum())
+        {
+            const int64 IntValue = ByteProp->GetSignedIntPropertyValue(Value);
+            if (Enum->GetIndexByValue(IntValue) != INDEX_NONE)
+            {
+                return MakeShared<FJsonValueString>(Enum->GetNameStringByValue(IntValue));
+            }
+            return MakeShared<FJsonValueString>(FString::Printf(TEXT("<invalid enum %lld>"), IntValue));
+        }
+        return MakeShared<FJsonValueNumber>(ByteProp->GetPropertyValue(Value));
+    }
+
+    // 3. Arrays
+    if (FArrayProperty* ArrayProp = CastField<FArrayProperty>(Property))
+    {
+        FScriptArrayHelper Helper(ArrayProp, Value);
+        TArray<TSharedPtr<FJsonValue>> OutArray;
+        for (int32 i = 0; i < Helper.Num(); ++i)
+        {
+            TSharedPtr<FJsonValue> Val = SafePropertyToJsonValue(ArrayProp->Inner, Helper.GetRawPtr(i));
+            if (Val.IsValid() && Val->Type != EJson::Null)
+                OutArray.Add(Val);
+        }
+        return MakeShared<FJsonValueArray>(OutArray);
+    }
+
+    // 4. Sets
+    if (FSetProperty* SetProp = CastField<FSetProperty>(Property))
+    {
+        FScriptSetHelper Helper(SetProp, Value);
+        TArray<TSharedPtr<FJsonValue>> OutArray;
+        for (int32 i = 0; i < Helper.Num(); ++i)
+        {
+            TSharedPtr<FJsonValue> Val = SafePropertyToJsonValue(SetProp->ElementProp, Helper.GetElementPtr(i));
+            if (Val.IsValid() && Val->Type != EJson::Null)
+                OutArray.Add(Val);
+        }
+        return MakeShared<FJsonValueArray>(OutArray);
+    }
+
+    // 5. Maps
+    if (FMapProperty* MapProp = CastField<FMapProperty>(Property))
+    {
+        FScriptMapHelper Helper(MapProp, Value);
+        TSharedPtr<FJsonObject> OutObject = MakeShared<FJsonObject>();
+        for (int32 i = 0; i < Helper.Num(); ++i)
+        {
+            uint8* PairPtr = Helper.GetPairPtr(i);
+            const void* KeyPtr = MapProp->KeyProp->ContainerPtrToValuePtr<void>(PairPtr);
+            const void* ValPtr = MapProp->ValueProp->ContainerPtrToValuePtr<void>(PairPtr);
+
+            FString KeyStr;
+            if (FStrProperty* KeyS = CastField<FStrProperty>(MapProp->KeyProp))
+            {
+                KeyStr = KeyS->GetPropertyValue(KeyPtr);
+            }
+            else if (FNameProperty* KeyN = CastField<FNameProperty>(MapProp->KeyProp))
+            {
+                const FName KeyName = KeyN->GetPropertyValue(KeyPtr);
+#if PLATFORM_WINDOWS
+                MCPPropertySafety::FNameToStringCtx KeyCtx { &KeyName, &KeyStr };
+                if (!MCPPropertySafety::WindowsExecuteGuarded(&MCPPropertySafety::DoNameToString, &KeyCtx))
+                {
+                    KeyStr = FString::Printf(TEXT("Key_%d"), i);
+                }
+#else
+                KeyStr = KeyName.ToString();
+#endif
+            }
+            else
+            {
+                KeyStr = FString::Printf(TEXT("Key_%d"), i);
+            }
+
+            OutObject->SetField(KeyStr, SafePropertyToJsonValue(MapProp->ValueProp, ValPtr));
+        }
+        return MakeShared<FJsonValueObject>(OutObject);
+    }
+
+    // 6. Structs - Recursive safe serialization
+    if (FStructProperty* StructProp = CastField<FStructProperty>(Property))
+    {
+        UScriptStruct* Struct = StructProp->Struct;
+        if (!Struct) return MakeShared<FJsonValueNull>();
+
+        TSharedPtr<FJsonObject> OutObject = MakeShared<FJsonObject>();
+        for (TFieldIterator<FProperty> It(Struct); It; ++It)
+        {
+            FProperty* Prop = *It;
+            if (MCPPropertySafety::ShouldSkipPropertyType(Prop)) continue;
+
+            TSharedPtr<FJsonValue> Val = SafePropertyToJsonValue(Prop, Prop->ContainerPtrToValuePtr<void>(Value));
+            if (Val.IsValid() && Val->Type != EJson::Null)
+            {
+                OutObject->SetField(Prop->GetName(), Val);
+            }
+        }
+        return MakeShared<FJsonValueObject>(OutObject);
+    }
+
+    // 7. Objects (covers FObjectProperty, FSoftObjectProperty, FSoftClassProperty)
+    if (FObjectPropertyBase* ObjectProp = CastField<FObjectPropertyBase>(Property))
+    {
+        UObject* Object = ObjectProp->GetObjectPropertyValue(Value);
+        if (Object)
+        {
+            return MakeShared<FJsonValueString>(Object->GetPathName());
+        }
+        return MakeShared<FJsonValueNull>();
+    }
+
+    // 8. Catch-all for remaining numeric types (int8, int16, uint16, uint32, uint64)
+    //    that aren't covered by the specific checks above.
+    if (FNumericProperty* NumProp = CastField<FNumericProperty>(Property))
+    {
+        if (NumProp->IsFloatingPoint())
+            return MakeShared<FJsonValueNumber>(NumProp->GetFloatingPointPropertyValue(Value));
+        else
+            return MakeShared<FJsonValueNumber>(static_cast<double>(NumProp->GetSignedIntPropertyValue(Value)));
+    }
+
+    // Fallback
+    return MakeShared<FJsonValueString>(TEXT("<unsupported type>"));
 }
 
 // ===========================================================================
@@ -679,18 +842,17 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPPropertyUtils::SerializeAllProperties(
     for (TFieldIterator<FProperty> It(Object->GetClass(), SuperFlag); It; ++It)
     {
         FProperty* Prop = *It;
+        const FString Name = Prop->GetName();
 
-        // Layer 1: skip property types known to crash during serialization
         if (MCPPropertySafety::ShouldSkipPropertyType(Prop))
             continue;
 
-        const FString Name = Prop->GetName();
         if (!FilterLower.IsEmpty() && !Name.ToLower().Contains(FilterLower))
             continue;
 
-        // Layer 2: crash-guarded serialization (catches access violations)
         const void* Addr = Prop->ContainerPtrToValuePtr<void>(Object);
-        TSharedPtr<FJsonValue> Val = MCPPropertySafety::SafeSerialize(Prop, Addr);
+        TSharedPtr<FJsonValue> Val = SafePropertyToJsonValue(Prop, Addr);
+        
         if (Val.IsValid())
             Props->SetField(Name, Val);
     }
