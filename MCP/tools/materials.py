@@ -559,3 +559,24 @@ def set_material_instance_parameter(
         "param_type": param_type,
         "value": json.loads(value),
     })
+
+
+@mcp.tool()
+def list_material_expression_types(
+    filter: Optional[str] = None,
+) -> str:
+    """List all available material expression node types.
+
+    Returns every UMaterialExpression subclass registered in the engine,
+    with short type names (usable in add_material_expression / build_material_graph),
+    display names, categories, and descriptions.
+
+    Args:
+        filter: Optional filter string to match against type name, display name,
+                or category (case-insensitive). E.g. "texture", "parameter",
+                "math", "noise", "lerp", "vector".
+    """
+    params: dict = {}
+    if filter is not None:
+        params["filter"] = filter
+    return _call("list_material_expression_types", params)

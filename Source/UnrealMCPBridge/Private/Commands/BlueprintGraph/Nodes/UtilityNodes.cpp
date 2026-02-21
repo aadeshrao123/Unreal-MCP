@@ -77,9 +77,36 @@ UK2Node* FUtilityNodeCreator::CreateCallFunctionNode(UEdGraph* Graph, const TSha
 	// Find the function to call
 	UFunction* TargetFunc = nullptr;
 	FString ClassName;
-	if (Params->TryGetStringField(TEXT("target_class"), ClassName))
+	// Accept both "target_class" and "target_blueprint" parameter names
+	if (!Params->TryGetStringField(TEXT("target_class"), ClassName))
 	{
-		UClass* TargetClass = Cast<UClass>(StaticFindObject(UClass::StaticClass(), nullptr, *ClassName));
+		Params->TryGetStringField(TEXT("target_blueprint"), ClassName);
+	}
+
+	if (!ClassName.IsEmpty())
+	{
+		UClass* TargetClass = nullptr;
+
+		// Try StaticFindObject with full path first (e.g. "/Script/UMG.TextBlock")
+		TargetClass = Cast<UClass>(StaticFindObject(UClass::StaticClass(), nullptr, *ClassName));
+
+		// Fallback: try FindFirstObject for short names (e.g. "TextBlock", "UTextBlock")
+		if (!TargetClass)
+		{
+			FString CleanName = ClassName;
+			if (CleanName.StartsWith(TEXT("U")) || CleanName.StartsWith(TEXT("A")))
+			{
+				CleanName = CleanName.RightChop(1);
+			}
+			TargetClass = FindFirstObject<UClass>(*CleanName, EFindFirstObjectOptions::NativeFirst);
+		}
+
+		// Fallback: try with U prefix
+		if (!TargetClass)
+		{
+			TargetClass = FindFirstObject<UClass>(*ClassName, EFindFirstObjectOptions::NativeFirst);
+		}
+
 		if (TargetClass)
 		{
 			TargetFunc = TargetClass->FindFunctionByName(FName(*TargetFunction));

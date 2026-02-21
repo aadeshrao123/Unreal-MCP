@@ -438,7 +438,8 @@ FString UEpicUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const T
                      CommandType == TEXT("layout_material_expressions") ||
                      CommandType == TEXT("get_material_instance_parameters") ||
                      CommandType == TEXT("set_material_instance_parameter") ||
-                     CommandType == TEXT("get_material_errors"))
+                     CommandType == TEXT("get_material_errors") ||
+                     CommandType == TEXT("list_material_expression_types"))
             {
                 ResultJson = MaterialCommands->HandleCommand(CommandType, Params);
             }

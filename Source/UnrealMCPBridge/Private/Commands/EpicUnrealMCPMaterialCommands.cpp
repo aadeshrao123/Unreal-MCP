@@ -18,6 +18,104 @@
 #include "Factories/MaterialInstanceConstantFactoryNew.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
+#include "MaterialGraph/MaterialGraph.h"
+#include "MaterialGraph/MaterialGraphNode.h"
+#include "IMaterialEditor.h"
+#include "Subsystems/AssetEditorSubsystem.h"
+
+// ---------------------------------------------------------------------------
+// Helper: Find the material editor's preview material for a given original.
+//
+// The material editor works on a transient UPreviewMaterial copy, not the
+// original asset. The MaterialGraph (needed for visual updates) is only set
+// on this copy. We use UAssetEditorSubsystem::FindEditorForAsset() and the
+// IMaterialEditor interface to locate it — matching the pattern Epic uses
+// in FMaterialEditor itself (MaterialEditor.cpp line 8268).
+// ---------------------------------------------------------------------------
+
+/** Get the IMaterialEditor and its preview material for a given original asset. */
+static bool GetMaterialEditorContext(UMaterial* OriginalMaterial,
+                                     IMaterialEditor*& OutEditor,
+                                     UMaterial*& OutPreviewMaterial)
+{
+	OutEditor = nullptr;
+	OutPreviewMaterial = nullptr;
+
+	if (!OriginalMaterial || !GEditor) return false;
+
+	UAssetEditorSubsystem* Sub = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>();
+	if (!Sub) return false;
+
+	IAssetEditorInstance* EditorInstance = Sub->FindEditorForAsset(OriginalMaterial, /*bFocusIfOpen=*/false);
+	if (!EditorInstance) return false;
+	if (EditorInstance->GetEditorName() != FName("MaterialEditor")) return false;
+
+	// Safe cast — same pattern as MaterialEditor.cpp line 8268:
+	// "We've ensured that this is a valid cast by checking GetEditorName()"
+	OutEditor = static_cast<IMaterialEditor*>(EditorInstance);
+	OutPreviewMaterial = Cast<UMaterial>(OutEditor->GetMaterialInterface());
+
+	return OutPreviewMaterial != nullptr && OutPreviewMaterial->MaterialGraph != nullptr;
+}
+
+/** Resolve a material to its editor preview copy (if the editor is open). */
+static UMaterial* ResolveWorkingMaterial(UMaterial* OriginalMaterial)
+{
+	IMaterialEditor* Editor = nullptr;
+	UMaterial* PreviewMat = nullptr;
+	if (GetMaterialEditorContext(OriginalMaterial, Editor, PreviewMat))
+		return PreviewMat;
+	return OriginalMaterial;
+}
+
+// ---------------------------------------------------------------------------
+// Helper: Refresh the material editor graph UI so changes appear in real time.
+//
+// Finds the preview material via GetMaterialEditorContext, then:
+//  1. For each expression without a graph node, call AddExpression() to
+//     create the visual UMaterialGraphNode wrapper.
+//  2. Call LinkGraphNodesFromMaterial() to sync all pin connections.
+//  3. Call IMaterialEditor::UpdateMaterialAfterGraphChange() which handles
+//     recompilation, expression previews, dirty flag, and visual redraw.
+// ---------------------------------------------------------------------------
+
+static void NotifyMaterialEditorRefresh(UMaterial* OriginalMaterial)
+{
+	IMaterialEditor* Editor = nullptr;
+	UMaterial* PreviewMat = nullptr;
+	if (!GetMaterialEditorContext(OriginalMaterial, Editor, PreviewMat))
+		return; // Editor not open — nothing to refresh
+
+	UMaterialGraph* Graph = PreviewMat->MaterialGraph;
+
+	// Create graph nodes for any expressions that lack one (newly added via library)
+	for (UMaterialExpression* Expr : PreviewMat->GetExpressions())
+	{
+		if (Expr && !Expr->GraphNode)
+		{
+			Graph->AddExpression(Expr, /*bUserInvoked=*/false);
+		}
+	}
+
+	// Sync all pin connections from expression data
+	Graph->LinkGraphNodesFromMaterial();
+
+	// Recompile preview, refresh expression previews, mark dirty, update visuals
+	Editor->UpdateMaterialAfterGraphChange();
+}
+
+// Full rebuild variant — used after deletions or bulk graph builds where
+// the entire node set may have changed.
+static void RebuildMaterialEditorGraph(UMaterial* OriginalMaterial)
+{
+	IMaterialEditor* Editor = nullptr;
+	UMaterial* PreviewMat = nullptr;
+	if (!GetMaterialEditorContext(OriginalMaterial, Editor, PreviewMat))
+		return;
+
+	PreviewMat->MaterialGraph->RebuildGraph();
+	Editor->UpdateMaterialAfterGraphChange();
+}
 
 // ---------------------------------------------------------------------------
 // Constructor
@@ -58,6 +156,8 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleCommand(
 	// ---- Material Instance ----
 	else if (CommandType == TEXT("get_material_instance_parameters")) return HandleGetMaterialInstanceParameters(Params);
 	else if (CommandType == TEXT("set_material_instance_parameter"))  return HandleSetMaterialInstanceParameter(Params);
+	// ---- Discovery ----
+	else if (CommandType == TEXT("list_material_expression_types"))   return HandleListMaterialExpressionTypes(Params);
 
 	return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
 		FString::Printf(TEXT("Unknown material command: %s"), *CommandType));
@@ -760,8 +860,8 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleBuildMaterialGraph
 	bool bClearExisting = true;
 	Params->TryGetBoolField(TEXT("clear_existing"), bClearExisting);
 
-	UObject* Asset = UEditorAssetLibrary::LoadAsset(MaterialPath);
-	UMaterial* Material = Cast<UMaterial>(Asset);
+	UMaterial* OriginalMaterial = Cast<UMaterial>(UEditorAssetLibrary::LoadAsset(MaterialPath));
+	UMaterial* Material = OriginalMaterial ? ResolveWorkingMaterial(OriginalMaterial) : nullptr;
 	if (!Material)
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
 			FString::Printf(TEXT("Material not found: %s"), *MaterialPath));
@@ -877,8 +977,12 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleBuildMaterialGraph
 		}
 	}
 
-	UMaterialEditingLibrary::RecompileMaterial(Material);
-	UEditorAssetLibrary::SaveAsset(MaterialPath);
+	RebuildMaterialEditorGraph(OriginalMaterial);
+	if (Material == OriginalMaterial)
+	{
+		UMaterialEditingLibrary::RecompileMaterial(Material);
+		UEditorAssetLibrary::SaveAsset(MaterialPath);
+	}
 
 	auto R = MakeShared<FJsonObject>();
 	R->SetBoolField(TEXT("success"), true);
@@ -902,8 +1006,8 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleGetMaterialInfo(
 	if (!Params->TryGetStringField(TEXT("material_path"), MaterialPath))
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'material_path'"));
 
-	UObject* Asset = UEditorAssetLibrary::LoadAsset(MaterialPath);
-	UMaterial* Material = Cast<UMaterial>(Asset);
+	UMaterial* OriginalMaterial = Cast<UMaterial>(UEditorAssetLibrary::LoadAsset(MaterialPath));
+	UMaterial* Material = OriginalMaterial ? ResolveWorkingMaterial(OriginalMaterial) : nullptr;
 	if (!Material)
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
 			FString::Printf(TEXT("Material not found: %s"), *MaterialPath));
@@ -979,14 +1083,18 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleRecompileMaterial(
 	if (!Params->TryGetStringField(TEXT("material_path"), MaterialPath))
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'material_path'"));
 
-	UObject* Asset = UEditorAssetLibrary::LoadAsset(MaterialPath);
-	UMaterial* Material = Cast<UMaterial>(Asset);
+	UMaterial* OriginalMaterial = Cast<UMaterial>(UEditorAssetLibrary::LoadAsset(MaterialPath));
+	UMaterial* Material = OriginalMaterial ? ResolveWorkingMaterial(OriginalMaterial) : nullptr;
 	if (!Material)
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
 			FString::Printf(TEXT("Material not found: %s"), *MaterialPath));
 
-	UMaterialEditingLibrary::RecompileMaterial(Material);
-	UEditorAssetLibrary::SaveAsset(MaterialPath);
+	NotifyMaterialEditorRefresh(OriginalMaterial);
+	if (Material == OriginalMaterial)
+	{
+		UMaterialEditingLibrary::RecompileMaterial(Material);
+		UEditorAssetLibrary::SaveAsset(MaterialPath);
+	}
 
 	auto R = MakeShared<FJsonObject>();
 	R->SetBoolField(TEXT("success"), true);
@@ -1005,8 +1113,8 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleGetMaterialErrors(
 	if (!Params->TryGetStringField(TEXT("material_path"), MaterialPath))
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'material_path'"));
 
-	UObject* Asset = UEditorAssetLibrary::LoadAsset(MaterialPath);
-	UMaterial* Material = Cast<UMaterial>(Asset);
+	UMaterial* OriginalMaterial = Cast<UMaterial>(UEditorAssetLibrary::LoadAsset(MaterialPath));
+	UMaterial* Material = OriginalMaterial ? ResolveWorkingMaterial(OriginalMaterial) : nullptr;
 	if (!Material)
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
 			FString::Printf(TEXT("Material not found: %s"), *MaterialPath));
@@ -1103,8 +1211,8 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleSetMaterialPropert
 	if (!Params->TryGetStringField(TEXT("material_path"), MaterialPath))
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'material_path'"));
 
-	UObject* Asset = UEditorAssetLibrary::LoadAsset(MaterialPath);
-	UMaterial* Material = Cast<UMaterial>(Asset);
+	UMaterial* OriginalMaterial = Cast<UMaterial>(UEditorAssetLibrary::LoadAsset(MaterialPath));
+	UMaterial* Material = OriginalMaterial ? ResolveWorkingMaterial(OriginalMaterial) : nullptr;
 	if (!Material)
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
 			FString::Printf(TEXT("Material not found: %s"), *MaterialPath));
@@ -1146,8 +1254,15 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleSetMaterialPropert
 
 	bool bRecompile = true;
 	Params->TryGetBoolField(TEXT("recompile"), bRecompile);
-	if (bRecompile) UMaterialEditingLibrary::RecompileMaterial(Material);
-	UEditorAssetLibrary::SaveAsset(MaterialPath);
+	if (Material == OriginalMaterial)
+	{
+		if (bRecompile) UMaterialEditingLibrary::RecompileMaterial(Material);
+		UEditorAssetLibrary::SaveAsset(MaterialPath);
+	}
+	else if (bRecompile)
+	{
+		NotifyMaterialEditorRefresh(OriginalMaterial);
+	}
 
 	auto R = MakeShared<FJsonObject>();
 	R->SetBoolField(TEXT("success"), true);
@@ -1171,8 +1286,8 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleAddMaterialComment
 	if (!Params->TryGetArrayField(TEXT("comments"), CommentsArray))
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'comments' array"));
 
-	UObject* Asset = UEditorAssetLibrary::LoadAsset(MaterialPath);
-	UMaterial* Material = Cast<UMaterial>(Asset);
+	UMaterial* OriginalMaterial = Cast<UMaterial>(UEditorAssetLibrary::LoadAsset(MaterialPath));
+	UMaterial* Material = OriginalMaterial ? ResolveWorkingMaterial(OriginalMaterial) : nullptr;
 	if (!Material)
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
 			FString::Printf(TEXT("Material not found: %s"), *MaterialPath));
@@ -1229,8 +1344,12 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleAddMaterialComment
 		CommentsCreated++;
 	}
 
-	Material->MarkPackageDirty();
-	UEditorAssetLibrary::SaveAsset(MaterialPath);
+	NotifyMaterialEditorRefresh(OriginalMaterial);
+	if (Material == OriginalMaterial)
+	{
+		UMaterialEditingLibrary::RecompileMaterial(Material);
+		UEditorAssetLibrary::SaveAsset(MaterialPath);
+	}
 
 	auto R = MakeShared<FJsonObject>();
 	R->SetBoolField(TEXT("success"), true);
@@ -1253,8 +1372,8 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleGetMaterialGraphNo
 	if (!Params->TryGetStringField(TEXT("material_path"), MaterialPath))
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'material_path'"));
 
-	UObject* Asset = UEditorAssetLibrary::LoadAsset(MaterialPath);
-	UMaterial* Material = Cast<UMaterial>(Asset);
+	UMaterial* OriginalMaterial = Cast<UMaterial>(UEditorAssetLibrary::LoadAsset(MaterialPath));
+	UMaterial* Material = OriginalMaterial ? ResolveWorkingMaterial(OriginalMaterial) : nullptr;
 	if (!Material)
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
 			FString::Printf(TEXT("Material not found: %s"), *MaterialPath));
@@ -1306,8 +1425,8 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleGetMaterialExpress
 			return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'node_index'"));
 	}
 
-	UObject* Asset = UEditorAssetLibrary::LoadAsset(MaterialPath);
-	UMaterial* Material = Cast<UMaterial>(Asset);
+	UMaterial* OriginalMaterial = Cast<UMaterial>(UEditorAssetLibrary::LoadAsset(MaterialPath));
+	UMaterial* Material = OriginalMaterial ? ResolveWorkingMaterial(OriginalMaterial) : nullptr;
 	if (!Material)
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
 			FString::Printf(TEXT("Material not found: %s"), *MaterialPath));
@@ -1345,8 +1464,8 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleGetMaterialPropert
 	if (!Params->TryGetStringField(TEXT("material_path"), MaterialPath))
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'material_path'"));
 
-	UObject* Asset = UEditorAssetLibrary::LoadAsset(MaterialPath);
-	UMaterial* Material = Cast<UMaterial>(Asset);
+	UMaterial* OriginalMaterial = Cast<UMaterial>(UEditorAssetLibrary::LoadAsset(MaterialPath));
+	UMaterial* Material = OriginalMaterial ? ResolveWorkingMaterial(OriginalMaterial) : nullptr;
 	if (!Material)
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
 			FString::Printf(TEXT("Material not found: %s"), *MaterialPath));
@@ -1403,8 +1522,8 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleAddMaterialExpress
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'node' object"));
 	const TSharedPtr<FJsonObject>& NodeDef = *NodeDefPtr;
 
-	UObject* Asset = UEditorAssetLibrary::LoadAsset(MaterialPath);
-	UMaterial* Material = Cast<UMaterial>(Asset);
+	UMaterial* OriginalMaterial = Cast<UMaterial>(UEditorAssetLibrary::LoadAsset(MaterialPath));
+	UMaterial* Material = OriginalMaterial ? ResolveWorkingMaterial(OriginalMaterial) : nullptr;
 	if (!Material)
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
 			FString::Printf(TEXT("Material not found: %s"), *MaterialPath));
@@ -1449,8 +1568,12 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleAddMaterialExpress
 		for (int32 i = 0; i < Collection.Expressions.Num(); ++i)
 			if (Collection.Expressions[i] == NewExpr) { NewIndex = i; break; }
 
-	Material->MarkPackageDirty();
-	UEditorAssetLibrary::SaveAsset(MaterialPath);
+	NotifyMaterialEditorRefresh(OriginalMaterial);
+	if (Material == OriginalMaterial)
+	{
+		UMaterialEditingLibrary::RecompileMaterial(Material);
+		UEditorAssetLibrary::SaveAsset(MaterialPath);
+	}
 
 	auto R = MakeShared<FJsonObject>();
 	R->SetBoolField(TEXT("success"), true);
@@ -1481,8 +1604,8 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleSetMaterialExpress
 			return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'node_index'"));
 	}
 
-	UObject* Asset = UEditorAssetLibrary::LoadAsset(MaterialPath);
-	UMaterial* Material = Cast<UMaterial>(Asset);
+	UMaterial* OriginalMaterial = Cast<UMaterial>(UEditorAssetLibrary::LoadAsset(MaterialPath));
+	UMaterial* Material = OriginalMaterial ? ResolveWorkingMaterial(OriginalMaterial) : nullptr;
 	if (!Material)
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
 			FString::Printf(TEXT("Material not found: %s"), *MaterialPath));
@@ -1548,8 +1671,12 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleSetMaterialExpress
 				PropErrors.Add(FString::Printf(TEXT("'%s': %s"), *Pair.Key, *PropErr));
 		}
 
-	Material->MarkPackageDirty();
-	UEditorAssetLibrary::SaveAsset(MaterialPath);
+	NotifyMaterialEditorRefresh(OriginalMaterial);
+	if (Material == OriginalMaterial)
+	{
+		UMaterialEditingLibrary::RecompileMaterial(Material);
+		UEditorAssetLibrary::SaveAsset(MaterialPath);
+	}
 
 	auto R = MakeShared<FJsonObject>();
 	R->SetBoolField(TEXT("success"), PropErrors.IsEmpty());
@@ -1585,8 +1712,8 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleMoveMaterialExpres
 	if (!bHasX && !bHasY)
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Provide at least pos_x or pos_y"));
 
-	UObject* Asset = UEditorAssetLibrary::LoadAsset(MaterialPath);
-	UMaterial* Material = Cast<UMaterial>(Asset);
+	UMaterial* OriginalMaterial = Cast<UMaterial>(UEditorAssetLibrary::LoadAsset(MaterialPath));
+	UMaterial* Material = OriginalMaterial ? ResolveWorkingMaterial(OriginalMaterial) : nullptr;
 	if (!Material)
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
 			FString::Printf(TEXT("Material not found: %s"), *MaterialPath));
@@ -1599,8 +1726,12 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleMoveMaterialExpres
 	UMaterialExpression* Expr = Collection.Expressions[NodeIndex];
 	if (bHasX) Expr->MaterialExpressionEditorX = PosX;
 	if (bHasY) Expr->MaterialExpressionEditorY = PosY;
-	Material->MarkPackageDirty();
-	UEditorAssetLibrary::SaveAsset(MaterialPath);
+	NotifyMaterialEditorRefresh(OriginalMaterial);
+	if (Material == OriginalMaterial)
+	{
+		UMaterialEditingLibrary::RecompileMaterial(Material);
+		UEditorAssetLibrary::SaveAsset(MaterialPath);
+	}
 
 	auto R = MakeShared<FJsonObject>();
 	R->SetBoolField(TEXT("success"), true);
@@ -1632,8 +1763,8 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleDuplicateMaterialE
 	Params->TryGetNumberField(TEXT("offset_x"), OffsetX);
 	Params->TryGetNumberField(TEXT("offset_y"), OffsetY);
 
-	UObject* Asset = UEditorAssetLibrary::LoadAsset(MaterialPath);
-	UMaterial* Material = Cast<UMaterial>(Asset);
+	UMaterial* OriginalMaterial = Cast<UMaterial>(UEditorAssetLibrary::LoadAsset(MaterialPath));
+	UMaterial* Material = OriginalMaterial ? ResolveWorkingMaterial(OriginalMaterial) : nullptr;
 	if (!Material)
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
 			FString::Printf(TEXT("Material not found: %s"), *MaterialPath));
@@ -1662,8 +1793,12 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleDuplicateMaterialE
 		for (int32 i = 0; i < Collection.Expressions.Num(); ++i)
 			if (Collection.Expressions[i] == NewExpr) { NewIndex = i; break; }
 
-	Material->MarkPackageDirty();
-	UEditorAssetLibrary::SaveAsset(MaterialPath);
+	NotifyMaterialEditorRefresh(OriginalMaterial);
+	if (Material == OriginalMaterial)
+	{
+		UMaterialEditingLibrary::RecompileMaterial(Material);
+		UEditorAssetLibrary::SaveAsset(MaterialPath);
+	}
 
 	FString TypeStr = Source->GetClass()->GetName();
 	TypeStr.RemoveFromStart(TEXT("MaterialExpression"));
@@ -1696,8 +1831,8 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleDeleteMaterialExpr
 			return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'node_index'"));
 	}
 
-	UObject* Asset = UEditorAssetLibrary::LoadAsset(MaterialPath);
-	UMaterial* Material = Cast<UMaterial>(Asset);
+	UMaterial* OriginalMaterial = Cast<UMaterial>(UEditorAssetLibrary::LoadAsset(MaterialPath));
+	UMaterial* Material = OriginalMaterial ? ResolveWorkingMaterial(OriginalMaterial) : nullptr;
 	if (!Material)
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
 			FString::Printf(TEXT("Material not found: %s"), *MaterialPath));
@@ -1713,8 +1848,12 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleDeleteMaterialExpr
 	DeletedType.RemoveFromStart(TEXT("MaterialExpression"));
 
 	UMaterialEditingLibrary::DeleteMaterialExpression(Material, Expr);
-	UMaterialEditingLibrary::RecompileMaterial(Material);
-	UEditorAssetLibrary::SaveAsset(MaterialPath);
+	RebuildMaterialEditorGraph(OriginalMaterial);
+	if (Material == OriginalMaterial)
+	{
+		UMaterialEditingLibrary::RecompileMaterial(Material);
+		UEditorAssetLibrary::SaveAsset(MaterialPath);
+	}
 
 	auto R = MakeShared<FJsonObject>();
 	R->SetBoolField(TEXT("success"), true);
@@ -1775,8 +1914,8 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleConnectMaterialExp
 		}
 	}
 
-	UObject* Asset = UEditorAssetLibrary::LoadAsset(MaterialPath);
-	UMaterial* Material = Cast<UMaterial>(Asset);
+	UMaterial* OriginalMaterial = Cast<UMaterial>(UEditorAssetLibrary::LoadAsset(MaterialPath));
+	UMaterial* Material = OriginalMaterial ? ResolveWorkingMaterial(OriginalMaterial) : nullptr;
 	if (!Material)
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
 			FString::Printf(TEXT("Material not found: %s"), *MaterialPath));
@@ -1818,8 +1957,12 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleConnectMaterialExp
 				FromIdx, *FromPin, *ToDesc));
 	}
 
-	Material->MarkPackageDirty();
-	UEditorAssetLibrary::SaveAsset(MaterialPath);
+	NotifyMaterialEditorRefresh(OriginalMaterial);
+	if (Material == OriginalMaterial)
+	{
+		UMaterialEditingLibrary::RecompileMaterial(Material);
+		UEditorAssetLibrary::SaveAsset(MaterialPath);
+	}
 
 	auto R = MakeShared<FJsonObject>();
 	R->SetBoolField(TEXT("success"), true);
@@ -1842,14 +1985,19 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleLayoutMaterialExpr
 	if (!Params->TryGetStringField(TEXT("material_path"), MaterialPath))
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'material_path'"));
 
-	UObject* Asset = UEditorAssetLibrary::LoadAsset(MaterialPath);
-	UMaterial* Material = Cast<UMaterial>(Asset);
+	UMaterial* OriginalMaterial = Cast<UMaterial>(UEditorAssetLibrary::LoadAsset(MaterialPath));
+	UMaterial* Material = OriginalMaterial ? ResolveWorkingMaterial(OriginalMaterial) : nullptr;
 	if (!Material)
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
 			FString::Printf(TEXT("Material not found: %s"), *MaterialPath));
 
 	UMaterialEditingLibrary::LayoutMaterialExpressions(Material);
-	UEditorAssetLibrary::SaveAsset(MaterialPath);
+	RebuildMaterialEditorGraph(OriginalMaterial);
+	if (Material == OriginalMaterial)
+	{
+		UMaterialEditingLibrary::RecompileMaterial(Material);
+		UEditorAssetLibrary::SaveAsset(MaterialPath);
+	}
 
 	auto R = MakeShared<FJsonObject>();
 	R->SetBoolField(TEXT("success"), true);
@@ -2082,5 +2230,151 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleSetMaterialInstanc
 	R->SetStringField(TEXT("param_type"), ParamType);
 	if (!bSuccess)
 		R->SetStringField(TEXT("error"), TEXT("SetParameter returned false — parameter may not exist in this instance's parent"));
+	return R;
+}
+
+// ---------------------------------------------------------------------------
+// HandleListMaterialExpressionTypes
+// ---------------------------------------------------------------------------
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleListMaterialExpressionTypes(
+	const TSharedPtr<FJsonObject>& Params)
+{
+	FString Filter;
+	Params->TryGetStringField(TEXT("filter"), Filter);
+
+	static const FString ExpressionPrefix = TEXT("MaterialExpression");
+
+	// Classes to exclude (same as Epic's MaterialExpressionClasses.cpp)
+	static TSet<FName> ExcludedClasses = {
+		TEXT("MaterialExpressionComment"),            // Handled by add_material_comments
+		TEXT("MaterialExpressionParameter"),           // Abstract base for parameter nodes
+		TEXT("MaterialExpressionNamedRerouteUsage"),   // Internal reroute usage
+		TEXT("MaterialExpressionMaterialLayerOutput"), // Internal layer output
+	};
+
+	TArray<TSharedPtr<FJsonValue>> ResultArray;
+
+	for (TObjectIterator<UClass> It; It; ++It)
+	{
+		UClass* Class = *It;
+		if (Class->HasAnyClassFlags(CLASS_Abstract | CLASS_Deprecated))
+			continue;
+		if (!Class->IsChildOf(UMaterialExpression::StaticClass()))
+			continue;
+		if (Class->HasMetaData(TEXT("Private")))
+			continue;
+		if (ExcludedClasses.Contains(Class->GetFName()))
+			continue;
+
+		FString ClassName = Class->GetName();
+
+		// Strip the "MaterialExpression" prefix for the short name
+		FString ShortName = ClassName;
+		if (ShortName.StartsWith(ExpressionPrefix, ESearchCase::CaseSensitive))
+		{
+			ShortName = ShortName.Mid(ExpressionPrefix.Len());
+		}
+
+		// Get display name if available
+		FString DisplayName;
+		if (Class->HasMetaData(TEXT("DisplayName")))
+		{
+			DisplayName = Class->GetDisplayNameText().ToString();
+		}
+
+		// Get CDO for keywords, categories, descriptions
+		UMaterialExpression* CDO = Cast<UMaterialExpression>(Class->GetDefaultObject());
+
+		// Get keywords (lerp, sin, cos, +, -, *, /, etc.)
+		FString Keywords;
+		if (CDO)
+		{
+			Keywords = CDO->GetKeywords().ToString();
+		}
+
+		// Get creation name (alternate search name)
+		FString CreationName;
+		if (CDO)
+		{
+			CreationName = CDO->GetCreationName().ToString();
+		}
+
+		// Apply filter — match against all searchable fields
+		if (!Filter.IsEmpty())
+		{
+			bool bMatches = ShortName.Contains(Filter, ESearchCase::IgnoreCase)
+				|| (!DisplayName.IsEmpty() && DisplayName.Contains(Filter, ESearchCase::IgnoreCase))
+				|| (!Keywords.IsEmpty() && Keywords.Contains(Filter, ESearchCase::IgnoreCase))
+				|| (!CreationName.IsEmpty() && CreationName.Contains(Filter, ESearchCase::IgnoreCase));
+
+			// Also check categories
+			if (!bMatches && CDO)
+			{
+				for (const FText& Cat : CDO->MenuCategories)
+				{
+					if (Cat.ToString().Contains(Filter, ESearchCase::IgnoreCase))
+					{
+						bMatches = true;
+						break;
+					}
+				}
+			}
+
+			if (!bMatches)
+				continue;
+		}
+
+		// Build result entry — only include fields that have values to minimize tokens
+		auto Entry = MakeShared<FJsonObject>();
+		Entry->SetStringField(TEXT("type"), ShortName);
+
+		if (!DisplayName.IsEmpty() && DisplayName != ShortName)
+		{
+			Entry->SetStringField(TEXT("display_name"), DisplayName);
+		}
+
+		if (!Keywords.IsEmpty())
+		{
+			Entry->SetStringField(TEXT("keywords"), Keywords);
+		}
+
+		if (CDO)
+		{
+			if (CDO->MenuCategories.Num() > 0)
+			{
+				TArray<TSharedPtr<FJsonValue>> CatArray;
+				for (const FText& Cat : CDO->MenuCategories)
+				{
+					CatArray.Add(MakeShared<FJsonValueString>(Cat.ToString()));
+				}
+				Entry->SetArrayField(TEXT("categories"), CatArray);
+			}
+
+			FString Desc = CDO->GetCreationDescription().ToString();
+			if (!Desc.IsEmpty())
+			{
+				Entry->SetStringField(TEXT("description"), Desc);
+			}
+		}
+
+		ResultArray.Add(MakeShared<FJsonValueObject>(Entry));
+	}
+
+	// Sort by short name
+	ResultArray.Sort([](const TSharedPtr<FJsonValue>& A, const TSharedPtr<FJsonValue>& B)
+	{
+		return A->AsObject()->GetStringField(TEXT("type")) <
+		       B->AsObject()->GetStringField(TEXT("type"));
+	});
+
+	auto R = MakeShared<FJsonObject>();
+	R->SetBoolField(TEXT("success"), true);
+	R->SetNumberField(TEXT("count"), ResultArray.Num());
+	if (!Filter.IsEmpty())
+	{
+		R->SetStringField(TEXT("filter"), Filter);
+	}
+	R->SetArrayField(TEXT("expression_types"), ResultArray);
 	return R;
 }

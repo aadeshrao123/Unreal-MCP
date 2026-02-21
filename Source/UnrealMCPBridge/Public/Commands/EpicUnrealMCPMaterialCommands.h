@@ -52,6 +52,9 @@ private:
 	TSharedPtr<FJsonObject> HandleGetMaterialInstanceParameters(const TSharedPtr<FJsonObject>& Params);
 	TSharedPtr<FJsonObject> HandleSetMaterialInstanceParameter(const TSharedPtr<FJsonObject>& Params);
 
+	// ---- Discovery ----
+	TSharedPtr<FJsonObject> HandleListMaterialExpressionTypes(const TSharedPtr<FJsonObject>& Params);
+
 	// ---- Internal Helpers ----
 
 	/** Find a UMaterialExpression subclass by short name (e.g. "Multiply" → UMaterialExpressionMultiply). */
