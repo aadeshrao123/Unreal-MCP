@@ -8,17 +8,9 @@
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 
-// ---------------------------------------------------------------------------
-// Construction
-// ---------------------------------------------------------------------------
-
 FEpicUnrealMCPDataTableCommands::FEpicUnrealMCPDataTableCommands()
 {
 }
-
-// ---------------------------------------------------------------------------
-// Command Dispatch
-// ---------------------------------------------------------------------------
 
 TSharedPtr<FJsonObject> FEpicUnrealMCPDataTableCommands::HandleCommand(
 	const FString& CommandType, const TSharedPtr<FJsonObject>& Params)
@@ -60,10 +52,6 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPDataTableCommands::HandleCommand(
 		FString::Printf(TEXT("Unknown data table command: %s"), *CommandType));
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 TSharedPtr<FJsonObject> FEpicUnrealMCPDataTableCommands::RowToJson(
 	FName RowName, const uint8* RowData, const UScriptStruct* RowStruct)
 {
@@ -99,7 +87,7 @@ bool FEpicUnrealMCPDataTableCommands::PopulateRowFromJson(
 		TSharedPtr<FJsonValue> JsonVal = JsonData->TryGetField(Prop->GetName());
 		if (!JsonVal.IsValid())
 		{
-			continue; // Only set fields that are present in the JSON
+			continue;
 		}
 
 		void* PropData = Prop->ContainerPtrToValuePtr<void>(RowData);
@@ -114,10 +102,6 @@ bool FEpicUnrealMCPDataTableCommands::PopulateRowFromJson(
 	}
 	return bAnySet;
 }
-
-// ---------------------------------------------------------------------------
-// get_data_table_rows — all rows with full field data
-// ---------------------------------------------------------------------------
 
 TSharedPtr<FJsonObject> FEpicUnrealMCPDataTableCommands::HandleGetDataTableRows(
 	const TSharedPtr<FJsonObject>& Params)
@@ -158,10 +142,6 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPDataTableCommands::HandleGetDataTableRows(
 	return Result;
 }
 
-// ---------------------------------------------------------------------------
-// get_data_table_row — single row by name
-// ---------------------------------------------------------------------------
-
 TSharedPtr<FJsonObject> FEpicUnrealMCPDataTableCommands::HandleGetDataTableRow(
 	const TSharedPtr<FJsonObject>& Params)
 {
@@ -198,10 +178,6 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPDataTableCommands::HandleGetDataTableRow(
 	Result->SetObjectField(TEXT("row"), RowToJson(RowFName, RowData, RowStruct));
 	return Result;
 }
-
-// ---------------------------------------------------------------------------
-// get_data_table_schema — column names and types from the row struct
-// ---------------------------------------------------------------------------
 
 TSharedPtr<FJsonObject> FEpicUnrealMCPDataTableCommands::HandleGetDataTableSchema(
 	const TSharedPtr<FJsonObject>& Params)
@@ -248,10 +224,6 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPDataTableCommands::HandleGetDataTableSchem
 	return Result;
 }
 
-// ---------------------------------------------------------------------------
-// add_data_table_row — create a new row, optionally pre-populate fields
-// ---------------------------------------------------------------------------
-
 TSharedPtr<FJsonObject> FEpicUnrealMCPDataTableCommands::HandleAddDataTableRow(
 	const TSharedPtr<FJsonObject>& Params)
 {
@@ -275,21 +247,18 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPDataTableCommands::HandleAddDataTableRow(
 
 	FName RowFName(*RowName);
 
-	// Guard: reject if row already exists
 	if (DataTable->FindRowUnchecked(RowFName))
 	{
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
 			FString::Printf(TEXT("Row '%s' already exists"), *RowName));
 	}
 
-	// Create an empty row with default values
 	if (!FDataTableEditorUtils::AddRow(DataTable, RowFName))
 	{
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
 			FString::Printf(TEXT("Failed to add row '%s'"), *RowName));
 	}
 
-	// Populate fields from optional "data" object
 	TArray<FString> Errors;
 	const TSharedPtr<FJsonObject>* DataJsonPtr;
 	if (Params->TryGetObjectField(TEXT("data"), DataJsonPtr) && DataJsonPtr->IsValid())
@@ -316,10 +285,6 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPDataTableCommands::HandleAddDataTableRow(
 	Result->SetArrayField(TEXT("errors"), ErrorArray);
 	return Result;
 }
-
-// ---------------------------------------------------------------------------
-// update_data_table_row — overwrite specific fields on an existing row
-// ---------------------------------------------------------------------------
 
 TSharedPtr<FJsonObject> FEpicUnrealMCPDataTableCommands::HandleUpdateDataTableRow(
 	const TSharedPtr<FJsonObject>& Params)
@@ -355,7 +320,7 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPDataTableCommands::HandleUpdateDataTableRo
 			FString::Printf(TEXT("Row '%s' not found in '%s'"), *RowName, *DataTablePath));
 	}
 
-	// Notify editor before mutating
+	// Notify editor before mutating so the data table UI stays in sync
 	FDataTableEditorUtils::BroadcastPreChange(DataTable, FDataTableEditorUtils::EDataTableChangeInfo::RowData);
 
 	TArray<FString> Errors;
@@ -378,10 +343,6 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPDataTableCommands::HandleUpdateDataTableRo
 	Result->SetArrayField(TEXT("errors"), ErrorArray);
 	return Result;
 }
-
-// ---------------------------------------------------------------------------
-// delete_data_table_row — remove a row by name
-// ---------------------------------------------------------------------------
 
 TSharedPtr<FJsonObject> FEpicUnrealMCPDataTableCommands::HandleDeleteDataTableRow(
 	const TSharedPtr<FJsonObject>& Params)
@@ -426,10 +387,6 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPDataTableCommands::HandleDeleteDataTableRo
 	return Result;
 }
 
-// ---------------------------------------------------------------------------
-// duplicate_data_table_row — copy a row under a new name
-// ---------------------------------------------------------------------------
-
 TSharedPtr<FJsonObject> FEpicUnrealMCPDataTableCommands::HandleDuplicateDataTableRow(
 	const TSharedPtr<FJsonObject>& Params)
 {
@@ -470,7 +427,7 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPDataTableCommands::HandleDuplicateDataTabl
 			FString::Printf(TEXT("Row '%s' already exists"), *NewRowName));
 	}
 
-	// Add an empty row, then binary-copy the source struct into it
+	// Add empty row then binary-copy the source struct into it
 	if (!FDataTableEditorUtils::AddRow(DataTable, NewFName))
 	{
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
@@ -493,10 +450,6 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPDataTableCommands::HandleDuplicateDataTabl
 	Result->SetStringField(TEXT("new_row"), NewRowName);
 	return Result;
 }
-
-// ---------------------------------------------------------------------------
-// rename_data_table_row — rename a row in-place (preserves order)
-// ---------------------------------------------------------------------------
 
 TSharedPtr<FJsonObject> FEpicUnrealMCPDataTableCommands::HandleRenameDataTableRow(
 	const TSharedPtr<FJsonObject>& Params)
@@ -537,7 +490,6 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPDataTableCommands::HandleRenameDataTableRo
 			FString::Printf(TEXT("Row '%s' already exists"), *NewRowName));
 	}
 
-	// FDataTableEditorUtils::RenameRow renames in-place, preserving row order
 	if (!FDataTableEditorUtils::RenameRow(DataTable, OldFName, NewFName))
 	{
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
