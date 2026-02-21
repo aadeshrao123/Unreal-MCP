@@ -52,10 +52,8 @@ def _send(code: str) -> str:
         else:
             result = inner
 
-        return (
-            json.dumps(result, default=str, indent=2)
-            if not isinstance(result, str)
-            else result
-        )
+        if isinstance(result, str):
+            return result
+        return json.dumps(result, default=str, indent=2)
     except Exception as exc:
         return f"Error: {exc}"

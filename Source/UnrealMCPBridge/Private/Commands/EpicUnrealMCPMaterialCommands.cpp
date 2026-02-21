@@ -41,14 +41,26 @@ static bool GetMaterialEditorContext(UMaterial* OriginalMaterial,
 	OutEditor = nullptr;
 	OutPreviewMaterial = nullptr;
 
-	if (!OriginalMaterial || !GEditor) return false;
+	if (!OriginalMaterial || !GEditor)
+	{
+		return false;
+	}
 
 	UAssetEditorSubsystem* Sub = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>();
-	if (!Sub) return false;
+	if (!Sub)
+	{
+		return false;
+	}
 
 	IAssetEditorInstance* EditorInstance = Sub->FindEditorForAsset(OriginalMaterial, /*bFocusIfOpen=*/false);
-	if (!EditorInstance) return false;
-	if (EditorInstance->GetEditorName() != FName("MaterialEditor")) return false;
+	if (!EditorInstance)
+	{
+		return false;
+	}
+	if (EditorInstance->GetEditorName() != FName("MaterialEditor"))
+	{
+		return false;
+	}
 
 	// Safe cast — same pattern as MaterialEditor.cpp line 8268:
 	// "We've ensured that this is a valid cast by checking GetEditorName()"
@@ -258,8 +270,14 @@ UClass* FEpicUnrealMCPMaterialCommands::FindExpressionClass(const FString& TypeN
 
 FString FEpicUnrealMCPMaterialCommands::NormalizePropName(UMaterialExpression* Expr, const FString& Name)
 {
-	if (!Expr) return Name;
-	if (Expr->GetClass()->FindPropertyByName(*Name)) return Name;
+	if (!Expr)
+	{
+		return Name;
+	}
+	if (Expr->GetClass()->FindPropertyByName(*Name))
+	{
+		return Name;
+	}
 
 	// snake_case → PascalCase
 	FString Pascal;
@@ -267,27 +285,48 @@ FString FEpicUnrealMCPMaterialCommands::NormalizePropName(UMaterialExpression* E
 	for (TCHAR Ch : Name)
 	{
 		if (Ch == TEXT('_'))
+		{
 			bCapNext = true;
-		else if (bCapNext) { Pascal += FChar::ToUpper(Ch); bCapNext = false; }
-		else Pascal += Ch;
+		}
+		else if (bCapNext)
+		{
+			Pascal += FChar::ToUpper(Ch);
+			bCapNext = false;
+		}
+		else
+		{
+			Pascal += Ch;
+		}
 	}
+
 	if (!Pascal.IsEmpty() && Expr->GetClass()->FindPropertyByName(*Pascal))
+	{
 		return Pascal;
+	}
 	return Name; // Return original; failure handled downstream
 }
 
 bool FEpicUnrealMCPMaterialCommands::TryParseIntFromJson(const TSharedPtr<FJsonValue>& Val, int32& OutInt)
 {
-	if (!Val.IsValid()) return false;
+	if (!Val.IsValid())
+	{
+		return false;
+	}
+
 	if (Val->Type == EJson::Number)
 	{
 		OutInt = (int32)Val->AsNumber();
 		return true;
 	}
+
 	if (Val->Type == EJson::String)
 	{
 		FString S = Val->AsString();
-		if (S.IsNumeric()) { OutInt = FCString::Atoi(*S); return true; }
+		if (S.IsNumeric())
+		{
+			OutInt = FCString::Atoi(*S);
+			return true;
+		}
 	}
 	return false;
 }
@@ -377,7 +416,10 @@ void FEpicUnrealMCPMaterialCommands::HandleCustomHLSLNode(
 	UMaterialExpression* Expr, const TSharedPtr<FJsonObject>& NodeDef)
 {
 	UMaterialExpressionCustom* Custom = Cast<UMaterialExpressionCustom>(Expr);
-	if (!Custom) return;
+	if (!Custom)
+	{
+		return;
+	}
 
 	FString Code;
 	if (NodeDef->TryGetStringField(TEXT("code"), Code)) Custom->Code = Code;
@@ -424,7 +466,11 @@ void FEpicUnrealMCPMaterialCommands::HandleCustomHLSLNode(
 			bool bExists = false;
 			for (const FCustomInput& Existing : Custom->Inputs)
 			{
-				if (Existing.InputName == NewName) { bExists = true; break; }
+				if (Existing.InputName == NewName)
+				{
+					bExists = true;
+					break;
+				}
 			}
 			if (!bExists)
 			{
@@ -654,7 +700,10 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::SerializeMaterialExpress
 			// Custom nodes store connections in Custom->Inputs[i].Input (FExpressionInput)
 			for (const FCustomInput& CInp : Custom->Inputs)
 			{
-				if (!CInp.Input.Expression) continue;
+				if (!CInp.Input.Expression)
+				{
+					continue;
+				}
 				const int32* SrcIdx = ExprIndexMap.Find(CInp.Input.Expression);
 				auto ConnObj = MakeShared<FJsonObject>();
 				ConnObj->SetNumberField(TEXT("from_node"), SrcIdx ? *SrcIdx : -1);
@@ -664,7 +713,9 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::SerializeMaterialExpress
 				FString FromPin;
 				if (SrcOuts.IsValidIndex(CInp.Input.OutputIndex) &&
 				    !SrcOuts[CInp.Input.OutputIndex].OutputName.IsNone())
+				{
 					FromPin = SrcOuts[CInp.Input.OutputIndex].OutputName.ToString();
+				}
 				ConnObj->SetStringField(TEXT("from_pin"), FromPin);
 				Connections->SetObjectField(CInp.InputName.ToString(), ConnObj);
 			}
@@ -675,8 +726,14 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::SerializeMaterialExpress
 			for (int32 i = 0; ; ++i)
 			{
 				FExpressionInput* Input = Expr->GetInput(i);
-				if (!Input) break;
-				if (!Input->Expression) continue;
+				if (!Input)
+				{
+					break;
+				}
+				if (!Input->Expression)
+				{
+					continue;
+				}
 
 				FName InputName = Expr->GetInputName(i);
 				const int32* SrcIdx = ExprIndexMap.Find(Input->Expression);
@@ -880,7 +937,12 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleBuildMaterialGraph
 	for (int32 Idx = 0; Idx < NodesArray->Num(); ++Idx)
 	{
 		const TSharedPtr<FJsonObject>& NodeDef = (*NodesArray)[Idx]->AsObject();
-		if (!NodeDef.IsValid()) { Errors.Add(FString::Printf(TEXT("Node %d: invalid JSON"), Idx)); CreatedNodes[Idx] = nullptr; continue; }
+		if (!NodeDef.IsValid())
+		{
+			Errors.Add(FString::Printf(TEXT("Node %d: invalid JSON"), Idx));
+			CreatedNodes[Idx] = nullptr;
+			continue;
+		}
 
 		FString TypeName = TEXT("Constant");
 		NodeDef->TryGetStringField(TEXT("type"), TypeName);
@@ -904,7 +966,10 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleBuildMaterialGraph
 		CreatedNodes[Idx] = Expr;
 
 		const bool bIsCustom = (TypeName == TEXT("Custom") || TypeName == TEXT("MaterialExpressionCustom"));
-		if (bIsCustom) HandleCustomHLSLNode(Expr, NodeDef);
+		if (bIsCustom)
+		{
+			HandleCustomHLSLNode(Expr, NodeDef);
+		}
 
 		const TSharedPtr<FJsonObject>* PropsObj;
 		if (NodeDef->TryGetObjectField(TEXT("properties"), PropsObj))
@@ -956,18 +1021,28 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleBuildMaterialGraph
 		if (bToMaterial)
 		{
 			EMaterialProperty MatProp = ResolveMaterialProperty(ToPin);
-			if (MatProp == MP_MAX) { Errors.Add(FString::Printf(TEXT("Connection: unknown material property '%s'"), *ToPin)); continue; }
+			if (MatProp == MP_MAX)
+			{
+				Errors.Add(FString::Printf(TEXT("Connection: unknown material property '%s'"), *ToPin));
+				continue;
+			}
 			bConnected = UMaterialEditingLibrary::ConnectMaterialProperty(CreatedNodes[FromIdx], FromPin, MatProp);
 		}
 		else
 		{
 			if (ToIdx < 0 || ToIdx >= CreatedNodes.Num() || !CreatedNodes[ToIdx])
-			{ Errors.Add(FString::Printf(TEXT("Connection: invalid to_node %d"), ToIdx)); continue; }
+			{
+				Errors.Add(FString::Printf(TEXT("Connection: invalid to_node %d"), ToIdx));
+				continue;
+			}
 			bConnected = UMaterialEditingLibrary::ConnectMaterialExpressions(
 				CreatedNodes[FromIdx], FromPin, CreatedNodes[ToIdx], ToPin);
 		}
 
-		if (bConnected) ConnectionsMade++;
+		if (bConnected)
+		{
+			ConnectionsMade++;
+		}
 		else
 		{
 			FString ToDesc = bToMaterial
@@ -1034,7 +1109,13 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleGetMaterialInfo(
 	TArray<UTexture*> Textures;
 	Material->GetUsedTextures(Textures, EMaterialQualityLevel::High);
 	TArray<TSharedPtr<FJsonValue>> TexArr;
-	for (UTexture* T : Textures) if (T) TexArr.Add(MakeShared<FJsonValueString>(T->GetPathName()));
+	for (UTexture* T : Textures)
+	{
+		if (T)
+		{
+			TexArr.Add(MakeShared<FJsonValueString>(T->GetPathName()));
+		}
+	}
 	Info->SetArrayField(TEXT("used_textures"), TexArr);
 
 	// Parameters — NOTE: avoid variable name 'PI' which is a UE math macro (#define PI 3.14159...)
@@ -1256,7 +1337,10 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleSetMaterialPropert
 	Params->TryGetBoolField(TEXT("recompile"), bRecompile);
 	if (Material == OriginalMaterial)
 	{
-		if (bRecompile) UMaterialEditingLibrary::RecompileMaterial(Material);
+		if (bRecompile)
+		{
+			UMaterialEditingLibrary::RecompileMaterial(Material);
+		}
 		UEditorAssetLibrary::SaveAsset(MaterialPath);
 	}
 	else if (bRecompile)
@@ -1289,8 +1373,10 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleAddMaterialComment
 	UMaterial* OriginalMaterial = Cast<UMaterial>(UEditorAssetLibrary::LoadAsset(MaterialPath));
 	UMaterial* Material = OriginalMaterial ? ResolveWorkingMaterial(OriginalMaterial) : nullptr;
 	if (!Material)
+	{
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
 			FString::Printf(TEXT("Material not found: %s"), *MaterialPath));
+	}
 
 	FMaterialExpressionCollection& Collection = Material->GetExpressionCollection();
 	int32 CommentsCreated = 0;
@@ -1299,14 +1385,25 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleAddMaterialComment
 	for (int32 Idx = 0; Idx < CommentsArray->Num(); ++Idx)
 	{
 		const TSharedPtr<FJsonObject>& Def = (*CommentsArray)[Idx]->AsObject();
-		if (!Def.IsValid()) { Errors.Add(FString::Printf(TEXT("Comment %d: invalid JSON"), Idx)); continue; }
+		if (!Def.IsValid())
+		{
+			Errors.Add(FString::Printf(TEXT("Comment %d: invalid JSON"), Idx));
+			continue;
+		}
 
 		FString Text;
 		if (!Def->TryGetStringField(TEXT("text"), Text))
-		{ Errors.Add(FString::Printf(TEXT("Comment %d: missing 'text'"), Idx)); continue; }
+		{
+			Errors.Add(FString::Printf(TEXT("Comment %d: missing 'text'"), Idx));
+			continue;
+		}
 
 		UMaterialExpressionComment* Comment = NewObject<UMaterialExpressionComment>(Material);
-		if (!Comment) { Errors.Add(FString::Printf(TEXT("Comment %d: failed to create"), Idx)); continue; }
+		if (!Comment)
+		{
+			Errors.Add(FString::Printf(TEXT("Comment %d: failed to create"), Idx));
+			continue;
+		}
 
 		Comment->Text = Text;
 		int32 PosX = 0, PosY = 0;
@@ -1394,7 +1491,10 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleGetMaterialGraphNo
 	for (int32 i = 0; i < Collection.Expressions.Num(); ++i)
 	{
 		UMaterialExpression* Expr = Collection.Expressions[i];
-		if (!Expr) continue;
+		if (!Expr)
+		{
+			continue;
+		}
 		NodesArray.Add(MakeShared<FJsonValueObject>(
 			SerializeMaterialExpression(Expr, i, ExprIndexMap, bIncludePins)));
 	}
@@ -1485,7 +1585,10 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleGetMaterialPropert
 	for (EMaterialProperty Prop : Props)
 	{
 		UMaterialExpression* InputNode = UMaterialEditingLibrary::GetMaterialPropertyInputNode(Material, Prop);
-		if (!InputNode) continue;
+		if (!InputNode)
+		{
+			continue;
+		}
 
 		const int32* IdxPtr = ExprIndexMap.Find(InputNode);
 		FString OutputName = UMaterialEditingLibrary::GetMaterialPropertyInputNodeOutputName(Material, Prop);
@@ -1544,11 +1647,16 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleAddMaterialExpress
 
 	UMaterialExpression* NewExpr = UMaterialEditingLibrary::CreateMaterialExpression(Material, ExprClass, PosX, PosY);
 	if (!NewExpr)
+	{
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
 			FString::Printf(TEXT("Failed to create expression '%s'"), *TypeName));
+	}
 
 	const bool bIsCustom = (TypeName == TEXT("Custom") || TypeName == TEXT("MaterialExpressionCustom"));
-	if (bIsCustom) HandleCustomHLSLNode(NewExpr, NodeDef);
+	if (bIsCustom)
+	{
+		HandleCustomHLSLNode(NewExpr, NodeDef);
+	}
 
 	TArray<FString> PropErrors;
 	const TSharedPtr<FJsonObject>* PropsObj;
@@ -1563,10 +1671,18 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleAddMaterialExpress
 	// Find new node's index — UE appends to end but search to be safe
 	int32 NewIndex = -1;
 	for (int32 i = Collection.Expressions.Num() - 1; i >= CountBefore; --i)
-		if (Collection.Expressions[i] == NewExpr) { NewIndex = i; break; }
+		if (Collection.Expressions[i] == NewExpr)
+			{
+				NewIndex = i;
+				break;
+			}
 	if (NewIndex == -1)
 		for (int32 i = 0; i < Collection.Expressions.Num(); ++i)
-			if (Collection.Expressions[i] == NewExpr) { NewIndex = i; break; }
+			if (Collection.Expressions[i] == NewExpr)
+			{
+				NewIndex = i;
+				break;
+			}
 
 	NotifyMaterialEditorRefresh(OriginalMaterial);
 	if (Material == OriginalMaterial)
@@ -1724,8 +1840,14 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleMoveMaterialExpres
 			FString::Printf(TEXT("Invalid node_index %d"), NodeIndex));
 
 	UMaterialExpression* Expr = Collection.Expressions[NodeIndex];
-	if (bHasX) Expr->MaterialExpressionEditorX = PosX;
-	if (bHasY) Expr->MaterialExpressionEditorY = PosY;
+	if (bHasX)
+	{
+		Expr->MaterialExpressionEditorX = PosX;
+	}
+	if (bHasY)
+	{
+		Expr->MaterialExpressionEditorY = PosY;
+	}
 	NotifyMaterialEditorRefresh(OriginalMaterial);
 	if (Material == OriginalMaterial)
 	{
@@ -1788,10 +1910,18 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleDuplicateMaterialE
 
 	int32 NewIndex = -1;
 	for (int32 i = Collection.Expressions.Num() - 1; i >= CountBefore; --i)
-		if (Collection.Expressions[i] == NewExpr) { NewIndex = i; break; }
+		if (Collection.Expressions[i] == NewExpr)
+			{
+				NewIndex = i;
+				break;
+			}
 	if (NewIndex == -1)
 		for (int32 i = 0; i < Collection.Expressions.Num(); ++i)
-			if (Collection.Expressions[i] == NewExpr) { NewIndex = i; break; }
+			if (Collection.Expressions[i] == NewExpr)
+			{
+				NewIndex = i;
+				break;
+			}
 
 	NotifyMaterialEditorRefresh(OriginalMaterial);
 	if (Material == OriginalMaterial)
@@ -2172,11 +2302,16 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleSetMaterialInstanc
 	{
 		FString TexPath;
 		if (!Params->TryGetStringField(TEXT("value"), TexPath))
+		{
 			ErrMsg = TEXT("Missing 'value' texture path");
+		}
 		else
 		{
 			UTexture* Tex = Cast<UTexture>(UEditorAssetLibrary::LoadAsset(TexPath));
-			if (!Tex) ErrMsg = FString::Printf(TEXT("Texture not found: %s"), *TexPath);
+			if (!Tex)
+			{
+				ErrMsg = FString::Printf(TEXT("Texture not found: %s"), *TexPath);
+			}
 			else
 			{
 				// UE5 bug: same bResult issue as scalar/vector — call directly.

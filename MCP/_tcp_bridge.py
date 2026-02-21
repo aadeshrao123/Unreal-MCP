@@ -87,9 +87,10 @@ class _TCPConnection:
             return False
 
     def _recv_response(self, command: str) -> bytes:
-        timeout = (LARGE_OP_RECV_TIMEOUT
-                   if command in LARGE_OPERATION_COMMANDS
-                   else DEFAULT_RECV_TIMEOUT)
+        if command in LARGE_OPERATION_COMMANDS:
+            timeout = LARGE_OP_RECV_TIMEOUT
+        else:
+            timeout = DEFAULT_RECV_TIMEOUT
         self._sock.settimeout(timeout)
 
         chunks: list[bytes] = []
@@ -142,7 +143,8 @@ class _TCPConnection:
                 with self._lock:
                     self._close_unsafe()
                 if attempt < MAX_RETRIES:
-                    time.sleep(min(BASE_RETRY_DELAY * (2 ** attempt), 5.0))
+                    delay = min(BASE_RETRY_DELAY * (2 ** attempt), 5.0)
+                    time.sleep(delay)
             except Exception as exc:
                 logger.error("Unexpected error sending TCP command: %s", exc)
                 with self._lock:
@@ -156,13 +158,19 @@ class _TCPConnection:
             if not self._connect_once():
                 raise ConnectionError(f"Cannot connect to C++ bridge at {TCP_HOST}:{TCP_PORT}")
             try:
-                payload = json.dumps({"type": command, "params": params or {}})
+                payload = json.dumps({
+                    "type": command,
+                    "params": params or {},
+                })
                 self._sock.settimeout(10)
                 self._sock.sendall(payload.encode("utf-8"))
+
                 raw = self._recv_response(command)
                 response = json.loads(raw.decode("utf-8"))
+
                 if response.get("success") is False and "status" not in response:
                     response["status"] = "error"
+
                 return response
             finally:
                 self._close_unsafe()

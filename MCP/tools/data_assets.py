@@ -14,7 +14,10 @@ def list_data_asset_classes(
     Returns name, full class path, parent class, whether it is a
     UPrimaryDataAsset, and the number of editable properties.
     """
-    return _call("list_data_asset_classes", {"filter": filter, "include_abstract": include_abstract})
+    return _call("list_data_asset_classes", {
+        "filter": filter,
+        "include_abstract": include_abstract,
+    })
 
 
 @mcp.tool()
@@ -31,7 +34,10 @@ def create_data_asset(
         initial_properties: Optional dict of property values to set after creation.
             Supports primitives, structs, arrays, object paths, gameplay tags, etc.
     """
-    params = {"class_name": class_name, "asset_path": asset_path}
+    params = {
+        "class_name": class_name,
+        "asset_path": asset_path,
+    }
     if initial_properties:
         params["initial_properties"] = initial_properties
     return _call("create_data_asset", params)
@@ -79,7 +85,10 @@ def set_data_asset_properties(asset_path: str, properties: dict) -> str:
     More efficient than calling set_data_asset_property in a loop.
     Same value format as set_data_asset_property.
     """
-    return _call("set_data_asset_properties", {"asset_path": asset_path, "properties": properties})
+    return _call("set_data_asset_properties", {
+        "asset_path": asset_path,
+        "properties": properties,
+    })
 
 
 @mcp.tool()

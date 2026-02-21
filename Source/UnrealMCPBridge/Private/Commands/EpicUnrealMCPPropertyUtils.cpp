@@ -339,12 +339,36 @@ bool FEpicUnrealMCPPropertyUtils::SetProperty(UObject* Object, const FString& Pr
     // -----------------------------------------------------------------------
     // 6. Numeric
     // -----------------------------------------------------------------------
-    if (FIntProperty*    IntProp  = CastField<FIntProperty>(Prop))   { IntProp->SetPropertyValue(PropAddr, static_cast<int32>(Value->AsNumber())); return true; }
-    if (FInt64Property*  I64Prop  = CastField<FInt64Property>(Prop))  { I64Prop->SetPropertyValue(PropAddr, static_cast<int64>(Value->AsNumber())); return true; }
-    if (FDoubleProperty* DblProp  = CastField<FDoubleProperty>(Prop)) { DblProp->SetPropertyValue(PropAddr, Value->AsNumber()); return true; }
-    if (FFloatProperty*  FltProp  = CastField<FFloatProperty>(Prop))  { FltProp->SetPropertyValue(PropAddr, static_cast<float>(Value->AsNumber())); return true; }
-    if (FBoolProperty*   BoolProp = CastField<FBoolProperty>(Prop))   { BoolProp->SetPropertyValue(PropAddr, Value->AsBool()); return true; }
-    if (FStrProperty*    StrProp  = CastField<FStrProperty>(Prop))    { StrProp->SetPropertyValue(PropAddr, Value->AsString()); return true; }
+    if (FIntProperty* IntProp = CastField<FIntProperty>(Prop))
+    {
+        IntProp->SetPropertyValue(PropAddr, static_cast<int32>(Value->AsNumber()));
+        return true;
+    }
+    if (FInt64Property* I64Prop = CastField<FInt64Property>(Prop))
+    {
+        I64Prop->SetPropertyValue(PropAddr, static_cast<int64>(Value->AsNumber()));
+        return true;
+    }
+    if (FDoubleProperty* DblProp = CastField<FDoubleProperty>(Prop))
+    {
+        DblProp->SetPropertyValue(PropAddr, Value->AsNumber());
+        return true;
+    }
+    if (FFloatProperty* FltProp = CastField<FFloatProperty>(Prop))
+    {
+        FltProp->SetPropertyValue(PropAddr, static_cast<float>(Value->AsNumber()));
+        return true;
+    }
+    if (FBoolProperty* BoolProp = CastField<FBoolProperty>(Prop))
+    {
+        BoolProp->SetPropertyValue(PropAddr, Value->AsBool());
+        return true;
+    }
+    if (FStrProperty* StrProp = CastField<FStrProperty>(Prop))
+    {
+        StrProp->SetPropertyValue(PropAddr, Value->AsString());
+        return true;
+    }
 
     // -----------------------------------------------------------------------
     // 7. Enums
@@ -355,18 +379,34 @@ bool FEpicUnrealMCPPropertyUtils::SetProperty(UObject* Object, const FString& Pr
         if (Enum)
         {
             int64 EnumVal = INDEX_NONE;
-            if (Value->Type == EJson::Number) EnumVal = static_cast<int64>(Value->AsNumber());
+            if (Value->Type == EJson::Number)
+            {
+                EnumVal = static_cast<int64>(Value->AsNumber());
+            }
             else
             {
                 FString Str = Value->AsString();
-                if (Str.Contains(TEXT("::"))) Str.Split(TEXT("::"), nullptr, &Str);
+                if (Str.Contains(TEXT("::")))
+                {
+                    Str.Split(TEXT("::"), nullptr, &Str);
+                }
                 EnumVal = Enum->GetValueByNameString(Str);
-                if (EnumVal == INDEX_NONE) EnumVal = Enum->GetValueByNameString(Value->AsString());
+                if (EnumVal == INDEX_NONE)
+                {
+                    EnumVal = Enum->GetValueByNameString(Value->AsString());
+                }
             }
-            if (EnumVal == INDEX_NONE) { OutError = FString::Printf(TEXT("Invalid enum value for '%s'"), *PropertyName); return false; }
+            if (EnumVal == INDEX_NONE)
+            {
+                OutError = FString::Printf(TEXT("Invalid enum value for '%s'"), *PropertyName);
+                return false;
+            }
             ByteProp->SetPropertyValue(PropAddr, static_cast<uint8>(EnumVal));
         }
-        else ByteProp->SetPropertyValue(PropAddr, static_cast<uint8>(Value->AsNumber()));
+        else
+        {
+            ByteProp->SetPropertyValue(PropAddr, static_cast<uint8>(Value->AsNumber()));
+        }
         return true;
     }
     if (FEnumProperty* EnumProp = CastField<FEnumProperty>(Prop))
@@ -376,15 +416,28 @@ bool FEpicUnrealMCPPropertyUtils::SetProperty(UObject* Object, const FString& Pr
         if (Enum && Underlying)
         {
             int64 EnumVal = INDEX_NONE;
-            if (Value->Type == EJson::Number) EnumVal = static_cast<int64>(Value->AsNumber());
+            if (Value->Type == EJson::Number)
+            {
+                EnumVal = static_cast<int64>(Value->AsNumber());
+            }
             else
             {
                 FString Str = Value->AsString();
-                if (Str.Contains(TEXT("::"))) Str.Split(TEXT("::"), nullptr, &Str);
+                if (Str.Contains(TEXT("::")))
+                {
+                    Str.Split(TEXT("::"), nullptr, &Str);
+                }
                 EnumVal = Enum->GetValueByNameString(Str);
-                if (EnumVal == INDEX_NONE) EnumVal = Enum->GetValueByNameString(Value->AsString());
+                if (EnumVal == INDEX_NONE)
+                {
+                    EnumVal = Enum->GetValueByNameString(Value->AsString());
+                }
             }
-            if (EnumVal == INDEX_NONE) { OutError = FString::Printf(TEXT("Invalid enum value for '%s'"), *PropertyName); return false; }
+            if (EnumVal == INDEX_NONE)
+            {
+                OutError = FString::Printf(TEXT("Invalid enum value for '%s'"), *PropertyName);
+                return false;
+            }
             Underlying->SetIntPropertyValue(PropAddr, EnumVal);
         }
         return true;
@@ -527,7 +580,10 @@ bool FEpicUnrealMCPPropertyUtils::SetProperty(UObject* Object, const FString& Pr
                 else if (Elem->Type == EJson::String)
                 {
                     UScriptStruct* TargetStruct = ResolveScriptStruct(Elem->AsString());
-                    if (TargetStruct) InstStruct->InitializeAs(TargetStruct);
+                    if (TargetStruct)
+                    {
+                        InstStruct->InitializeAs(TargetStruct);
+                    }
                 }
             }
             return true;

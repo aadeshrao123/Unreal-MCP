@@ -100,7 +100,10 @@ def find_references(asset_path: str, direction: str = "both") -> str:
 
     direction: "dependents" (who uses this), "dependencies" (what this uses), or "both"
     """
-    return _call("find_references", {"asset_path": asset_path, "direction": direction})
+    return _call("find_references", {
+        "asset_path": asset_path,
+        "direction": direction,
+    })
 
 
 @mcp.tool()
@@ -116,7 +119,10 @@ def duplicate_asset(source_path: str, dest_path: str, dest_name: str) -> str:
 @mcp.tool()
 def rename_asset(source_path: str, dest_path: str) -> str:
     """Rename or move an asset. UE5 automatically fixes all references."""
-    return _call("rename_asset", {"source_path": source_path, "dest_path": dest_path})
+    return _call("rename_asset", {
+        "source_path": source_path,
+        "dest_path": dest_path,
+    })
 
 
 @mcp.tool()
@@ -126,7 +132,10 @@ def delete_asset(asset_path: str, force: bool = False) -> str:
     Checks for references first unless force=True.
     Paths without a dot are treated as directories.
     """
-    return _call("delete_asset", {"asset_path": asset_path, "force": force})
+    return _call("delete_asset", {
+        "asset_path": asset_path,
+        "force": force,
+    })
 
 
 @mcp.tool()
@@ -186,7 +195,10 @@ def import_assets_batch(
             If omitted with source_directory, all files are imported.
         replace_existing: Overwrite existing assets (default True)
     """
-    params = {"destination_path": destination_path, "replace_existing": replace_existing}
+    params = {
+        "destination_path": destination_path,
+        "replace_existing": replace_existing,
+    }
     if files:
         params["files"] = files
     elif source_directory:

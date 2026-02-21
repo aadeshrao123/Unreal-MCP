@@ -75,19 +75,28 @@ UWidgetBlueprint* FEpicUnrealMCPWidgetCommands::LoadWidgetBlueprint(const FStrin
 
 UWidget* FEpicUnrealMCPWidgetCommands::FindWidgetByName(UWidgetTree* Tree, const FString& Name)
 {
-	if (!Tree) return nullptr;
+	if (!Tree)
+	{
+		return nullptr;
+	}
 	return Tree->FindWidget(FName(*Name));
 }
 
 UClass* FEpicUnrealMCPWidgetCommands::ResolveWidgetClass(const FString& ClassName)
 {
-	if (ClassName.IsEmpty()) return nullptr;
+	if (ClassName.IsEmpty())
+	{
+		return nullptr;
+	}
 
 	// Full path resolution
 	if (ClassName.Contains(TEXT(".")))
 	{
 		UClass* C = FindObject<UClass>(nullptr, *ClassName);
-		if (C && C->IsChildOf(UWidget::StaticClass())) return C;
+		if (C && C->IsChildOf(UWidget::StaticClass()))
+		{
+			return C;
+		}
 	}
 
 	// Short name matching against all UWidget subclasses
@@ -95,7 +104,10 @@ UClass* FEpicUnrealMCPWidgetCommands::ResolveWidgetClass(const FString& ClassNam
 	GetDerivedClasses(UWidget::StaticClass(), Derived, true);
 	for (UClass* C : Derived)
 	{
-		if (!C) continue;
+		if (!C)
+		{
+			continue;
+		}
 		const FString CName = C->GetName();
 		if (CName == ClassName ||
 			CName == (TEXT("U") + ClassName) ||
@@ -109,7 +121,10 @@ UClass* FEpicUnrealMCPWidgetCommands::ResolveWidgetClass(const FString& ClassNam
 
 TSharedPtr<FJsonObject> FEpicUnrealMCPWidgetCommands::SerializeWidgetRecursive(UWidget* Widget)
 {
-	if (!Widget) return nullptr;
+	if (!Widget)
+	{
+		return nullptr;
+	}
 
 	TSharedPtr<FJsonObject> Obj = MakeShared<FJsonObject>();
 	Obj->SetStringField(TEXT("name"), Widget->GetName());
@@ -155,7 +170,10 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPWidgetCommands::SerializeWidgetRecursive(U
 // ---------------------------------------------------------------------------
 TSharedPtr<FJsonObject> FEpicUnrealMCPWidgetCommands::SerializeSlotProperties(UPanelSlot* Slot)
 {
-	if (!Slot) return nullptr;
+	if (!Slot)
+	{
+		return nullptr;
+	}
 
 	TSharedPtr<FJsonObject> Props = MakeShared<FJsonObject>();
 
@@ -187,7 +205,10 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPWidgetCommands::SerializeSlotProperties(UP
 // ---------------------------------------------------------------------------
 void FEpicUnrealMCPWidgetCommands::MarkModifiedAndSave(UWidgetBlueprint* WBP)
 {
-	if (!WBP) return;
+	if (!WBP)
+	{
+		return;
+	}
 
 	// Sync the GUID map with the current widget set BEFORE compilation.
 	// MarkBlueprintAsStructurallyModified triggers synchronous compilation,
@@ -237,7 +258,10 @@ void FEpicUnrealMCPWidgetCommands::MarkModifiedAndSave(UWidgetBlueprint* WBP)
 
 static void MarkPropertyModifiedAndSave(UWidgetBlueprint* WBP)
 {
-	if (!WBP) return;
+	if (!WBP)
+	{
+		return;
+	}
 	FBlueprintEditorUtils::MarkBlueprintAsModified(WBP);
 	WBP->MarkPackageDirty();
 	const FString AssetPath = WBP->GetOutermost()->GetName();
@@ -481,7 +505,10 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPWidgetCommands::HandleRemoveWidget(
 	TSet<FName> RemainingNames;
 	for (UWidget* W : RemainingWidgets)
 	{
-		if (W) RemainingNames.Add(W->GetFName());
+		if (W)
+		{
+			RemainingNames.Add(W->GetFName());
+		}
 	}
 
 	for (const FName& Name : RemovedNames)
@@ -733,11 +760,19 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPWidgetCommands::HandleDuplicateWidget(
 		Tree->GetAllWidgets(ExistingWidgets);
 		TSet<FName> ExistingNames;
 		for (UWidget* W : ExistingWidgets)
-			if (W) ExistingNames.Add(W->GetFName());
+		{
+			if (W)
+			{
+				ExistingNames.Add(W->GetFName());
+			}
+		}
 
 		UWidgetTree::ForWidgetAndChildren(DuplicatedWidget, [&](UWidget* SubWidget)
 		{
-			if (!SubWidget || SubWidget == DuplicatedWidget) return;
+			if (!SubWidget || SubWidget == DuplicatedWidget)
+			{
+				return;
+			}
 			if (ExistingNames.Contains(SubWidget->GetFName()))
 			{
 				int32 Counter = 0;
@@ -1030,12 +1065,24 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPWidgetCommands::HandleListWidgetTypes(
 	TArray<TSharedPtr<FJsonValue>> TypeArray;
 	for (UClass* C : Derived)
 	{
-		if (!C) continue;
-		if (!bIncludeAbstract && C->HasAnyClassFlags(CLASS_Abstract)) continue;
-		if (C->HasAnyClassFlags(CLASS_Deprecated)) continue;
+		if (!C)
+		{
+			continue;
+		}
+		if (!bIncludeAbstract && C->HasAnyClassFlags(CLASS_Abstract))
+		{
+			continue;
+		}
+		if (C->HasAnyClassFlags(CLASS_Deprecated))
+		{
+			continue;
+		}
 
 		const bool bIsPanel = C->IsChildOf(UPanelWidget::StaticClass());
-		if (bPanelsOnly && !bIsPanel) continue;
+		if (bPanelsOnly && !bIsPanel)
+		{
+			continue;
+		}
 
 		const FString Name = C->GetName();
 		if (!FilterLower.IsEmpty() && !Name.ToLower().Contains(FilterLower))

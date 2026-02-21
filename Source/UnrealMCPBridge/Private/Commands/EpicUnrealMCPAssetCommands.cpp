@@ -549,8 +549,14 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPAssetCommands::HandleDeleteAsset(const TSh
         const bool bOk = UEditorAssetLibrary::DeleteAsset(AssetPath);
         TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
         Result->SetBoolField(TEXT("success"), bOk);
-        if (bOk) Result->SetStringField(TEXT("deleted"), AssetPath);
-        else      Result->SetStringField(TEXT("error"),   TEXT("Delete failed"));
+        if (bOk)
+        {
+            Result->SetStringField(TEXT("deleted"), AssetPath);
+        }
+        else
+        {
+            Result->SetStringField(TEXT("error"), TEXT("Delete failed"));
+        }
         return Result;
     }
     else if (UEditorAssetLibrary::DoesDirectoryExist(AssetPath))
@@ -558,8 +564,14 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPAssetCommands::HandleDeleteAsset(const TSh
         const bool bOk = UEditorAssetLibrary::DeleteDirectory(AssetPath);
         TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
         Result->SetBoolField(TEXT("success"), bOk);
-        if (bOk) Result->SetStringField(TEXT("deleted_directory"), AssetPath);
-        else      Result->SetStringField(TEXT("error"),             TEXT("Directory delete failed"));
+        if (bOk)
+        {
+            Result->SetStringField(TEXT("deleted_directory"), AssetPath);
+        }
+        else
+        {
+            Result->SetStringField(TEXT("error"), TEXT("Directory delete failed"));
+        }
         return Result;
     }
 
@@ -577,14 +589,22 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPAssetCommands::HandleSaveAsset(const TShar
         return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
 
     if (!UEditorAssetLibrary::DoesAssetExist(AssetPath))
+    {
         return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
             FString::Printf(TEXT("Asset not found: %s"), *AssetPath));
+    }
 
     const bool bOk = UEditorAssetLibrary::SaveAsset(AssetPath);
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
     Result->SetBoolField(TEXT("success"), bOk);
-    if (bOk) Result->SetStringField(TEXT("saved"), AssetPath);
-    else      Result->SetStringField(TEXT("error"),  TEXT("Save failed"));
+    if (bOk)
+    {
+        Result->SetStringField(TEXT("saved"), AssetPath);
+    }
+    else
+    {
+        Result->SetStringField(TEXT("error"), TEXT("Save failed"));
+    }
     return Result;
 }
 

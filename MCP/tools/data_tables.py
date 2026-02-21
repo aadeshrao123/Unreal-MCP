@@ -15,7 +15,10 @@ def get_data_table_rows(data_table_path: str) -> str:
 @mcp.tool()
 def get_data_table_row(data_table_path: str, row_name: str) -> str:
     """Get a single row from a Data Table by its row name."""
-    return _call("get_data_table_row", {"data_table_path": data_table_path, "row_name": row_name})
+    return _call("get_data_table_row", {
+        "data_table_path": data_table_path,
+        "row_name": row_name,
+    })
 
 
 @mcp.tool()
@@ -34,7 +37,10 @@ def add_data_table_row(
 
     data is a JSON string mapping field names to values, e.g. '{"FieldA": 1}'.
     """
-    params = {"data_table_path": data_table_path, "row_name": row_name}
+    params = {
+        "data_table_path": data_table_path,
+        "row_name": row_name,
+    }
     if data:
         try:
             params["data"] = json.loads(data) if isinstance(data, str) else data
@@ -68,7 +74,10 @@ def update_data_table_row(
 @mcp.tool()
 def delete_data_table_row(data_table_path: str, row_name: str) -> str:
     """Delete a row from a Data Table by name."""
-    return _call("delete_data_table_row", {"data_table_path": data_table_path, "row_name": row_name})
+    return _call("delete_data_table_row", {
+        "data_table_path": data_table_path,
+        "row_name": row_name,
+    })
 
 
 @mcp.tool()

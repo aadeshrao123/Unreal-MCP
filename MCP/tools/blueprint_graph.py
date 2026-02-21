@@ -40,9 +40,14 @@ def add_blueprint_node(
     """
     params: Dict[str, Any] = {"pos_x": pos_x, "pos_y": pos_y}
     # Only include optional fields when set — keeps the wire payload small
-    for key, val in [("message", message), ("event_type", event_type),
-                     ("variable_name", variable_name), ("target_function", target_function),
-                     ("target_blueprint", target_blueprint), ("function_name", function_name)]:
+    for key, val in [
+        ("message", message),
+        ("event_type", event_type),
+        ("variable_name", variable_name),
+        ("target_function", target_function),
+        ("target_blueprint", target_blueprint),
+        ("function_name", function_name),
+    ]:
         if val:
             params[key] = val
 
@@ -73,8 +78,10 @@ def connect_blueprint_nodes(
     """
     params: Dict[str, Any] = {
         "blueprint_name": blueprint_name,
-        "source_node_id": source_node_id, "source_pin_name": source_pin_name,
-        "target_node_id": target_node_id, "target_pin_name": target_pin_name,
+        "source_node_id": source_node_id,
+        "source_pin_name": source_pin_name,
+        "target_node_id": target_node_id,
+        "target_pin_name": target_pin_name,
     }
     if function_name:
         params["function_name"] = function_name
@@ -99,7 +106,9 @@ def create_blueprint_variable(
         "blueprint_name": blueprint_name,
         "variable_name": variable_name,
         "variable_type": variable_type,
-        "is_public": is_public, "tooltip": tooltip, "category": category,
+        "is_public": is_public,
+        "tooltip": tooltip,
+        "category": category,
     }
     if default_value:
         params["default_value"] = default_value
@@ -131,14 +140,22 @@ def set_blueprint_variable_properties(
         "variable_name": variable_name,
     }
     # Only send fields that were explicitly provided
-    for key, val in [("var_name", var_name), ("var_type", var_type),
-                     ("tooltip", tooltip), ("category", category),
-                     ("default_value", default_value)]:
+    for key, val in [
+        ("var_name", var_name),
+        ("var_type", var_type),
+        ("tooltip", tooltip),
+        ("category", category),
+        ("default_value", default_value),
+    ]:
         if val:
             params[key] = val
-    for key, val in [("is_public", is_public), ("is_editable_in_instance", is_editable_in_instance),
-                     ("expose_on_spawn", expose_on_spawn), ("replication_enabled", replication_enabled),
-                     ("replication_condition", replication_condition)]:
+    for key, val in [
+        ("is_public", is_public),
+        ("is_editable_in_instance", is_editable_in_instance),
+        ("expose_on_spawn", expose_on_spawn),
+        ("replication_enabled", replication_enabled),
+        ("replication_condition", replication_condition),
+    ]:
         if val is not None:
             params[key] = val
     return _call("set_blueprint_variable_properties", params)
@@ -153,8 +170,10 @@ def add_event_node(
 ) -> str:
     """Add an event node (ReceiveBeginPlay, ReceiveTick, ReceiveDestroyed, etc.)."""
     return _call("add_event_node", {
-        "blueprint_name": blueprint_name, "event_name": event_name,
-        "pos_x": pos_x, "pos_y": pos_y,
+        "blueprint_name": blueprint_name,
+        "event_name": event_name,
+        "pos_x": pos_x,
+        "pos_y": pos_y,
     })
 
 
@@ -198,12 +217,20 @@ def set_blueprint_node_property(
     target_type, target_function, target_class, event_type).
     """
     params: Dict[str, Any] = {"blueprint_name": blueprint_name, "node_id": node_id}
-    for key, val in [("property_name", property_name), ("property_value", property_value),
-                     ("function_name", function_name), ("action", action),
-                     ("pin_type", pin_type), ("pin_name", pin_name),
-                     ("enum_type", enum_type), ("new_type", new_type),
-                     ("target_type", target_type), ("target_function", target_function),
-                     ("target_class", target_class), ("event_type", event_type)]:
+    for key, val in [
+        ("property_name", property_name),
+        ("property_value", property_value),
+        ("function_name", function_name),
+        ("action", action),
+        ("pin_type", pin_type),
+        ("pin_name", pin_name),
+        ("enum_type", enum_type),
+        ("new_type", new_type),
+        ("target_type", target_type),
+        ("target_function", target_function),
+        ("target_class", target_class),
+        ("event_type", event_type),
+    ]:
         if val:
             params[key] = val
     return _call("set_node_property", params)
@@ -228,8 +255,11 @@ def add_function_input(
 ) -> str:
     """Add an input parameter to a Blueprint function."""
     return _call("add_function_input", {
-        "blueprint_name": blueprint_name, "function_name": function_name,
-        "param_name": param_name, "param_type": param_type, "is_array": is_array,
+        "blueprint_name": blueprint_name,
+        "function_name": function_name,
+        "param_name": param_name,
+        "param_type": param_type,
+        "is_array": is_array,
     })
 
 
@@ -240,8 +270,11 @@ def add_function_output(
 ) -> str:
     """Add an output parameter to a Blueprint function."""
     return _call("add_function_output", {
-        "blueprint_name": blueprint_name, "function_name": function_name,
-        "param_name": param_name, "param_type": param_type, "is_array": is_array,
+        "blueprint_name": blueprint_name,
+        "function_name": function_name,
+        "param_name": param_name,
+        "param_type": param_type,
+        "is_array": is_array,
     })
 
 

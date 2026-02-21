@@ -41,7 +41,11 @@ def create_blueprint(
     parent_class accepts short names ("MinerActor"), prefixed ("AMinerActor"),
     full paths ("/Script/Jiggify.AMinerActor"), or BP paths ("/Game/Blueprints/BP_Base").
     """
-    return _call("create_blueprint", {"name": name, "path": path, "parent_class": parent_class})
+    return _call("create_blueprint", {
+        "name": name,
+        "path": path,
+        "parent_class": parent_class,
+    })
 
 
 @mcp.tool()

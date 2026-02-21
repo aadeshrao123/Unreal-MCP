@@ -31,8 +31,10 @@ def create_material(
         opacity_mask_clip_value: Clip value for masked blend mode (0.0-1.0)
     """
     params = {
-        "name": name, "path": path,
-        "blend_mode": blend_mode, "shading_model": shading_model,
+        "name": name,
+        "path": path,
+        "blend_mode": blend_mode,
+        "shading_model": shading_model,
         "two_sided": two_sided,
     }
     if opacity_mask_clip_value is not None:
@@ -58,7 +60,11 @@ def create_material_instance(
         vector_params: JSON dict of vector overrides — {"BaseColor": [1.0, 0.0, 0.0, 1.0]}
         texture_params: JSON dict of texture overrides — {"Texture": "/Game/Textures/T_Wood"}
     """
-    params = {"parent_path": parent_path, "name": name, "path": path}
+    params = {
+        "parent_path": parent_path,
+        "name": name,
+        "path": path,
+    }
     if scalar_params is not None:
         params["scalar_params"] = json.loads(scalar_params)
     if vector_params is not None:
@@ -139,7 +145,10 @@ def get_material_errors(material_path: str, recompile: bool = True) -> str:
     Returns error messages and the node indices that caused them.
     Recompiles first by default to get fresh errors.
     """
-    return _call("get_material_errors", {"material_path": material_path, "recompile": recompile})
+    return _call("get_material_errors", {
+        "material_path": material_path,
+        "recompile": recompile,
+    })
 
 
 @mcp.tool()
@@ -160,7 +169,10 @@ def set_material_properties(
         shading_model: default_lit | unlit | subsurface | clear_coat | etc.
         recompile: Recompile after setting properties (default True)
     """
-    params: dict = {"material_path": material_path, "recompile": recompile}
+    params: dict = {
+        "material_path": material_path,
+        "recompile": recompile,
+    }
     for key, val in [
         ("blend_mode", blend_mode), ("shading_model", shading_model),
         ("two_sided", two_sided), ("opacity_mask_clip_value", opacity_mask_clip_value),
@@ -221,8 +233,10 @@ def connect_material_expressions(
     """
     return _call("connect_material_expressions", {
         "material_path": material_path,
-        "from_node": from_node, "from_pin": from_pin,
-        "to_node": to_node, "to_pin": to_pin,
+        "from_node": from_node,
+        "from_pin": from_pin,
+        "to_node": to_node,
+        "to_pin": to_pin,
     })
 
 
@@ -232,7 +246,10 @@ def delete_material_expression(material_path: str, node_index: int) -> str:
 
     Remaining node indices may shift — re-query with get_material_graph_nodes afterwards.
     """
-    return _call("delete_material_expression", {"material_path": material_path, "node_index": node_index})
+    return _call("delete_material_expression", {
+        "material_path": material_path,
+        "node_index": node_index,
+    })
 
 
 @mcp.tool()
@@ -254,7 +271,10 @@ def get_material_expression_info(material_path: str, node_index: int) -> str:
 
     Use this before connecting nodes to discover exact pin names.
     """
-    return _call("get_material_expression_info", {"material_path": material_path, "node_index": node_index})
+    return _call("get_material_expression_info", {
+        "material_path": material_path,
+        "node_index": node_index,
+    })
 
 
 @mcp.tool()
@@ -293,8 +313,10 @@ def set_material_expression_property(
 def move_material_expression(material_path: str, node_index: int, pos_x: int, pos_y: int) -> str:
     """Move a material expression node to a new graph position."""
     return _call("move_material_expression", {
-        "material_path": material_path, "node_index": node_index,
-        "pos_x": pos_x, "pos_y": pos_y,
+        "material_path": material_path,
+        "node_index": node_index,
+        "pos_x": pos_x,
+        "pos_y": pos_y,
     })
 
 
@@ -310,8 +332,10 @@ def duplicate_material_expression(
     Returns the new node_index. Connections are NOT copied.
     """
     return _call("duplicate_material_expression", {
-        "material_path": material_path, "node_index": node_index,
-        "offset_x": offset_x, "offset_y": offset_y,
+        "material_path": material_path,
+        "node_index": node_index,
+        "offset_x": offset_x,
+        "offset_y": offset_y,
     })
 
 

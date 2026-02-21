@@ -101,7 +101,8 @@ def set_static_mesh_properties(blueprint_name: str, component_name: str,
                                static_mesh: str = "/Engine/BasicShapes/Cube.Cube") -> str:
     """Set the static mesh on a StaticMeshComponent in a Blueprint."""
     return _call("set_static_mesh_properties", {
-        "blueprint_name": blueprint_name, "component_name": component_name,
+        "blueprint_name": blueprint_name,
+        "component_name": component_name,
         "static_mesh": static_mesh,
     })
 
@@ -118,9 +119,13 @@ def set_physics_properties(
 ) -> str:
     """Set physics properties on a Blueprint component."""
     return _call("set_physics_properties", {
-        "blueprint_name": blueprint_name, "component_name": component_name,
-        "simulate_physics": simulate_physics, "gravity_enabled": gravity_enabled,
-        "mass": mass, "linear_damping": linear_damping, "angular_damping": angular_damping,
+        "blueprint_name": blueprint_name,
+        "component_name": component_name,
+        "simulate_physics": simulate_physics,
+        "gravity_enabled": gravity_enabled,
+        "mass": mass,
+        "linear_damping": linear_damping,
+        "angular_damping": angular_damping,
     })
 
 
@@ -138,9 +143,12 @@ def set_mesh_material_color(
     color: [R, G, B, A] values 0-1
     """
     return _call("set_mesh_material_color", {
-        "blueprint_name": blueprint_name, "component_name": component_name,
-        "color": color, "material_path": material_path,
-        "parameter_name": parameter_name, "material_slot": material_slot,
+        "blueprint_name": blueprint_name,
+        "component_name": component_name,
+        "color": color,
+        "material_path": material_path,
+        "parameter_name": parameter_name,
+        "material_slot": material_slot,
     })
 
 
@@ -148,7 +156,8 @@ def set_mesh_material_color(
 def get_available_materials(search_path: str = "/Game/", include_engine_materials: bool = True) -> str:
     """List materials that can be applied to objects."""
     return _call("get_available_materials", {
-        "search_path": search_path, "include_engine_materials": include_engine_materials,
+        "search_path": search_path,
+        "include_engine_materials": include_engine_materials,
     })
 
 
@@ -156,7 +165,9 @@ def get_available_materials(search_path: str = "/Game/", include_engine_material
 def apply_material_to_actor(actor_name: str, material_path: str, material_slot: int = 0) -> str:
     """Apply a material to a level actor."""
     return _call("apply_material_to_actor", {
-        "actor_name": actor_name, "material_path": material_path, "material_slot": material_slot,
+        "actor_name": actor_name,
+        "material_path": material_path,
+        "material_slot": material_slot,
     })
 
 
@@ -167,8 +178,10 @@ def apply_material_to_blueprint(
 ) -> str:
     """Apply a material to a Blueprint component."""
     return _call("apply_material_to_blueprint", {
-        "blueprint_name": blueprint_name, "component_name": component_name,
-        "material_path": material_path, "material_slot": material_slot,
+        "blueprint_name": blueprint_name,
+        "component_name": component_name,
+        "material_path": material_path,
+        "material_slot": material_slot,
     })
 
 
