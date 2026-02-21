@@ -372,7 +372,8 @@ FString UEpicUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const T
                      CommandType == TEXT("get_selected_actors") ||
                      CommandType == TEXT("get_world_info") ||
                      CommandType == TEXT("spawn_actor_from_class") ||
-                     CommandType == TEXT("get_actor_properties"))
+                     CommandType == TEXT("get_actor_properties") ||
+                     CommandType == TEXT("take_screenshot"))
             {
                 ResultJson = EditorCommands->HandleCommand(CommandType, Params);
             }

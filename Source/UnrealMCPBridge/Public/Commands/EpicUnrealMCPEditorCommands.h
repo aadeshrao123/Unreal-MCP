@@ -35,4 +35,7 @@ private:
 
     // Read ALL FProperties from a live world actor instance (or its components)
     TSharedPtr<FJsonObject> HandleGetActorProperties(const TSharedPtr<FJsonObject>& Params);
+
+    // Capture the active editor viewport to a PNG file
+    TSharedPtr<FJsonObject> HandleTakeScreenshot(const TSharedPtr<FJsonObject>& Params);
 };

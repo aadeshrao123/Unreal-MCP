@@ -65,7 +65,9 @@ public class UnrealMCPBridge : ModuleRules
 				"DataTableEditor",
 				"StructUtils",
 				"UMG",
-				"UMGEditor"
+				"UMGEditor",
+				"LevelEditor",
+				"ImageWrapper"
 			}
 		);
 

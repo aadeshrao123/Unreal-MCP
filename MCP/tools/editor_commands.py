@@ -290,3 +290,27 @@ def get_blueprint_material_info(blueprint_name: str) -> str:
         blueprint_name: Name of the Blueprint
     """
     return _call("get_blueprint_material_info", {"blueprint_name": blueprint_name})
+
+
+# ── Screenshot ─────────────────────────────────────────────────────────────
+
+@mcp.tool()
+def take_screenshot(file_path: str = "", mode: str = "viewport") -> str:
+    """Capture the editor to a PNG screenshot.
+
+    Returns the absolute file path, width, and height of the saved image.
+    The returned path can be read with Claude Code's Read tool to visually
+    inspect the result.
+
+    Args:
+        file_path: Output PNG path (default: Saved/Screenshots/MCP_Screenshot.png)
+        mode: "viewport" captures the level viewport only.
+              "window" captures the entire active editor window (widget designer,
+              material editor, blueprint graph, etc.)
+    """
+    params = {}
+    if file_path:
+        params["file_path"] = file_path
+    if mode and mode != "viewport":
+        params["mode"] = mode
+    return _call("take_screenshot", params)

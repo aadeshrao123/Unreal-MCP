@@ -8,6 +8,15 @@
 #include "HighResScreenshot.h"
 #include "Engine/GameViewportClient.h"
 #include "Misc/FileHelper.h"
+#include "LevelEditor.h"
+#include "IAssetViewport.h"
+#include "IImageWrapper.h"
+#include "IImageWrapperModule.h"
+#include "Framework/Application/SlateApplication.h"
+
+#include "Windows/AllowWindowsPlatformTypes.h"
+#include <Windows.h>
+#include "Windows/HideWindowsPlatformTypes.h"
 #include "GameFramework/Actor.h"
 #include "Engine/Selection.h"
 #include "Kismet/GameplayStatics.h"
@@ -74,6 +83,10 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCommand(const FStrin
     else if (CommandType == TEXT("get_actor_properties"))
     {
         return HandleGetActorProperties(Params);
+    }
+    else if (CommandType == TEXT("take_screenshot"))
+    {
+        return HandleTakeScreenshot(Params);
     }
 
     return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown editor command: %s"), *CommandType));
@@ -530,5 +543,178 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleGetActorProperties(c
         Result->SetObjectField(TEXT("components"), CompMap);
     }
 
+    return Result;
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleTakeScreenshot(const TSharedPtr<FJsonObject>& Params)
+{
+    // Get optional output path
+    FString OutputPath;
+    if (!Params->TryGetStringField(TEXT("file_path"), OutputPath) || OutputPath.IsEmpty())
+    {
+        OutputPath = FPaths::ProjectSavedDir() / TEXT("Screenshots") / TEXT("MCP_Screenshot.png");
+    }
+
+    // mode: "viewport" (level viewport only) or "window" (full editor window)
+    FString Mode = TEXT("viewport");
+    Params->TryGetStringField(TEXT("mode"), Mode);
+
+    // Ensure output directory exists
+    IFileManager::Get().MakeDirectory(*FPaths::GetPath(OutputPath), true);
+
+    TArray<FColor> Pixels;
+    int32 Width = 0;
+    int32 Height = 0;
+
+    if (Mode == TEXT("window"))
+    {
+        // ── Window mode: capture the entire active editor window ──
+        // Uses Windows API to capture the rendered window content via DWM.
+        // Works for widget designer, material editor, blueprint graph, etc.
+        TSharedPtr<SWindow> Window = FSlateApplication::Get().GetActiveTopLevelWindow();
+
+        // Fall back: editor may have lost focus (e.g. user is in the terminal).
+        // Use the first visible top-level window instead (usually the main editor).
+        if (!Window.IsValid())
+        {
+            TArray<TSharedRef<SWindow>> AllWindows;
+            FSlateApplication::Get().GetAllVisibleWindowsOrdered(AllWindows);
+            if (AllWindows.Num() > 0)
+            {
+                Window = AllWindows[0];
+            }
+        }
+
+        if (!Window.IsValid())
+        {
+            return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No editor window found"));
+        }
+
+        TSharedPtr<FGenericWindow> NativeWindow = Window->GetNativeWindow();
+        if (!NativeWindow.IsValid())
+        {
+            return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No native OS window handle"));
+        }
+
+        HWND Hwnd = reinterpret_cast<HWND>(NativeWindow->GetOSWindowHandle());
+        if (!Hwnd)
+        {
+            return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Invalid OS window handle"));
+        }
+
+        // Get client area dimensions (excludes OS title bar / borders)
+        RECT ClientRect;
+        ::GetClientRect(Hwnd, &ClientRect);
+        Width  = ClientRect.right  - ClientRect.left;
+        Height = ClientRect.bottom - ClientRect.top;
+
+        if (Width <= 0 || Height <= 0)
+        {
+            return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+                TEXT("Window has invalid size (may be minimized)"));
+        }
+
+        // Create a memory DC + bitmap to receive the capture
+        HDC WindowDC = ::GetDC(Hwnd);
+        HDC MemDC    = ::CreateCompatibleDC(WindowDC);
+        HBITMAP HBitmap   = ::CreateCompatibleBitmap(WindowDC, Width, Height);
+        HBITMAP OldBitmap = static_cast<HBITMAP>(::SelectObject(MemDC, HBitmap));
+
+        // PrintWindow with PW_RENDERFULLCONTENT captures D3D/DWM content
+        const UINT PW_RENDERFULLCONTENT_FLAG = 0x00000002;
+        BOOL bCaptured = ::PrintWindow(Hwnd, MemDC, PW_RENDERFULLCONTENT_FLAG);
+
+        if (!bCaptured)
+        {
+            // Fall back to BitBlt from window DC
+            ::BitBlt(MemDC, 0, 0, Width, Height, WindowDC, 0, 0, SRCCOPY);
+        }
+
+        // Read pixel data from the bitmap (top-down BGRA)
+        BITMAPINFOHEADER BMI = {};
+        BMI.biSize        = sizeof(BITMAPINFOHEADER);
+        BMI.biWidth       = Width;
+        BMI.biHeight      = -Height;  // Negative = top-down
+        BMI.biPlanes      = 1;
+        BMI.biBitCount    = 32;
+        BMI.biCompression = BI_RGB;
+
+        Pixels.SetNum(Width * Height);
+        ::GetDIBits(MemDC, HBitmap, 0, Height, Pixels.GetData(),
+                    reinterpret_cast<BITMAPINFO*>(&BMI), DIB_RGB_COLORS);
+
+        // Cleanup GDI objects
+        ::SelectObject(MemDC, OldBitmap);
+        ::DeleteObject(HBitmap);
+        ::DeleteDC(MemDC);
+        ::ReleaseDC(Hwnd, WindowDC);
+
+        if (Pixels.Num() == 0)
+        {
+            return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+                TEXT("Failed to capture editor window"));
+        }
+    }
+    else
+    {
+        // ── Viewport mode (default): capture the active level viewport ──
+        FLevelEditorModule& LevelEditor = FModuleManager::GetModuleChecked<FLevelEditorModule>("LevelEditor");
+        TSharedPtr<IAssetViewport> ActiveViewport = LevelEditor.GetFirstActiveViewport();
+        if (!ActiveViewport.IsValid())
+        {
+            return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No active level viewport found"));
+        }
+
+        FViewport* Viewport = ActiveViewport->GetActiveViewport();
+        if (!Viewport)
+        {
+            return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get viewport render target"));
+        }
+
+        const FIntPoint Size = Viewport->GetSizeXY();
+        if (Size.X <= 0 || Size.Y <= 0)
+        {
+            return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+                TEXT("Viewport has invalid size (may be minimized or not yet rendered)"));
+        }
+
+        if (!Viewport->ReadPixels(Pixels))
+        {
+            return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to read pixels from viewport"));
+        }
+
+        Width = Size.X;
+        Height = Size.Y;
+    }
+
+    // Fix alpha channel — both viewport and Slate may return alpha = 0
+    for (FColor& Pixel : Pixels)
+    {
+        Pixel.A = 255;
+    }
+
+    // Compress to PNG via IImageWrapper
+    IImageWrapperModule& ImageWrapperModule = FModuleManager::LoadModuleChecked<IImageWrapperModule>(FName("ImageWrapper"));
+    TSharedPtr<IImageWrapper> PngWriter = ImageWrapperModule.CreateImageWrapper(EImageFormat::PNG);
+    if (!PngWriter.IsValid() ||
+        !PngWriter->SetRaw(Pixels.GetData(), Pixels.Num() * sizeof(FColor),
+                           Width, Height, ERGBFormat::BGRA, 8))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to compress image to PNG"));
+    }
+
+    const TArray64<uint8> PNGData = PngWriter->GetCompressed();
+    if (!FFileHelper::SaveArrayToFile(PNGData, *OutputPath))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Failed to save screenshot to: %s"), *OutputPath));
+    }
+
+    // Return result with absolute path so callers can read the file directly
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("file_path"), FPaths::ConvertRelativePathToFull(OutputPath));
+    Result->SetNumberField(TEXT("width"), Width);
+    Result->SetNumberField(TEXT("height"), Height);
     return Result;
 }
