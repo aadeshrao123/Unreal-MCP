@@ -13,6 +13,59 @@
 #include "FileHelpers.h"
 #include "UObject/Field.h"
 #include "JsonObjectConverter.h"
+#include "Factories/Factory.h"
+
+// ---------------------------------------------------------------------------
+// Helper: Find the best UFactory for a given filename by extension.
+// Setting an explicit factory on UAssetImportTask bypasses the Interchange
+// async pipeline, which crashes when called from the game-thread task graph
+// (re-entrant ProcessTasksUntilIdle).
+// ---------------------------------------------------------------------------
+static UFactory* FindFactoryForFile(const FString& Filename)
+{
+    const FString Extension = FPaths::GetExtension(Filename).ToLower();
+    UFactory* BestFactory = nullptr;
+    int32 BestPriority = -1;
+
+    for (TObjectIterator<UClass> It; It; ++It)
+    {
+        if (!It->IsChildOf(UFactory::StaticClass()) || It->HasAnyClassFlags(CLASS_Abstract))
+        {
+            continue;
+        }
+
+        UFactory* TestFactory = It->GetDefaultObject<UFactory>();
+        if (!TestFactory || TestFactory->bEditorImport == false)
+        {
+            continue;
+        }
+
+        // Check if this factory handles our extension
+        bool bSupportsExtension = false;
+        TArray<FString> Formats;
+        TestFactory->GetSupportedFileExtensions(Formats);
+        for (const FString& Fmt : Formats)
+        {
+            if (Fmt.Equals(Extension, ESearchCase::IgnoreCase))
+            {
+                bSupportsExtension = true;
+                break;
+            }
+        }
+
+        if (bSupportsExtension && TestFactory->FactoryCanImport(Filename))
+        {
+            if (TestFactory->ImportPriority > BestPriority)
+            {
+                BestPriority = TestFactory->ImportPriority;
+                BestFactory = NewObject<UFactory>(GetTransientPackage(), *It);
+                BestFactory->AddToRoot(); // prevent GC during import
+            }
+        }
+    }
+
+    return BestFactory;
+}
 
 FEpicUnrealMCPAssetCommands::FEpicUnrealMCPAssetCommands()
 {
@@ -35,9 +88,10 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPAssetCommands::HandleCommand(const FString
     if (CommandType == TEXT("delete_asset"))         return HandleDeleteAsset(Params);
     if (CommandType == TEXT("save_asset"))           return HandleSaveAsset(Params);
     if (CommandType == TEXT("save_all"))             return HandleSaveAll(Params);
-    if (CommandType == TEXT("import_asset"))         return HandleImportAsset(Params);
-    if (CommandType == TEXT("get_selected_assets"))  return HandleGetSelectedAssets(Params);
-    if (CommandType == TEXT("sync_browser"))         return HandleSyncBrowser(Params);
+    if (CommandType == TEXT("import_asset"))           return HandleImportAsset(Params);
+    if (CommandType == TEXT("import_assets_batch"))   return HandleImportAssetsBatch(Params);
+    if (CommandType == TEXT("get_selected_assets"))   return HandleGetSelectedAssets(Params);
+    if (CommandType == TEXT("sync_browser"))          return HandleSyncBrowser(Params);
 
     return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
         FString::Printf(TEXT("Unknown asset command: %s"), *CommandType));
@@ -560,27 +614,253 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPAssetCommands::HandleImportAsset(const TSh
 
     SourceFile = SourceFile.Replace(TEXT("\\"), TEXT("/"));
 
+    // Validate source file exists
+    if (!FPaths::FileExists(SourceFile))
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Source file does not exist: %s"), *SourceFile));
+
+    // Optional params
+    FString DestinationName;
+    const bool bHasDestName = Params->TryGetStringField(TEXT("destination_name"), DestinationName);
+    bool bReplaceExisting = true;
+    Params->TryGetBoolField(TEXT("replace_existing"), bReplaceExisting);
+
+    // Find a legacy UFactory to bypass the Interchange async pipeline
+    // (Interchange causes task graph recursion when called from the game thread)
+    UFactory* Factory = FindFactoryForFile(SourceFile);
+
     UAssetImportTask* Task = NewObject<UAssetImportTask>();
     Task->Filename        = SourceFile;
     Task->DestinationPath = DestinationPath;
     Task->bAutomated      = true;
     Task->bSave           = true;
+    Task->bAsync          = false;
+    Task->bReplaceExisting = bReplaceExisting;
+    Task->Factory          = Factory;
+    if (bHasDestName && !DestinationName.IsEmpty())
+    {
+        Task->DestinationName = DestinationName;
+    }
 
     IAssetTools& AssetTools =
         FModuleManager::LoadModuleChecked<FAssetToolsModule>(TEXT("AssetTools")).Get();
     TArray<UAssetImportTask*> Tasks = { Task };
     AssetTools.ImportAssetTasks(Tasks);
 
+    // Clean up factory root reference
+    if (Factory)
+    {
+        Factory->RemoveFromRoot();
+    }
+
     TArray<TSharedPtr<FJsonValue>> ImportedArray;
-    for (const FString& Imported : Task->ImportedObjectPaths)
-        ImportedArray.Add(MakeShared<FJsonValueString>(Imported));
+    TArray<TSharedPtr<FJsonValue>> ImportedClassArray;
+    for (UObject* ImportedObj : Task->GetObjects())
+    {
+        if (ImportedObj)
+        {
+            ImportedArray.Add(MakeShared<FJsonValueString>(ImportedObj->GetPathName()));
+            ImportedClassArray.Add(MakeShared<FJsonValueString>(ImportedObj->GetClass()->GetName()));
+        }
+    }
+    // Fallback to ImportedObjectPaths if GetObjects() is empty
     if (ImportedArray.IsEmpty())
-        ImportedArray.Add(MakeShared<FJsonValueString>(SourceFile));
+    {
+        for (const FString& Imported : Task->ImportedObjectPaths)
+        {
+            ImportedArray.Add(MakeShared<FJsonValueString>(Imported));
+        }
+    }
+
+    const bool bSuccess = !ImportedArray.IsEmpty();
+
+    // Get source file size
+    const int64 FileSize = IFileManager::Get().FileSize(*SourceFile);
 
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
-    Result->SetBoolField(TEXT("success"),     true);
+    Result->SetBoolField(TEXT("success"), bSuccess);
+    Result->SetStringField(TEXT("source_file"), SourceFile);
     Result->SetStringField(TEXT("destination"), DestinationPath);
-    Result->SetArrayField(TEXT("imported"),   ImportedArray);
+    Result->SetNumberField(TEXT("source_file_size"), static_cast<double>(FileSize));
+    Result->SetArrayField(TEXT("imported_paths"), ImportedArray);
+    if (!ImportedClassArray.IsEmpty())
+    {
+        Result->SetArrayField(TEXT("imported_classes"), ImportedClassArray);
+    }
+    if (!bSuccess)
+    {
+        Result->SetStringField(TEXT("error"), TEXT("Import produced no assets — check file format and destination path"));
+    }
+    return Result;
+}
+
+// ---------------------------------------------------------------------------
+// import_assets_batch
+// ---------------------------------------------------------------------------
+TSharedPtr<FJsonObject> FEpicUnrealMCPAssetCommands::HandleImportAssetsBatch(const TSharedPtr<FJsonObject>& Params)
+{
+    FString DestinationPath;
+    if (!Params->TryGetStringField(TEXT("destination_path"), DestinationPath))
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'destination_path' parameter"));
+
+    bool bReplaceExisting = true;
+    Params->TryGetBoolField(TEXT("replace_existing"), bReplaceExisting);
+
+    // Collect source files — either from explicit "files" array or directory scan
+    TArray<FString> SourceFiles;
+
+    const TArray<TSharedPtr<FJsonValue>>* FilesArray = nullptr;
+    FString SourceDirectory;
+
+    if (Params->TryGetArrayField(TEXT("files"), FilesArray) && FilesArray && FilesArray->Num() > 0)
+    {
+        for (const TSharedPtr<FJsonValue>& Val : *FilesArray)
+        {
+            FString FilePath = Val->AsString().Replace(TEXT("\\"), TEXT("/"));
+            if (!FilePath.IsEmpty())
+            {
+                SourceFiles.Add(FilePath);
+            }
+        }
+    }
+    else if (Params->TryGetStringField(TEXT("source_directory"), SourceDirectory))
+    {
+        SourceDirectory = SourceDirectory.Replace(TEXT("\\"), TEXT("/"));
+
+        if (!FPaths::DirectoryExists(SourceDirectory))
+            return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+                FString::Printf(TEXT("Source directory does not exist: %s"), *SourceDirectory));
+
+        // Collect extension filters
+        TArray<FString> Extensions;
+        const TArray<TSharedPtr<FJsonValue>>* ExtArray = nullptr;
+        if (Params->TryGetArrayField(TEXT("extensions"), ExtArray) && ExtArray)
+        {
+            for (const TSharedPtr<FJsonValue>& Val : *ExtArray)
+            {
+                FString Ext = Val->AsString().ToLower();
+                if (!Ext.StartsWith(TEXT(".")))
+                {
+                    Ext = TEXT(".") + Ext;
+                }
+                Extensions.Add(Ext);
+            }
+        }
+
+        // Scan directory for matching files
+        IFileManager& FM = IFileManager::Get();
+        TArray<FString> FoundFiles;
+        FM.FindFilesRecursive(FoundFiles, *SourceDirectory, TEXT("*.*"), /*Files=*/true, /*Directories=*/false);
+
+        for (const FString& Found : FoundFiles)
+        {
+            if (Extensions.Num() > 0)
+            {
+                const FString FileExt = FPaths::GetExtension(Found, /*bIncludeDot=*/true).ToLower();
+                if (!Extensions.Contains(FileExt))
+                {
+                    continue;
+                }
+            }
+            SourceFiles.Add(Found.Replace(TEXT("\\"), TEXT("/")));
+        }
+
+        if (SourceFiles.Num() == 0)
+            return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+                FString::Printf(TEXT("No matching files found in directory: %s"), *SourceDirectory));
+    }
+    else
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            TEXT("Must provide either 'files' array or 'source_directory' parameter"));
+    }
+
+    // Create import tasks
+    IAssetTools& AssetTools =
+        FModuleManager::LoadModuleChecked<FAssetToolsModule>(TEXT("AssetTools")).Get();
+
+    TArray<UAssetImportTask*> ImportTasks;
+    TArray<UFactory*> Factories;  // track for cleanup
+    ImportTasks.Reserve(SourceFiles.Num());
+
+    for (const FString& SourceFile : SourceFiles)
+    {
+        UFactory* Factory = FindFactoryForFile(SourceFile);
+        if (Factory)
+        {
+            Factories.Add(Factory);
+        }
+
+        UAssetImportTask* Task = NewObject<UAssetImportTask>();
+        Task->Filename         = SourceFile;
+        Task->DestinationPath  = DestinationPath;
+        Task->bAutomated       = true;
+        Task->bSave            = true;
+        Task->bAsync           = false;
+        Task->bReplaceExisting = bReplaceExisting;
+        Task->Factory          = Factory;
+        ImportTasks.Add(Task);
+    }
+
+    AssetTools.ImportAssetTasks(ImportTasks);
+
+    // Clean up factory root references
+    for (UFactory* Factory : Factories)
+    {
+        Factory->RemoveFromRoot();
+    }
+
+    // Build per-file results
+    TArray<TSharedPtr<FJsonValue>> ResultsArray;
+    int32 SuccessCount = 0;
+    int32 FailCount = 0;
+
+    for (int32 i = 0; i < ImportTasks.Num(); ++i)
+    {
+        UAssetImportTask* Task = ImportTasks[i];
+        TSharedPtr<FJsonObject> FileResult = MakeShared<FJsonObject>();
+        FileResult->SetStringField(TEXT("source_file"), SourceFiles[i]);
+
+        TArray<TSharedPtr<FJsonValue>> ImportedPaths;
+        for (UObject* ImportedObj : Task->GetObjects())
+        {
+            if (ImportedObj)
+            {
+                ImportedPaths.Add(MakeShared<FJsonValueString>(ImportedObj->GetPathName()));
+            }
+        }
+        if (ImportedPaths.IsEmpty())
+        {
+            for (const FString& Path : Task->ImportedObjectPaths)
+            {
+                ImportedPaths.Add(MakeShared<FJsonValueString>(Path));
+            }
+        }
+
+        const bool bFileSuccess = !ImportedPaths.IsEmpty();
+        FileResult->SetBoolField(TEXT("success"), bFileSuccess);
+        FileResult->SetArrayField(TEXT("imported_paths"), ImportedPaths);
+
+        if (bFileSuccess)
+        {
+            ++SuccessCount;
+        }
+        else
+        {
+            ++FailCount;
+            FileResult->SetStringField(TEXT("error"), TEXT("Import produced no assets"));
+        }
+
+        ResultsArray.Add(MakeShared<FJsonValueObject>(FileResult));
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), FailCount == 0);
+    Result->SetStringField(TEXT("destination"), DestinationPath);
+    Result->SetNumberField(TEXT("total_files"), SourceFiles.Num());
+    Result->SetNumberField(TEXT("succeeded"), SuccessCount);
+    Result->SetNumberField(TEXT("failed"), FailCount);
+    Result->SetArrayField(TEXT("results"), ResultsArray);
     return Result;
 }
 

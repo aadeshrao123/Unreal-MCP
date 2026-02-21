@@ -390,6 +390,7 @@ FString UEpicUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const T
                      CommandType == TEXT("save_asset") ||
                      CommandType == TEXT("save_all") ||
                      CommandType == TEXT("import_asset") ||
+                     CommandType == TEXT("import_assets_batch") ||
                      CommandType == TEXT("get_selected_assets") ||
                      CommandType == TEXT("sync_browser"))
             {

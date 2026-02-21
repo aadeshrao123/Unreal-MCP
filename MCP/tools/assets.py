@@ -194,17 +194,61 @@ def save_all() -> str:
 
 
 @mcp.tool()
-def import_asset(source_file: str, destination_path: str) -> str:
-    """Import an external file into the Content Browser.
+def import_asset(
+    source_file: str,
+    destination_path: str,
+    destination_name: str = "",
+    replace_existing: bool = True,
+) -> str:
+    """Import an external file (texture, mesh, FBX, etc.) into the Content Browser.
 
     Args:
         source_file: Absolute path to file on disk (e.g. "C:/textures/wood.png")
         destination_path: Content Browser path (e.g. "/Game/Textures")
+        destination_name: Custom asset name (default: source filename without extension)
+        replace_existing: Overwrite if asset already exists (default True)
     """
-    return _call("import_asset", {
+    params: dict = {
         "source_file":      source_file,
         "destination_path": destination_path,
-    })
+        "replace_existing": replace_existing,
+    }
+    if destination_name:
+        params["destination_name"] = destination_name
+    return _call("import_asset", params)
+
+
+@mcp.tool()
+def import_assets_batch(
+    destination_path: str,
+    files: list[str] | None = None,
+    source_directory: str = "",
+    extensions: list[str] | None = None,
+    replace_existing: bool = True,
+) -> str:
+    """Import multiple files into the Content Browser in one batch.
+
+    Provide EITHER 'files' (explicit list) OR 'source_directory' (scan a folder).
+
+    Args:
+        destination_path: Content Browser destination (e.g. "/Game/Textures")
+        files: List of absolute file paths to import
+        source_directory: Absolute path to a folder — all matching files will be imported
+        extensions: File extensions to include when scanning a directory (e.g. ["png", "jpg", "fbx"]).
+            If omitted with source_directory, all files are imported.
+        replace_existing: Overwrite existing assets (default True)
+    """
+    params: dict = {
+        "destination_path": destination_path,
+        "replace_existing": replace_existing,
+    }
+    if files:
+        params["files"] = files
+    elif source_directory:
+        params["source_directory"] = source_directory
+        if extensions:
+            params["extensions"] = extensions
+    return _call("import_assets_batch", params)
 
 
 @mcp.tool()

@@ -28,6 +28,7 @@ private:
     TSharedPtr<FJsonObject> HandleSaveAsset(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleSaveAll(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleImportAsset(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleImportAssetsBatch(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleGetSelectedAssets(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleSyncBrowser(const TSharedPtr<FJsonObject>& Params);
 
