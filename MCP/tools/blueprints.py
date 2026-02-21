@@ -12,17 +12,45 @@ def _call(command: str, params: dict) -> str:
 
 
 @mcp.tool()
+def search_parent_classes(
+    filter: str,
+    max_results: int = 20,
+    include_blueprint_classes: bool = True,
+) -> str:
+    """Search for classes that can be used as Blueprint parents.
+
+    Use this BEFORE create_blueprint to find the correct parent class name.
+    Returns a filtered list of matching classes — never dumps all classes.
+
+    Args:
+        filter: Keyword to search for (e.g. "Miner", "Actor", "Pawn", "Widget", "Interactable")
+        max_results: Maximum number of results to return (default 20, max 100)
+        include_blueprint_classes: Also include Blueprint-generated classes as potential parents (default True)
+    """
+    return _call("search_parent_classes", {
+        "filter": filter,
+        "max_results": max_results,
+        "include_blueprint_classes": include_blueprint_classes,
+    })
+
+
+@mcp.tool()
 def create_blueprint(
     name: str,
     path: str = "/Game/Blueprints",
     parent_class: str = "Actor",
 ) -> str:
-    """Create a new Blueprint asset.
+    """Create a new Blueprint asset from any C++ or Blueprint parent class.
+
+    Supports parent classes from ANY module (Engine, Game, plugins like Jiggify, etc.).
+    Use search_parent_classes first to find the correct parent class name.
 
     Args:
         name: Blueprint name (e.g. "BP_MyActor")
         path: Content Browser path (e.g. "/Game/Blueprints")
-        parent_class: Parent class (Actor, Pawn, Character, PlayerController, GameModeBase, etc.)
+        parent_class: Parent class — accepts short names ("MinerActor", "Character"),
+            prefixed names ("AMinerActor"), full paths ("/Script/Jiggify.AMinerActor"),
+            or Blueprint asset paths ("/Game/Blueprints/BP_Base") for child Blueprints
     """
     return _call("create_blueprint", {
         "name": name,

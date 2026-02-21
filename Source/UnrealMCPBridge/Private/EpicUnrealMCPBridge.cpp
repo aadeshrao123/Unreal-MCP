@@ -397,6 +397,7 @@ FString UEpicUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const T
             }
             // Blueprint Commands
             else if (CommandType == TEXT("create_blueprint") ||
+                     CommandType == TEXT("search_parent_classes") ||
                      CommandType == TEXT("add_component_to_blueprint") ||
                      CommandType == TEXT("set_physics_properties") ||
                      CommandType == TEXT("compile_blueprint") ||

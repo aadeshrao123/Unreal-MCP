@@ -34,6 +34,7 @@ UClass* FEpicUnrealMCPPropertyUtils::ResolveAnyClass(const FString& ClassName)
     }
 
     // 2. Short name — iterate all loaded classes
+    //    Handles U-prefix (UObjects/components), A-prefix (actors), and raw names
     for (TObjectIterator<UClass> It; It; ++It)
     {
         UClass* C = *It;
@@ -41,7 +42,9 @@ UClass* FEpicUnrealMCPPropertyUtils::ResolveAnyClass(const FString& ClassName)
         const FString Name = C->GetName();
         if (Name == ClassName ||
             Name == (TEXT("U") + ClassName) ||
-            (ClassName.StartsWith(TEXT("U")) && Name == ClassName.RightChop(1)))
+            Name == (TEXT("A") + ClassName) ||
+            (ClassName.StartsWith(TEXT("U")) && Name == ClassName.RightChop(1)) ||
+            (ClassName.StartsWith(TEXT("A")) && Name == ClassName.RightChop(1)))
         {
             return C;
         }

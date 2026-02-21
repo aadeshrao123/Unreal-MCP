@@ -4,6 +4,7 @@
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Factories/BlueprintFactory.h"
+#include "KismetCompilerModule.h"
 #include "EdGraphSchema_K2.h"
 #include "K2Node_Event.h"
 #include "K2Node_VariableGet.h"
@@ -29,6 +30,8 @@
 #include "GameFramework/Actor.h"
 #include "GameFramework/Pawn.h"
 #include "Kismet/GameplayStatics.h"
+#include "Commands/EpicUnrealMCPPropertyUtils.h"
+#include "UObject/UObjectIterator.h"
 
 FEpicUnrealMCPBlueprintCommands::FEpicUnrealMCPBlueprintCommands()
 {
@@ -39,6 +42,10 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleCommand(const FSt
     if (CommandType == TEXT("create_blueprint"))
     {
         return HandleCreateBlueprint(Params);
+    }
+    else if (CommandType == TEXT("search_parent_classes"))
+    {
+        return HandleSearchParentClasses(Params);
     }
     else if (CommandType == TEXT("add_component_to_blueprint"))
     {
@@ -134,82 +141,211 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleCreateBlueprint(c
         return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint already exists: %s"), *BlueprintName));
     }
 
-    // Create the blueprint factory
-    UBlueprintFactory* Factory = NewObject<UBlueprintFactory>();
-    
-    // Handle parent class
+    // -----------------------------------------------------------------------
+    // Resolve parent class — supports C++ classes from any module, Blueprint
+    // parents, full paths, short names, A/U-prefixed names
+    // -----------------------------------------------------------------------
     FString ParentClass;
     Params->TryGetStringField(TEXT("parent_class"), ParentClass);
-    
-    // Default to Actor if no parent class specified
+
     UClass* SelectedParentClass = AActor::StaticClass();
-    
-    // Try to find the specified parent class
+
     if (!ParentClass.IsEmpty())
     {
-        FString ClassName = ParentClass;
-        if (!ClassName.StartsWith(TEXT("A")))
-        {
-            ClassName = TEXT("A") + ClassName;
-        }
-        
-        // First try direct StaticClass lookup for common classes
         UClass* FoundClass = nullptr;
-        if (ClassName == TEXT("APawn"))
+
+        // Content path → try as Blueprint asset first, then as class path
+        if (ParentClass.StartsWith(TEXT("/")))
         {
-            FoundClass = APawn::StaticClass();
-        }
-        else if (ClassName == TEXT("AActor"))
-        {
-            FoundClass = AActor::StaticClass();
+            UBlueprint* ParentBP = Cast<UBlueprint>(UEditorAssetLibrary::LoadAsset(ParentClass));
+            if (ParentBP && ParentBP->GeneratedClass)
+            {
+                FoundClass = ParentBP->GeneratedClass;
+                UE_LOG(LogTemp, Log, TEXT("MCP: Resolved Blueprint parent: %s -> %s"),
+                    *ParentClass, *FoundClass->GetName());
+            }
+            else
+            {
+                FoundClass = FEpicUnrealMCPPropertyUtils::ResolveAnyClass(ParentClass);
+            }
         }
         else
         {
-            // Try loading the class using LoadClass which is more reliable than FindObject
-            const FString ClassPath = FString::Printf(TEXT("/Script/Engine.%s"), *ClassName);
-            FoundClass = LoadClass<AActor>(nullptr, *ClassPath);
-            
-            if (!FoundClass)
-            {
-                // Try alternate paths if not found
-                const FString GameClassPath = FString::Printf(TEXT("/Script/Game.%s"), *ClassName);
-                FoundClass = LoadClass<AActor>(nullptr, *GameClassPath);
-            }
+            // Short name or prefixed name — iterates ALL loaded classes
+            FoundClass = FEpicUnrealMCPPropertyUtils::ResolveAnyClass(ParentClass);
         }
 
         if (FoundClass)
         {
             SelectedParentClass = FoundClass;
-            UE_LOG(LogTemp, Log, TEXT("Successfully set parent class to '%s'"), *ClassName);
+            UE_LOG(LogTemp, Log, TEXT("MCP: Parent class resolved to '%s' (%s)"),
+                *FoundClass->GetName(), *FoundClass->GetPathName());
         }
         else
         {
-            UE_LOG(LogTemp, Warning, TEXT("Could not find specified parent class '%s' at paths: /Script/Engine.%s or /Script/Game.%s, defaulting to AActor"), 
-                *ClassName, *ClassName, *ClassName);
+            return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+                FString::Printf(TEXT("Could not find parent class '%s'. Use search_parent_classes to find the correct class name."), *ParentClass));
         }
     }
-    
-    Factory->ParentClass = SelectedParentClass;
 
-    // Create the blueprint
+    // -----------------------------------------------------------------------
+    // Validate — same check the engine uses in UBlueprintFactory::FactoryCreateNew
+    // -----------------------------------------------------------------------
+    if (!FKismetEditorUtilities::CanCreateBlueprintOfClass(SelectedParentClass))
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Cannot create a Blueprint based on class '%s'. Class must be Blueprintable and not deprecated."),
+                *SelectedParentClass->GetName()));
+    }
+
+    // -----------------------------------------------------------------------
+    // Resolve correct Blueprint asset type — e.g. UUserWidget → UWidgetBlueprint,
+    // AActor → UBlueprint.  Exactly how UBlueprintFactory::FactoryCreateNew does it.
+    // -----------------------------------------------------------------------
+    UClass* BlueprintClass = nullptr;
+    UClass* BlueprintGeneratedClass = nullptr;
+
+    IKismetCompilerInterface& KismetCompilerModule =
+        FModuleManager::LoadModuleChecked<IKismetCompilerInterface>("KismetCompiler");
+    KismetCompilerModule.GetBlueprintTypesForClass(SelectedParentClass,
+        BlueprintClass, BlueprintGeneratedClass);
+
+    // -----------------------------------------------------------------------
+    // Create — canonical engine path: FKismetEditorUtilities::CreateBlueprint
+    // This handles: SCS + UCS (Actor-based), event graphs, compilation,
+    // default event nodes (BeginPlay, Tick, etc.), sparse class data
+    // -----------------------------------------------------------------------
     UPackage* Package = CreatePackage(*(PackagePath + AssetName));
-    UBlueprint* NewBlueprint = Cast<UBlueprint>(Factory->FactoryCreateNew(UBlueprint::StaticClass(), Package, *AssetName, RF_Standalone | RF_Public, nullptr, GWarn));
+
+    UBlueprint* NewBlueprint = FKismetEditorUtilities::CreateBlueprint(
+        SelectedParentClass, Package, *AssetName, BPTYPE_Normal,
+        BlueprintClass, BlueprintGeneratedClass, FName("MCP"));
 
     if (NewBlueprint)
     {
-        // Notify the asset registry
         FAssetRegistryModule::AssetCreated(NewBlueprint);
-
-        // Mark the package dirty
         Package->MarkPackageDirty();
 
         TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
         ResultObj->SetStringField(TEXT("name"), AssetName);
         ResultObj->SetStringField(TEXT("path"), PackagePath + AssetName);
+        ResultObj->SetStringField(TEXT("parent_class"), SelectedParentClass->GetName());
+        ResultObj->SetStringField(TEXT("parent_class_path"), SelectedParentClass->GetPathName());
+        ResultObj->SetStringField(TEXT("blueprint_type"), BlueprintClass->GetName());
         return ResultObj;
     }
 
     return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create blueprint"));
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSearchParentClasses(const TSharedPtr<FJsonObject>& Params)
+{
+    FString Filter;
+    if (!Params->TryGetStringField(TEXT("filter"), Filter) || Filter.IsEmpty())
+    {
+        return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing or empty 'filter' parameter"));
+    }
+
+    int32 MaxResults = 20;
+    if (Params->HasField(TEXT("max_results")))
+    {
+        MaxResults = FMath::Clamp(Params->GetIntegerField(TEXT("max_results")), 1, 100);
+    }
+
+    bool bIncludeBlueprintClasses = true;
+    Params->TryGetBoolField(TEXT("include_blueprint_classes"), bIncludeBlueprintClasses);
+
+    const FString FilterLower = Filter.ToLower();
+
+    TArray<TSharedPtr<FJsonValue>> ResultArray;
+
+    // Iterate all loaded classes and match against filter
+    for (TObjectIterator<UClass> It; It; ++It)
+    {
+        if (ResultArray.Num() >= MaxResults)
+            break;
+
+        UClass* C = *It;
+        if (!C) continue;
+
+        // Skip deprecated classes
+        if (C->HasAnyClassFlags(CLASS_Deprecated | CLASS_NewerVersionExists))
+            continue;
+
+        // Use the engine's authoritative check for "can be a Blueprint parent"
+        if (!FKismetEditorUtilities::CanCreateBlueprintOfClass(C))
+            continue;
+
+        // Skip Blueprint-generated classes if not requested
+        const bool bIsBlueprintGenerated = C->HasAnyClassFlags(CLASS_CompiledFromBlueprint);
+        if (bIsBlueprintGenerated && !bIncludeBlueprintClasses)
+            continue;
+
+        const FString ClassName = C->GetName();
+        const FString ClassNameLower = ClassName.ToLower();
+
+        // Match filter against class name (without prefix too for convenience)
+        FString UnprefixedName = ClassName;
+        if (ClassName.Len() > 1 && (ClassName[0] == TEXT('A') || ClassName[0] == TEXT('U')))
+        {
+            // Check second char is uppercase to confirm it's a UE prefix
+            if (ClassName.Len() > 1 && FChar::IsUpper(ClassName[1]))
+            {
+                UnprefixedName = ClassName.RightChop(1);
+            }
+        }
+        const FString UnprefixedLower = UnprefixedName.ToLower();
+
+        if (!ClassNameLower.Contains(FilterLower) && !UnprefixedLower.Contains(FilterLower))
+            continue;
+
+        // Extract module name from path: /Script/ModuleName.ClassName
+        FString ClassPath = C->GetPathName();
+        FString ModuleName = TEXT("Unknown");
+        if (ClassPath.StartsWith(TEXT("/Script/")))
+        {
+            FString Remainder = ClassPath.RightChop(8); // Remove "/Script/"
+            int32 DotIndex;
+            if (Remainder.FindChar(TEXT('.'), DotIndex))
+            {
+                ModuleName = Remainder.Left(DotIndex);
+            }
+        }
+
+        TSharedPtr<FJsonObject> ClassObj = MakeShared<FJsonObject>();
+        ClassObj->SetStringField(TEXT("name"), ClassName);
+        ClassObj->SetStringField(TEXT("path"), ClassPath);
+        ClassObj->SetStringField(TEXT("module"), ModuleName);
+        ClassObj->SetBoolField(TEXT("is_blueprint"), bIsBlueprintGenerated);
+
+        // If Blueprint-generated, include the Blueprint asset path for convenience
+        if (bIsBlueprintGenerated)
+        {
+            // Generated classes end with _C, Blueprint asset is the class outer
+            UObject* Outer = C->GetOuter();
+            if (Outer)
+            {
+                ClassObj->SetStringField(TEXT("blueprint_path"), Outer->GetPathName());
+            }
+        }
+
+        // Include parent class for context
+        UClass* SuperClass = C->GetSuperClass();
+        if (SuperClass)
+        {
+            ClassObj->SetStringField(TEXT("parent"), SuperClass->GetName());
+        }
+
+        ResultArray.Add(MakeShared<FJsonValueObject>(ClassObj));
+    }
+
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("filter"), Filter);
+    Result->SetNumberField(TEXT("count"), ResultArray.Num());
+    Result->SetNumberField(TEXT("max_results"), MaxResults);
+    Result->SetArrayField(TEXT("classes"), ResultArray);
+    return Result;
 }
 
 TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleAddComponentToBlueprint(const TSharedPtr<FJsonObject>& Params)

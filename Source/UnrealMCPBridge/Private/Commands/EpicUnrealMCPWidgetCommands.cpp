@@ -318,21 +318,30 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPWidgetCommands::HandleAddWidget(
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
 			FString::Printf(TEXT("Cannot instantiate abstract class: '%s'"), *WidgetClassName));
 
-	// Find parent panel
-	UWidget* ParentWidget = FindWidgetByName(Tree, ParentName);
-	if (!ParentWidget)
-		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
-			FString::Printf(TEXT("Parent widget '%s' not found"), *ParentName));
+	// -----------------------------------------------------------------------
+	// Handle root widget: if tree is empty, set the new widget as root.
+	// Matches the engine's Designer behaviour when dragging the first widget.
+	// -----------------------------------------------------------------------
+	const bool bSettingRoot = (Tree->RootWidget == nullptr);
 
-	UPanelWidget* ParentPanel = Cast<UPanelWidget>(ParentWidget);
-	if (!ParentPanel)
-		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
-			FString::Printf(TEXT("Parent widget '%s' is not a panel (class: %s)"),
-				*ParentName, *ParentWidget->GetClass()->GetName()));
+	UPanelWidget* ParentPanel = nullptr;
+	if (!bSettingRoot)
+	{
+		UWidget* ParentWidget = FindWidgetByName(Tree, ParentName);
+		if (!ParentWidget)
+			return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+				FString::Printf(TEXT("Parent widget '%s' not found"), *ParentName));
 
-	if (!ParentPanel->CanAddMoreChildren())
-		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
-			FString::Printf(TEXT("Parent panel '%s' cannot accept more children"), *ParentName));
+		ParentPanel = Cast<UPanelWidget>(ParentWidget);
+		if (!ParentPanel)
+			return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+				FString::Printf(TEXT("Parent widget '%s' is not a panel (class: %s)"),
+					*ParentName, *ParentWidget->GetClass()->GetName()));
+
+		if (!ParentPanel->CanAddMoreChildren())
+			return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+				FString::Printf(TEXT("Parent panel '%s' cannot accept more children"), *ParentName));
+	}
 
 	// Generate name if not provided
 	if (WidgetName.IsEmpty())
@@ -360,14 +369,23 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPWidgetCommands::HandleAddWidget(
 	if (!NewWidget)
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create widget"));
 
-	// Add to parent FIRST (engine flow: create → add → register GUID → save)
 	UPanelSlot* NewSlot = nullptr;
-	if (Index >= 0)
-		NewSlot = ParentPanel->InsertChildAt(Index, NewWidget);
+	if (bSettingRoot)
+	{
+		// Set as root widget — same as UWidgetBlueprintEditorUtils when first widget is dropped
+		Tree->Modify();
+		Tree->RootWidget = NewWidget;
+	}
 	else
-		NewSlot = ParentPanel->AddChild(NewWidget);
+	{
+		// Add to parent (engine flow: create → add → register GUID → save)
+		if (Index >= 0)
+			NewSlot = ParentPanel->InsertChildAt(Index, NewWidget);
+		else
+			NewSlot = ParentPanel->AddChild(NewWidget);
+	}
 
-	if (!NewSlot)
+	if (!bSettingRoot && !NewSlot)
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to add widget to parent panel"));
 
 	// Register widget GUID AFTER adding to parent — matches the engine's
@@ -385,9 +403,9 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPWidgetCommands::HandleAddWidget(
 		}
 	}
 
-	// Set slot properties if provided
+	// Set slot properties if provided (only when added to a parent, not for root)
 	const TSharedPtr<FJsonObject>* SlotProps = nullptr;
-	if (Params->TryGetObjectField(TEXT("slot_properties"), SlotProps) && SlotProps)
+	if (NewSlot && Params->TryGetObjectField(TEXT("slot_properties"), SlotProps) && SlotProps)
 	{
 		for (const auto& Pair : (*SlotProps)->Values)
 		{
@@ -401,8 +419,10 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPWidgetCommands::HandleAddWidget(
 	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
 	Result->SetStringField(TEXT("widget_name"), WidgetName);
 	Result->SetStringField(TEXT("widget_class"), WidgetClass->GetName());
-	Result->SetStringField(TEXT("parent"), ParentName);
-	Result->SetStringField(TEXT("slot_class"), NewSlot->GetClass()->GetName());
+	Result->SetStringField(TEXT("parent"), bSettingRoot ? TEXT("[Root]") : ParentName);
+	Result->SetBoolField(TEXT("is_root"), bSettingRoot);
+	if (NewSlot)
+		Result->SetStringField(TEXT("slot_class"), NewSlot->GetClass()->GetName());
 	if (Index >= 0)
 		Result->SetNumberField(TEXT("index"), Index);
 	return Result;
