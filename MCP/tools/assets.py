@@ -3,12 +3,7 @@
 import json
 
 from _bridge import mcp
-from _tcp_bridge import _tcp_send_raw
-
-
-def _call(command: str, params: dict) -> str:
-    resp = _tcp_send_raw(command, params)
-    return json.dumps(resp, default=str, indent=2)
+from _tcp_bridge import _call
 
 
 @mcp.tool()
@@ -49,7 +44,6 @@ def list_assets(
     Args:
         path: Content path (e.g. "/Game", "/Game/Materials")
         class_filter: Optional class shortcut (e.g. "material", "blueprint")
-        recursive: Search subdirectories
     """
     return _call("list_assets", {
         "path":         path,
@@ -60,31 +54,19 @@ def list_assets(
 
 @mcp.tool()
 def open_asset(asset_path: str) -> str:
-    """Open an asset in the UE5 editor (blueprint, material, data table, widget, etc.).
-
-    Args:
-        asset_path: Full asset path (e.g. "/Game/Materials/M_Base")
-    """
+    """Open an asset in the UE5 editor (blueprint, material, data table, widget, etc.)."""
     return _call("open_asset", {"asset_path": asset_path})
 
 
 @mcp.tool()
 def get_asset_info(asset_path: str) -> str:
-    """Get comprehensive asset metadata: class, package, and key properties.
-
-    Args:
-        asset_path: Full asset path (e.g. "/Game/Materials/M_Base")
-    """
+    """Get asset metadata: class, package, and key properties."""
     return _call("get_asset_info", {"asset_path": asset_path})
 
 
 @mcp.tool()
 def get_asset_properties(asset_path: str) -> str:
-    """Get all editable properties of an asset.
-
-    Args:
-        asset_path: Full asset path (e.g. "/Game/Materials/M_Base")
-    """
+    """Get all editable properties of an asset."""
     return _call("get_asset_properties", {"asset_path": asset_path})
 
 
@@ -97,7 +79,6 @@ def set_asset_property(
     """Set a property on an asset.
 
     Args:
-        asset_path: Full asset path
         property_name: Property name (e.g. "two_sided", "blend_mode")
         property_value: JSON-encoded value (e.g. "true", "0.5", '"translucent"')
     """
@@ -114,31 +95,17 @@ def set_asset_property(
 
 
 @mcp.tool()
-def find_references(
-    asset_path: str,
-    direction: str = "both",
-) -> str:
-    """Find all assets that reference or are referenced by a given asset.
+def find_references(asset_path: str, direction: str = "both") -> str:
+    """Find assets that reference or are referenced by the given asset.
 
-    Args:
-        asset_path: Full asset path (e.g. "/Game/Materials/M_Base")
-        direction: "dependents" (who uses this), "dependencies" (what this uses), or "both"
+    direction: "dependents" (who uses this), "dependencies" (what this uses), or "both"
     """
-    return _call("find_references", {
-        "asset_path": asset_path,
-        "direction":  direction,
-    })
+    return _call("find_references", {"asset_path": asset_path, "direction": direction})
 
 
 @mcp.tool()
 def duplicate_asset(source_path: str, dest_path: str, dest_name: str) -> str:
-    """Duplicate an asset to a new location.
-
-    Args:
-        source_path: Full path to source asset (e.g. "/Game/Materials/M_Base")
-        dest_path: Destination directory (e.g. "/Game/Materials/Copies")
-        dest_name: Name for the duplicate (e.g. "M_Base_Copy")
-    """
+    """Duplicate an asset to a new location."""
     return _call("duplicate_asset", {
         "source_path": source_path,
         "dest_path":   dest_path,
@@ -148,49 +115,30 @@ def duplicate_asset(source_path: str, dest_path: str, dest_name: str) -> str:
 
 @mcp.tool()
 def rename_asset(source_path: str, dest_path: str) -> str:
-    """Rename or move an asset. UE5 automatically fixes all references.
-
-    Args:
-        source_path: Current full asset path (e.g. "/Game/Materials/M_Old")
-        dest_path: New full asset path (e.g. "/Game/Materials/M_New")
-    """
-    return _call("rename_asset", {
-        "source_path": source_path,
-        "dest_path":   dest_path,
-    })
+    """Rename or move an asset. UE5 automatically fixes all references."""
+    return _call("rename_asset", {"source_path": source_path, "dest_path": dest_path})
 
 
 @mcp.tool()
 def delete_asset(asset_path: str, force: bool = False) -> str:
     """Delete an asset or directory from the Content Browser.
 
-    When deleting a single asset, checks for references first (unless force=True).
-    If asset_path has no dot, treats it as a directory.
-
-    Args:
-        asset_path: Full asset path (e.g. "/Game/Materials/M_Test") or directory
-        force: Skip reference check and force delete (default False)
+    Checks for references first unless force=True.
+    Paths without a dot are treated as directories.
     """
-    return _call("delete_asset", {
-        "asset_path": asset_path,
-        "force":      force,
-    })
+    return _call("delete_asset", {"asset_path": asset_path, "force": force})
 
 
 @mcp.tool()
 def save_asset(asset_path: str) -> str:
-    """Save a specific asset to disk.
-
-    Args:
-        asset_path: Full asset path
-    """
+    """Save a specific asset to disk."""
     return _call("save_asset", {"asset_path": asset_path})
 
 
 @mcp.tool()
 def save_all() -> str:
     """Save all unsaved (dirty) assets."""
-    return _call("save_all", {})
+    return _call("save_all")
 
 
 @mcp.tool()
@@ -208,7 +156,7 @@ def import_asset(
         destination_name: Custom asset name (default: source filename without extension)
         replace_existing: Overwrite if asset already exists (default True)
     """
-    params: dict = {
+    params = {
         "source_file":      source_file,
         "destination_path": destination_path,
         "replace_existing": replace_existing,
@@ -238,10 +186,7 @@ def import_assets_batch(
             If omitted with source_directory, all files are imported.
         replace_existing: Overwrite existing assets (default True)
     """
-    params: dict = {
-        "destination_path": destination_path,
-        "replace_existing": replace_existing,
-    }
+    params = {"destination_path": destination_path, "replace_existing": replace_existing}
     if files:
         params["files"] = files
     elif source_directory:
@@ -254,14 +199,10 @@ def import_assets_batch(
 @mcp.tool()
 def get_selected_assets() -> str:
     """Get currently selected assets in the Content Browser."""
-    return _call("get_selected_assets", {})
+    return _call("get_selected_assets")
 
 
 @mcp.tool()
 def sync_browser(asset_path: str) -> str:
-    """Navigate the Content Browser to show a specific asset.
-
-    Args:
-        asset_path: Full asset path (e.g. "/Game/Materials/M_Base")
-    """
+    """Navigate the Content Browser to show a specific asset."""
     return _call("sync_browser", {"asset_path": asset_path})

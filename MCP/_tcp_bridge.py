@@ -202,3 +202,8 @@ def _tcp_send_raw(command: str, params: Optional[Dict[str, Any]] = None) -> Dict
         return _get_conn().send_command(command, params)
     except Exception as exc:
         return {"status": "error", "error": str(exc)}
+
+
+def _call(command: str, params: dict | None = None) -> str:
+    """Send a command and return the JSON-formatted response string."""
+    return json.dumps(_tcp_send_raw(command, params or {}), default=str, indent=2)

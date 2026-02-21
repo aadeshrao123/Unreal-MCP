@@ -12,10 +12,6 @@ def execute_python(code: str) -> str:
 
     The `unreal` module is pre-imported. Set a variable named `result`
     to return structured data back to Claude Code.
-
-    Example:
-        import unreal
-        result = unreal.EditorAssetLibrary.list_assets('/Game/Materials', recursive=True)
     """
     return _send(code)
 
@@ -27,7 +23,6 @@ def health_check() -> str:
         resp = _tcp_send_raw("health_check")
         if resp.get("status") == "error":
             return f"Error: {resp.get('error', 'Editor not reachable')}"
-        inner = resp.get("result", resp)
-        return json.dumps(inner, indent=2)
+        return json.dumps(resp.get("result", resp), indent=2)
     except Exception as exc:
         return f"Error: {exc}"

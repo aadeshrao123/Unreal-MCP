@@ -1,36 +1,22 @@
-"""Editor commands via C++ TCP bridge (port 55557).
-
-These tools wrap the C++ UnrealMCPBridge commands for editor operations:
-actor manipulation, Blueprint component/material operations, and level queries.
-"""
+"""Editor commands via C++ TCP bridge — actors, materials, physics, screenshots."""
 
 from typing import Any, Dict, List, Optional
 
 from _bridge import mcp
-from _tcp_bridge import _tcp_send_raw
-
-import json
+from _tcp_bridge import _call
 
 
-def _call(command: str, params: Dict[str, Any]) -> str:
-    return json.dumps(_tcp_send_raw(command, params), default=str, indent=2)
-
-
-# ── Actor Tools ────────────────────────────────────────────────────────────
+# -- Actors ------------------------------------------------------------------
 
 @mcp.tool()
 def get_actors_in_level() -> str:
-    """Get a list of all actors in the current level."""
-    return _call("get_actors_in_level", {})
+    """List all actors in the current level."""
+    return _call("get_actors_in_level")
 
 
 @mcp.tool()
 def find_actors_by_name(pattern: str) -> str:
-    """Find actors by name pattern.
-
-    Args:
-        pattern: Name pattern to search for
-    """
+    """Find actors whose name matches the given pattern."""
     return _call("find_actors_by_name", {"pattern": pattern})
 
 
@@ -47,10 +33,8 @@ def spawn_actor(
 
     Args:
         name: Actor name
-        actor_type: Type of actor (StaticMeshActor, PointLight, etc.)
-        location: [x, y, z] location
-        rotation: [pitch, yaw, roll] rotation
-        scale: [x, y, z] scale
+        actor_type: StaticMeshActor, PointLight, etc.
+        location/rotation/scale: [x,y,z] arrays
         static_mesh: Path to static mesh asset (for mesh actors)
     """
     params: Dict[str, Any] = {"name": name, "type": actor_type}
@@ -67,11 +51,7 @@ def spawn_actor(
 
 @mcp.tool()
 def delete_actor(name: str) -> str:
-    """Delete an actor from the level by name.
-
-    Args:
-        name: Name of the actor to delete
-    """
+    """Delete an actor from the level by name."""
     return _call("delete_actor", {"name": name})
 
 
@@ -82,14 +62,7 @@ def set_actor_transform(
     rotation: List[float] = None,
     scale: List[float] = None,
 ) -> str:
-    """Set an actor's transform (location, rotation, scale).
-
-    Args:
-        name: Actor name
-        location: [x, y, z] new location
-        rotation: [pitch, yaw, roll] new rotation
-        scale: [x, y, z] new scale
-    """
+    """Set an actor's location, rotation, and/or scale."""
     params: Dict[str, Any] = {"name": name}
     if location:
         params["location"] = location
@@ -108,15 +81,7 @@ def spawn_blueprint_actor(
     scale: List[float] = None,
     name: str = "",
 ) -> str:
-    """Spawn an instance of a Blueprint actor in the level.
-
-    Args:
-        blueprint_path: Full path to the Blueprint asset
-        location: [x, y, z] spawn location
-        rotation: [pitch, yaw, roll] rotation
-        scale: [x, y, z] scale
-        name: Optional actor name
-    """
+    """Spawn a Blueprint actor instance in the level."""
     params: Dict[str, Any] = {"blueprint_path": blueprint_path}
     if location:
         params["location"] = location
@@ -129,24 +94,14 @@ def spawn_blueprint_actor(
     return _call("spawn_blueprint_actor", params)
 
 
-# ── Blueprint Component/Material Tools (via C++ bridge) ────────────────────
+# -- Blueprint Component/Material Tools -------------------------------------
 
 @mcp.tool()
-def set_static_mesh_properties(
-    blueprint_name: str,
-    component_name: str,
-    static_mesh: str = "/Engine/BasicShapes/Cube.Cube",
-) -> str:
-    """Set static mesh on a StaticMeshComponent in a Blueprint.
-
-    Args:
-        blueprint_name: Name of the Blueprint
-        component_name: Name of the component
-        static_mesh: Path to static mesh asset
-    """
+def set_static_mesh_properties(blueprint_name: str, component_name: str,
+                               static_mesh: str = "/Engine/BasicShapes/Cube.Cube") -> str:
+    """Set the static mesh on a StaticMeshComponent in a Blueprint."""
     return _call("set_static_mesh_properties", {
-        "blueprint_name": blueprint_name,
-        "component_name": component_name,
+        "blueprint_name": blueprint_name, "component_name": component_name,
         "static_mesh": static_mesh,
     })
 
@@ -161,25 +116,11 @@ def set_physics_properties(
     linear_damping: float = 0.01,
     angular_damping: float = 0.0,
 ) -> str:
-    """Set physics properties on a Blueprint component.
-
-    Args:
-        blueprint_name: Name of the Blueprint
-        component_name: Name of the component
-        simulate_physics: Enable physics simulation
-        gravity_enabled: Enable gravity
-        mass: Mass in kg
-        linear_damping: Linear damping factor
-        angular_damping: Angular damping factor
-    """
+    """Set physics properties on a Blueprint component."""
     return _call("set_physics_properties", {
-        "blueprint_name": blueprint_name,
-        "component_name": component_name,
-        "simulate_physics": simulate_physics,
-        "gravity_enabled": gravity_enabled,
-        "mass": mass,
-        "linear_damping": linear_damping,
-        "angular_damping": angular_damping,
+        "blueprint_name": blueprint_name, "component_name": component_name,
+        "simulate_physics": simulate_physics, "gravity_enabled": gravity_enabled,
+        "mass": mass, "linear_damping": linear_damping, "angular_damping": angular_damping,
     })
 
 
@@ -194,123 +135,69 @@ def set_mesh_material_color(
 ) -> str:
     """Set material color on a mesh component.
 
-    Args:
-        blueprint_name: Name of the Blueprint
-        component_name: Name of the mesh component
-        color: [R, G, B, A] color values (0-1)
-        material_path: Path to material
-        parameter_name: Color parameter name
-        material_slot: Material slot index
+    color: [R, G, B, A] values 0-1
     """
     return _call("set_mesh_material_color", {
-        "blueprint_name": blueprint_name,
-        "component_name": component_name,
-        "color": color,
-        "material_path": material_path,
-        "parameter_name": parameter_name,
-        "material_slot": material_slot,
+        "blueprint_name": blueprint_name, "component_name": component_name,
+        "color": color, "material_path": material_path,
+        "parameter_name": parameter_name, "material_slot": material_slot,
     })
 
 
 @mcp.tool()
-def get_available_materials(
-    search_path: str = "/Game/",
-    include_engine_materials: bool = True,
-) -> str:
-    """Get available materials that can be applied to objects.
-
-    Args:
-        search_path: Path to search for materials
-        include_engine_materials: Include engine built-in materials
-    """
+def get_available_materials(search_path: str = "/Game/", include_engine_materials: bool = True) -> str:
+    """List materials that can be applied to objects."""
     return _call("get_available_materials", {
-        "search_path": search_path,
-        "include_engine_materials": include_engine_materials,
+        "search_path": search_path, "include_engine_materials": include_engine_materials,
     })
 
 
 @mcp.tool()
-def apply_material_to_actor(
-    actor_name: str,
-    material_path: str,
-    material_slot: int = 0,
-) -> str:
-    """Apply a material to an actor in the level.
-
-    Args:
-        actor_name: Name of the actor
-        material_path: Full path to the material asset
-        material_slot: Material slot index
-    """
+def apply_material_to_actor(actor_name: str, material_path: str, material_slot: int = 0) -> str:
+    """Apply a material to a level actor."""
     return _call("apply_material_to_actor", {
-        "actor_name": actor_name,
-        "material_path": material_path,
-        "material_slot": material_slot,
+        "actor_name": actor_name, "material_path": material_path, "material_slot": material_slot,
     })
 
 
 @mcp.tool()
 def apply_material_to_blueprint(
-    blueprint_name: str,
-    component_name: str,
-    material_path: str,
-    material_slot: int = 0,
+    blueprint_name: str, component_name: str,
+    material_path: str, material_slot: int = 0,
 ) -> str:
-    """Apply a material to a Blueprint component.
-
-    Args:
-        blueprint_name: Name of the Blueprint
-        component_name: Name of the mesh component
-        material_path: Full path to the material asset
-        material_slot: Material slot index
-    """
+    """Apply a material to a Blueprint component."""
     return _call("apply_material_to_blueprint", {
-        "blueprint_name": blueprint_name,
-        "component_name": component_name,
-        "material_path": material_path,
-        "material_slot": material_slot,
+        "blueprint_name": blueprint_name, "component_name": component_name,
+        "material_path": material_path, "material_slot": material_slot,
     })
 
 
 @mcp.tool()
 def get_actor_material_info(actor_name: str) -> str:
-    """Get material info for an actor.
-
-    Args:
-        actor_name: Name of the actor
-    """
+    """Get material slot info for a level actor."""
     return _call("get_actor_material_info", {"actor_name": actor_name})
 
 
 @mcp.tool()
 def get_blueprint_material_info(blueprint_name: str) -> str:
-    """Get material info for a Blueprint's components.
-
-    Args:
-        blueprint_name: Name of the Blueprint
-    """
+    """Get material slot info for a Blueprint's mesh components."""
     return _call("get_blueprint_material_info", {"blueprint_name": blueprint_name})
 
 
-# ── Screenshot ─────────────────────────────────────────────────────────────
+# -- Screenshot --------------------------------------------------------------
 
 @mcp.tool()
 def take_screenshot(file_path: str = "", mode: str = "viewport") -> str:
-    """Capture the editor to a PNG screenshot.
+    """Capture the editor to a PNG.
 
-    Returns the absolute file path, width, and height of the saved image.
-    The returned path can be read with Claude Code's Read tool to visually
-    inspect the result.
+    mode "viewport" captures the level viewport; "window" captures the
+    entire active editor window (material editor, BP graph, widget designer, etc.).
 
-    Args:
-        file_path: Output PNG path (default: Saved/Screenshots/MCP_Screenshot.png)
-        mode: "viewport" captures the level viewport only.
-              "window" captures the entire active editor window (widget designer,
-              material editor, blueprint graph, etc.)
+    Returns the file path, width, and height. Use Read tool to view the image.
     """
     params = {}
     if file_path:
         params["file_path"] = file_path
-    if mode and mode != "viewport":
+    if mode != "viewport":
         params["mode"] = mode
     return _call("take_screenshot", params)

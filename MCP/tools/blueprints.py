@@ -1,14 +1,7 @@
 """Blueprint tools — create blueprints and add components."""
 
-import json
-
 from _bridge import mcp
-from _tcp_bridge import _tcp_send_raw
-
-
-def _call(command: str, params: dict) -> str:
-    resp = _tcp_send_raw(command, params)
-    return json.dumps(resp, default=str, indent=2)
+from _tcp_bridge import _call
 
 
 @mcp.tool()
@@ -23,9 +16,9 @@ def search_parent_classes(
     Returns a filtered list of matching classes — never dumps all classes.
 
     Args:
-        filter: Keyword to search for (e.g. "Miner", "Actor", "Pawn", "Widget", "Interactable")
-        max_results: Maximum number of results to return (default 20, max 100)
-        include_blueprint_classes: Also include Blueprint-generated classes as potential parents (default True)
+        filter: Keyword to search for (e.g. "Miner", "Actor", "Pawn", "Widget")
+        max_results: Maximum results (default 20, max 100)
+        include_blueprint_classes: Also include Blueprint-generated classes (default True)
     """
     return _call("search_parent_classes", {
         "filter": filter,
@@ -42,21 +35,13 @@ def create_blueprint(
 ) -> str:
     """Create a new Blueprint asset from any C++ or Blueprint parent class.
 
-    Supports parent classes from ANY module (Engine, Game, plugins like Jiggify, etc.).
-    Use search_parent_classes first to find the correct parent class name.
+    Supports parent classes from ANY module (Engine, Game, plugins, etc.).
+    Use search_parent_classes first to find the correct name.
 
-    Args:
-        name: Blueprint name (e.g. "BP_MyActor")
-        path: Content Browser path (e.g. "/Game/Blueprints")
-        parent_class: Parent class — accepts short names ("MinerActor", "Character"),
-            prefixed names ("AMinerActor"), full paths ("/Script/Jiggify.AMinerActor"),
-            or Blueprint asset paths ("/Game/Blueprints/BP_Base") for child Blueprints
+    parent_class accepts short names ("MinerActor"), prefixed ("AMinerActor"),
+    full paths ("/Script/Jiggify.AMinerActor"), or BP paths ("/Game/Blueprints/BP_Base").
     """
-    return _call("create_blueprint", {
-        "name": name,
-        "path": path,
-        "parent_class": parent_class,
-    })
+    return _call("create_blueprint", {"name": name, "path": path, "parent_class": parent_class})
 
 
 @mcp.tool()
@@ -69,7 +54,7 @@ def add_component_to_blueprint(
 
     Args:
         blueprint_path: Full path to blueprint (e.g. "/Game/Blueprints/BP_MyActor")
-        component_class: Component class (e.g. "StaticMeshComponent", "PointLightComponent")
+        component_class: e.g. "StaticMeshComponent", "PointLightComponent"
         component_name: Optional custom name for the component
     """
     return _call("add_component_to_blueprint", {
@@ -87,15 +72,12 @@ def get_blueprint_class_defaults(
 ) -> str:
     """Get all default property values from a Blueprint's generated class CDO.
 
-    Unlike get_blueprint_variable_details (which only shows Blueprint-defined
-    variables), this reads the Class Default Object of the generated class and
-    returns ALL editable/blueprint-visible properties — including those defined
-    in the C++ parent class.
+    Unlike get_blueprint_variable_details (which only shows BP-defined variables),
+    this reads the CDO and returns ALL editable properties — including C++ parent ones.
 
     Args:
-        blueprint_path: Full content path (e.g. "/Game/Blueprints/BP_MyActor")
-        filter: Optional substring to filter property names (case-insensitive)
-        include_inherited: Include properties inherited from C++ parent (default True)
+        filter: Substring to filter property names (case-insensitive)
+        include_inherited: Include properties from C++ parent (default True)
     """
     return _call("get_blueprint_class_defaults", {
         "blueprint_path": blueprint_path,

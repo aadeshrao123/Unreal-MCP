@@ -1,14 +1,7 @@
 """Level/world tools — spawn actors, inspect viewport selection, world info."""
 
-import json
-
 from _bridge import mcp
-from _tcp_bridge import _tcp_send_raw
-
-
-def _call(command: str, params: dict) -> str:
-    resp = _tcp_send_raw(command, params)
-    return json.dumps(resp, default=str, indent=2)
+from _tcp_bridge import _call
 
 
 @mcp.tool()
@@ -26,12 +19,8 @@ def spawn_actor(
     Args:
         class_name: Blueprint path ("/Game/BP_Foo") or built-in class name
                     ("StaticMeshActor", "PointLight", "SpotLight", "DirectionalLight", "CameraActor")
-        location_x: World X position
-        location_y: World Y position
-        location_z: World Z position
-        rotation_yaw: Yaw in degrees
-        rotation_pitch: Pitch in degrees
-        rotation_roll: Roll in degrees
+        location_x, location_y, location_z: World position
+        rotation_yaw, rotation_pitch, rotation_roll: Rotation in degrees
     """
     return _call("spawn_actor_from_class", {
         "class_name":     class_name,
@@ -47,13 +36,13 @@ def spawn_actor(
 @mcp.tool()
 def get_selected_actors() -> str:
     """Get all currently selected actors in the editor viewport."""
-    return _call("get_selected_actors", {})
+    return _call("get_selected_actors")
 
 
 @mcp.tool()
 def get_world_info() -> str:
-    """Get information about the current editor level (world name, actor count, actor list)."""
-    return _call("get_world_info", {})
+    """Get current editor level info (world name, actor count, actor list)."""
+    return _call("get_world_info")
 
 
 @mcp.tool()
@@ -66,19 +55,12 @@ def get_actor_properties(
 
     Unlike get_blueprint_class_defaults (which reads CDO/default values),
     this reads the ACTUAL placed instance — so per-instance overrides set
-    in the editor (e.g. a specific ResourceType on one BP_ResourceNode) are
-    returned correctly.
-
-    Iterates every FProperty on the actor and its C++ parent classes with no
-    flag filter, so Blueprint variables AND C++ properties are both returned.
+    in the editor are returned correctly.
 
     Args:
-        actor_label: The actor's display label in the editor (shown in the
-                     Outliner). Also accepts the internal UObject name.
-        filter: Optional substring to filter property names (case-insensitive).
-                E.g. "resource" to only return ResourceType and TotalAmount.
-        include_components: If True, also return property maps for each
-                            attached component.
+        actor_label: The actor's display label in the Outliner (also accepts UObject name)
+        filter: Substring to filter property names (case-insensitive), e.g. "resource"
+        include_components: Also return property maps for attached components
     """
     return _call("get_actor_properties", {
         "actor_label":        actor_label,
