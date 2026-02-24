@@ -88,3 +88,34 @@ def get_blueprint_class_defaults(
         "filter": filter,
         "include_inherited": include_inherited,
     })
+
+
+@mcp.tool()
+def set_blueprint_class_defaults(
+    blueprint_path: str,
+    property_name: str | None = None,
+    property_value: str | None = None,
+    properties: dict | None = None,
+) -> str:
+    """Set default property values on a Blueprint's generated class CDO.
+
+    Works on ALL editable properties — C++ parent properties and BP-defined
+    variables alike (e.g. SlotWidgetClass, MaxHealth, bCanFly).
+
+    Set a single property with property_name + property_value, or set multiple
+    at once with a properties dict. Both can be used in the same call.
+
+    Args:
+        blueprint_path: Full path to blueprint (e.g. "/Game/Blueprints/BP_MyActor")
+        property_name: Name of a single property to set
+        property_value: Value for the single property (JSON-compatible)
+        properties: Dict of property names to values for batch setting
+    """
+    params: dict = {"blueprint_path": blueprint_path}
+    if property_name is not None:
+        params["property_name"] = property_name
+    if property_value is not None:
+        params["property_value"] = property_value
+    if properties:
+        params["properties"] = properties
+    return _call("set_blueprint_class_defaults", params)

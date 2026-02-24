@@ -104,6 +104,10 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleCommand(
 	{
 		return HandleGetBlueprintClassDefaults(Params);
 	}
+	else if (CommandType == TEXT("set_blueprint_class_defaults"))
+	{
+		return HandleSetBlueprintClassDefaults(Params);
+	}
 
 	return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
 		FString::Printf(TEXT("Unknown blueprint command: %s"), *CommandType));
@@ -1762,5 +1766,124 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleGetBlueprintClass
 		GenClass->GetSuperClass() ? GenClass->GetSuperClass()->GetName() : TEXT("None"));
 	Result->SetBoolField(TEXT("include_inherited"), bIncludeInherited);
 	Result->SetObjectField(TEXT("defaults"), PropsObj);
+	return Result;
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleSetBlueprintClassDefaults(
+	const TSharedPtr<FJsonObject>& Params)
+{
+	FString BlueprintPath;
+	if (!Params->TryGetStringField(TEXT("blueprint_path"), BlueprintPath))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_path' parameter"));
+	}
+
+	// Accept either a single property or a properties dict
+	FString SinglePropertyName;
+	TSharedPtr<FJsonValue> SinglePropertyValue;
+	const TSharedPtr<FJsonObject>* PropertiesObj = nullptr;
+
+	bool bHasSingle = Params->TryGetStringField(TEXT("property_name"), SinglePropertyName);
+	if (bHasSingle)
+	{
+		SinglePropertyValue = Params->TryGetField(TEXT("property_value"));
+		if (!SinglePropertyValue.IsValid())
+		{
+			return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+				TEXT("Missing 'property_value' parameter"));
+		}
+	}
+
+	bool bHasMultiple = Params->TryGetObjectField(TEXT("properties"), PropertiesObj);
+
+	if (!bHasSingle && !bHasMultiple)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			TEXT("Provide 'property_name'+'property_value' OR 'properties' dict"));
+	}
+
+	UBlueprint* Blueprint = Cast<UBlueprint>(UEditorAssetLibrary::LoadAsset(BlueprintPath));
+	if (!Blueprint)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Failed to load blueprint: %s"), *BlueprintPath));
+	}
+
+	UClass* GenClass = Blueprint->GeneratedClass;
+	if (!GenClass)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			TEXT("Blueprint has no GeneratedClass — compile the blueprint first"));
+	}
+
+	UObject* CDO = GenClass->GetDefaultObject(false);
+	if (!CDO)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get Class Default Object"));
+	}
+
+	TArray<FString> SetProperties;
+	FString Errors;
+
+	if (bHasSingle)
+	{
+		FString ErrMsg;
+		if (FEpicUnrealMCPPropertyUtils::SetProperty(CDO, SinglePropertyName, SinglePropertyValue, ErrMsg))
+		{
+			SetProperties.Add(SinglePropertyName);
+		}
+		else
+		{
+			Errors += ErrMsg + TEXT("; ");
+		}
+	}
+
+	if (bHasMultiple && PropertiesObj && PropertiesObj->IsValid())
+	{
+		for (const auto& Pair : (*PropertiesObj)->Values)
+		{
+			FString ErrMsg;
+			if (FEpicUnrealMCPPropertyUtils::SetProperty(CDO, Pair.Key, Pair.Value, ErrMsg))
+			{
+				SetProperties.Add(Pair.Key);
+			}
+			else
+			{
+				Errors += FString::Printf(TEXT("%s: %s; "), *Pair.Key, *ErrMsg);
+			}
+		}
+	}
+
+	if (SetProperties.Num() == 0)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("No properties were set. Errors: %s"), *Errors));
+	}
+
+	// Propagate CDO changes to instances and mark the Blueprint modified
+	CDO->Modify();
+	Blueprint->Modify();
+	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+
+	// Save
+	UEditorAssetLibrary::SaveAsset(BlueprintPath);
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetBoolField(TEXT("success"), true);
+	Result->SetStringField(TEXT("blueprint_path"), BlueprintPath);
+	Result->SetNumberField(TEXT("properties_set"), SetProperties.Num());
+
+	TArray<TSharedPtr<FJsonValue>> SetArr;
+	for (const FString& Name : SetProperties)
+	{
+		SetArr.Add(MakeShared<FJsonValueString>(Name));
+	}
+	Result->SetArrayField(TEXT("set_properties"), SetArr);
+
+	if (!Errors.IsEmpty())
+	{
+		Result->SetStringField(TEXT("warnings"), Errors);
+	}
+
 	return Result;
 }

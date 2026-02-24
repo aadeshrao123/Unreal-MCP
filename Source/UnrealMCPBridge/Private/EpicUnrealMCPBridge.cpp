@@ -349,7 +349,8 @@ FString UEpicUnrealMCPBridge::ExecuteCommand(
 				CommandType == TEXT("analyze_blueprint_graph") ||
 				CommandType == TEXT("get_blueprint_variable_details") ||
 				CommandType == TEXT("get_blueprint_function_details") ||
-				CommandType == TEXT("get_blueprint_class_defaults"))
+				CommandType == TEXT("get_blueprint_class_defaults") ||
+				CommandType == TEXT("set_blueprint_class_defaults"))
 			{
 				ResultJson = BlueprintCommands->HandleCommand(CommandType, Params);
 			}

@@ -31,4 +31,5 @@ private:
 	TSharedPtr<FJsonObject> HandleGetBlueprintVariableDetails(const TSharedPtr<FJsonObject>& Params);
 	TSharedPtr<FJsonObject> HandleGetBlueprintFunctionDetails(const TSharedPtr<FJsonObject>& Params);
 	TSharedPtr<FJsonObject> HandleGetBlueprintClassDefaults(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleSetBlueprintClassDefaults(const TSharedPtr<FJsonObject>& Params);
 };

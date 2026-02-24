@@ -1,6 +1,9 @@
 #include "Commands/EpicUnrealMCPAssetCommands.h"
 #include "Commands/EpicUnrealMCPCommonUtils.h"
+#include "Commands/EpicUnrealMCPPropertyUtils.h"
 
+#include "Engine/Blueprint.h"
+#include "Kismet2/BlueprintEditorUtils.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
 #include "EditorAssetLibrary.h"
@@ -443,8 +446,41 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPAssetCommands::HandleSetAssetProperty(
 			FString::Printf(TEXT("Asset not found: %s"), *AssetPath));
 	}
 
+	// Try setting the property on the asset directly first
 	FString ErrorMsg;
-	if (!FEpicUnrealMCPCommonUtils::SetObjectProperty(Asset, PropertyName, PropertyValue, ErrorMsg))
+	bool bSet = FEpicUnrealMCPCommonUtils::SetObjectProperty(Asset, PropertyName, PropertyValue, ErrorMsg);
+
+	// If that failed and the asset is a Blueprint, fall back to the CDO
+	bool bUsedCDO = false;
+	if (!bSet)
+	{
+		UBlueprint* Blueprint = Cast<UBlueprint>(Asset);
+		if (Blueprint && Blueprint->GeneratedClass)
+		{
+			UObject* CDO = Blueprint->GeneratedClass->GetDefaultObject(false);
+			if (CDO)
+			{
+				FString CDOError;
+				if (FEpicUnrealMCPPropertyUtils::SetProperty(CDO, PropertyName, PropertyValue, CDOError))
+				{
+					bSet = true;
+					bUsedCDO = true;
+
+					CDO->Modify();
+					Blueprint->Modify();
+					FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+				}
+				else
+				{
+					// Return both errors so the caller sees what was tried
+					ErrorMsg += FString::Printf(
+						TEXT(" (also tried Blueprint CDO: %s)"), *CDOError);
+				}
+			}
+		}
+	}
+
+	if (!bSet)
 	{
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(ErrorMsg);
 	}
@@ -455,7 +491,9 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPAssetCommands::HandleSetAssetProperty(
 	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
 	Result->SetBoolField(TEXT("success"), true);
 	Result->SetStringField(TEXT("message"),
-		FString::Printf(TEXT("Set '%s' on %s"), *PropertyName, *AssetPath));
+		FString::Printf(TEXT("Set '%s' on %s%s"),
+			*PropertyName, *AssetPath,
+			bUsedCDO ? TEXT(" (via Blueprint CDO)") : TEXT("")));
 	return Result;
 }
 
