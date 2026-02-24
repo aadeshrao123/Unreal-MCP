@@ -16,6 +16,7 @@
 #include "Commands/EpicUnrealMCPAssetCommands.h"
 #include "Commands/EpicUnrealMCPDataAssetCommands.h"
 #include "Commands/EpicUnrealMCPWidgetCommands.h"
+#include "Commands/EpicUnrealMCPEnhancedInputCommands.h"
 #include "EpicUnrealMCPBridge.generated.h"
 
 class FMCPServerRunnable;
@@ -67,4 +68,5 @@ private:
 	TSharedPtr<FEpicUnrealMCPAssetCommands> AssetCommands;
 	TSharedPtr<FEpicUnrealMCPDataAssetCommands> DataAssetCommands;
 	TSharedPtr<FEpicUnrealMCPWidgetCommands> WidgetCommands;
+	TSharedPtr<FEpicUnrealMCPEnhancedInputCommands> EnhancedInputCommands;
 };

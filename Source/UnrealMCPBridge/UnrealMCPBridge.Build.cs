@@ -67,7 +67,8 @@ public class UnrealMCPBridge : ModuleRules
 				"UMG",
 				"UMGEditor",
 				"LevelEditor",
-				"ImageWrapper"
+				"ImageWrapper",
+				"EnhancedInput"
 			}
 		);
 

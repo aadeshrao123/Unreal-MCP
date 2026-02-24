@@ -28,6 +28,7 @@ UEpicUnrealMCPBridge::UEpicUnrealMCPBridge()
 	AssetCommands = MakeShared<FEpicUnrealMCPAssetCommands>();
 	DataAssetCommands = MakeShared<FEpicUnrealMCPDataAssetCommands>();
 	WidgetCommands = MakeShared<FEpicUnrealMCPWidgetCommands>();
+	EnhancedInputCommands = MakeShared<FEpicUnrealMCPEnhancedInputCommands>();
 }
 
 UEpicUnrealMCPBridge::~UEpicUnrealMCPBridge()
@@ -40,6 +41,7 @@ UEpicUnrealMCPBridge::~UEpicUnrealMCPBridge()
 	AssetCommands.Reset();
 	DataAssetCommands.Reset();
 	WidgetCommands.Reset();
+	EnhancedInputCommands.Reset();
 }
 
 void UEpicUnrealMCPBridge::Initialize(FSubsystemCollectionBase& Collection)
@@ -424,6 +426,30 @@ FString UEpicUnrealMCPBridge::ExecuteCommand(
 				CommandType == TEXT("list_widget_types"))
 			{
 				ResultJson = WidgetCommands->HandleCommand(CommandType, Params);
+			}
+			else if (CommandType == TEXT("create_input_action") ||
+				CommandType == TEXT("get_input_action") ||
+				CommandType == TEXT("set_input_action_properties") ||
+				CommandType == TEXT("add_input_action_trigger") ||
+				CommandType == TEXT("add_input_action_modifier") ||
+				CommandType == TEXT("remove_input_action_trigger") ||
+				CommandType == TEXT("remove_input_action_modifier") ||
+				CommandType == TEXT("list_input_actions") ||
+				CommandType == TEXT("create_input_mapping_context") ||
+				CommandType == TEXT("get_input_mapping_context") ||
+				CommandType == TEXT("add_key_mapping") ||
+				CommandType == TEXT("remove_key_mapping") ||
+				CommandType == TEXT("set_key_mapping") ||
+				CommandType == TEXT("add_mapping_trigger") ||
+				CommandType == TEXT("add_mapping_modifier") ||
+				CommandType == TEXT("remove_mapping_trigger") ||
+				CommandType == TEXT("remove_mapping_modifier") ||
+				CommandType == TEXT("list_input_mapping_contexts") ||
+				CommandType == TEXT("list_trigger_types") ||
+				CommandType == TEXT("list_modifier_types") ||
+				CommandType == TEXT("list_input_keys"))
+			{
+				ResultJson = EnhancedInputCommands->HandleCommand(CommandType, Params);
 			}
 			else
 			{
