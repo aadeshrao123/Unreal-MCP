@@ -3,9 +3,10 @@ Shared MCP server instance and UE5 bridge helper.
 
 All tool modules import `mcp` and `_send` from here.
 
-Communication goes through the C++ TCP bridge on port 55557.
-The `execute_python` command runs Python code inside the editor,
-replicating the old HTTP init_unreal.py behaviour.
+Communication goes through the C++ TCP bridge. The port is auto-discovered
+from Saved/UnrealMCP/port.txt (written by the running editor). This allows
+multiple Unreal Editor instances to coexist on different ports.
+The `execute_python` command runs Python code inside the editor.
 """
 
 import json

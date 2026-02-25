@@ -48,10 +48,18 @@ public:
 	// Command execution
 	FString ExecuteCommand(const FString& CommandType, const TSharedPtr<FJsonObject>& Params);
 
+	// Returns the port the server is currently listening on
+	uint16 GetPort() const { return Port; }
+
 private:
+	// Port file management for Python MCP server auto-discovery
+	void WritePortFile() const;
+	void DeletePortFile() const;
+
 	// Server state
 	bool bIsRunning;
 	TSharedPtr<FSocket> ListenerSocket;
+	
 	TSharedPtr<FSocket> ConnectionSocket;
 	FRunnableThread* ServerThread;
 

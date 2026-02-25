@@ -14,9 +14,14 @@
 #include "IPythonScriptPlugin.h"
 #include "PythonScriptTypes.h"
 #include "Misc/Base64.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
+#include "HAL/PlatformFileManager.h"
+#include "Misc/ConfigCacheIni.h"
 
 #define MCP_SERVER_HOST "127.0.0.1"
-#define MCP_SERVER_PORT 55557
+#define MCP_DEFAULT_PORT 55557
+#define MCP_PORT_SCAN_RANGE 100
 
 UEpicUnrealMCPBridge::UEpicUnrealMCPBridge()
 {
@@ -46,13 +51,22 @@ UEpicUnrealMCPBridge::~UEpicUnrealMCPBridge()
 
 void UEpicUnrealMCPBridge::Initialize(FSubsystemCollectionBase& Collection)
 {
-	UE_LOG(LogTemp, Display, TEXT("EpicUnrealMCPBridge: Initializing"));
+	UE_LOG(LogTemp, Display, TEXT("UnrealMCP: Initializing"));
 
 	bIsRunning = false;
 	ListenerSocket = nullptr;
 	ConnectionSocket = nullptr;
 	ServerThread = nullptr;
-	Port = MCP_SERVER_PORT;
+
+	// Read optional base port from DefaultEngine.ini [UnrealMCP] Port
+	int32 ConfigPort = MCP_DEFAULT_PORT;
+	GConfig->GetInt(TEXT("UnrealMCP"), TEXT("Port"), ConfigPort, GEngineIni);
+	if (ConfigPort < 1 || ConfigPort > 65535)
+	{
+		ConfigPort = MCP_DEFAULT_PORT;
+	}
+	Port = static_cast<uint16>(ConfigPort);
+
 	FIPv4Address::Parse(MCP_SERVER_HOST, ServerAddress);
 
 	StartServer();
@@ -60,7 +74,8 @@ void UEpicUnrealMCPBridge::Initialize(FSubsystemCollectionBase& Collection)
 
 void UEpicUnrealMCPBridge::Deinitialize()
 {
-	UE_LOG(LogTemp, Display, TEXT("EpicUnrealMCPBridge: Shutting down"));
+	UE_LOG(LogTemp, Display, TEXT("UnrealMCP: Shutting down"));
+	DeletePortFile();
 	StopServer();
 }
 
@@ -68,47 +83,78 @@ void UEpicUnrealMCPBridge::StartServer()
 {
 	if (bIsRunning)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("EpicUnrealMCPBridge: Server is already running"));
+		UE_LOG(LogTemp, Warning, TEXT("UnrealMCP: Server is already running"));
 		return;
 	}
 
 	ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
 	if (!SocketSubsystem)
 	{
-		UE_LOG(LogTemp, Error, TEXT("EpicUnrealMCPBridge: Failed to get socket subsystem"));
+		UE_LOG(LogTemp, Error, TEXT("UnrealMCP: Failed to get socket subsystem"));
 		return;
 	}
 
-	TSharedPtr<FSocket> NewListenerSocket = MakeShareable(
-		SocketSubsystem->CreateSocket(NAME_Stream, TEXT("UnrealMCPListener"), false));
-	if (!NewListenerSocket.IsValid())
+	// Try to bind to an available port, starting from the configured base port
+	const uint16 StartPort = Port;
+	bool bBound = false;
+
+	for (uint16 Offset = 0; Offset < MCP_PORT_SCAN_RANGE; ++Offset)
 	{
-		UE_LOG(LogTemp, Error, TEXT("EpicUnrealMCPBridge: Failed to create listener socket"));
-		return;
+		const uint16 TryPort = StartPort + Offset;
+
+		// Guard against uint16 overflow
+		if (TryPort < StartPort)
+		{
+			break;
+		}
+
+		TSharedPtr<FSocket> NewListenerSocket = MakeShareable(
+			SocketSubsystem->CreateSocket(NAME_Stream, TEXT("UnrealMCPListener"), false));
+		if (!NewListenerSocket.IsValid())
+		{
+			UE_LOG(LogTemp, Error, TEXT("UnrealMCP: Failed to create listener socket"));
+			return;
+		}
+
+		// Do NOT use SetReuseAddr(true) — on Windows, SO_REUSEADDR allows multiple
+		// processes to bind the same port simultaneously, defeating port scanning.
+		// Without it, Bind() correctly fails when another editor holds the port,
+		// and the scan moves to the next port. TIME_WAIT ports are skipped too,
+		// which is fine since the scan will just pick the next available one.
+		NewListenerSocket->SetNonBlocking(true);
+
+		FIPv4Endpoint Endpoint(ServerAddress, TryPort);
+		if (NewListenerSocket->Bind(*Endpoint.ToInternetAddr()))
+		{
+			if (NewListenerSocket->Listen(5))
+			{
+				Port = TryPort;
+				ListenerSocket = NewListenerSocket;
+				bBound = true;
+				break;
+			}
+
+			UE_LOG(LogTemp, Warning, TEXT("UnrealMCP: Bound to port %d but Listen() failed"), TryPort);
+		}
+		else if (Offset == 0)
+		{
+			UE_LOG(LogTemp, Display, TEXT("UnrealMCP: Port %d in use, scanning for available port..."), TryPort);
+		}
+
+		// Socket will be cleaned up by TSharedPtr going out of scope
 	}
 
-	// Allow address reuse for quick editor restarts
-	NewListenerSocket->SetReuseAddr(true);
-	NewListenerSocket->SetNonBlocking(true);
-
-	FIPv4Endpoint Endpoint(ServerAddress, Port);
-	if (!NewListenerSocket->Bind(*Endpoint.ToInternetAddr()))
+	if (!bBound)
 	{
-		UE_LOG(LogTemp, Error, TEXT("EpicUnrealMCPBridge: Failed to bind to %s:%d"),
-			*ServerAddress.ToString(), Port);
+		UE_LOG(LogTemp, Error, TEXT("UnrealMCP: Failed to bind to any port in range %d-%d"),
+			StartPort, StartPort + MCP_PORT_SCAN_RANGE - 1);
 		return;
 	}
 
-	if (!NewListenerSocket->Listen(5))
-	{
-		UE_LOG(LogTemp, Error, TEXT("EpicUnrealMCPBridge: Failed to start listening"));
-		return;
-	}
-
-	ListenerSocket = NewListenerSocket;
 	bIsRunning = true;
-	UE_LOG(LogTemp, Display, TEXT("EpicUnrealMCPBridge: Server started on %s:%d"),
-		*ServerAddress.ToString(), Port);
+	WritePortFile();
+
+	UE_LOG(LogTemp, Display, TEXT("UnrealMCP: Server started on %s:%d"), *ServerAddress.ToString(), Port);
 
 	ServerThread = FRunnableThread::Create(
 		new FMCPServerRunnable(this, ListenerSocket),
@@ -117,7 +163,7 @@ void UEpicUnrealMCPBridge::StartServer()
 
 	if (!ServerThread)
 	{
-		UE_LOG(LogTemp, Error, TEXT("EpicUnrealMCPBridge: Failed to create server thread"));
+		UE_LOG(LogTemp, Error, TEXT("UnrealMCP: Failed to create server thread"));
 		StopServer();
 		return;
 	}
@@ -151,7 +197,36 @@ void UEpicUnrealMCPBridge::StopServer()
 		ListenerSocket.Reset();
 	}
 
-	UE_LOG(LogTemp, Display, TEXT("EpicUnrealMCPBridge: Server stopped"));
+	UE_LOG(LogTemp, Display, TEXT("UnrealMCP: Server stopped"));
+}
+
+void UEpicUnrealMCPBridge::WritePortFile() const
+{
+	FString PortDir = FPaths::ProjectSavedDir() / TEXT("UnrealMCP");
+	IFileManager::Get().MakeDirectory(*PortDir, true);
+
+	FString PortFilePath = PortDir / TEXT("port.txt");
+	FString PortString = FString::Printf(TEXT("%d"), Port);
+
+	if (FFileHelper::SaveStringToFile(PortString, *PortFilePath))
+	{
+		UE_LOG(LogTemp, Display, TEXT("UnrealMCP: Wrote port %d to %s"), Port, *PortFilePath);
+	}
+	else
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UnrealMCP: Failed to write port file at %s"), *PortFilePath);
+	}
+}
+
+void UEpicUnrealMCPBridge::DeletePortFile() const
+{
+	FString PortFilePath = FPaths::ProjectSavedDir() / TEXT("UnrealMCP") / TEXT("port.txt");
+
+	if (IFileManager::Get().FileExists(*PortFilePath))
+	{
+		IFileManager::Get().Delete(*PortFilePath);
+		UE_LOG(LogTemp, Display, TEXT("UnrealMCP: Deleted port file at %s"), *PortFilePath);
+	}
 }
 
 // Base64-encodes user code and runs it via the Python scripting plugin
