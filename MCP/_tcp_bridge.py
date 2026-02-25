@@ -123,11 +123,14 @@ class _TCPConnection:
                 pass
             self._sock = None
 
-    def _connect_once(self) -> bool:
-        self._close_unsafe()
+    def _ensure_connected(self) -> bool:
+        """Connect only if not already connected. Reuses existing socket."""
+        if self._sock is not None:
+            return True
         try:
             self._sock = self._make_socket()
             self._sock.connect((TCP_HOST, self._get_port()))
+            logger.info("Connected to C++ bridge at %s:%d", TCP_HOST, self._get_port())
             return True
         except Exception:
             self._close_unsafe()
@@ -204,7 +207,7 @@ class _TCPConnection:
 
     def _send_once(self, command: str, params: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         with self._lock:
-            if not self._connect_once():
+            if not self._ensure_connected():
                 raise ConnectionError(f"Cannot connect to C++ bridge at {TCP_HOST}:{self._get_port()}")
             try:
                 payload = json.dumps({
@@ -221,8 +224,10 @@ class _TCPConnection:
                     response["status"] = "error"
 
                 return response
-            finally:
+            except Exception:
+                # Connection is broken — close so next attempt reconnects
                 self._close_unsafe()
+                raise
 
 
 # ---------------------------------------------------------------------------

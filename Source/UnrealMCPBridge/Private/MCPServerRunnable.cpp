@@ -166,7 +166,7 @@ uint32 FMCPServerRunnable::Run()
 			}
 		}
 
-		FPlatformProcess::Sleep(0.1f);
+		FPlatformProcess::Sleep(0.01f);
 	}
 
 	UE_LOG(LogTemp, Display, TEXT("MCPServerRunnable: Server thread stopping"));
