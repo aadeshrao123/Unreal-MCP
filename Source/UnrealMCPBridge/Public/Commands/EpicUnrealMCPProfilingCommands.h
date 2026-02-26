@@ -85,6 +85,18 @@ private:
 	 *  Returns only events that deviate significantly from normal. */
 	TSharedPtr<FJsonObject> HandleGetCompare(const TSharedPtr<FJsonObject>& Params);
 
+	/** Auto-detect worst frames AND categorize them in one call.
+	 *  Combines worst_frames + bottlenecks — each spike frame gets top 3 categories. */
+	TSharedPtr<FJsonObject> HandleGetSpikes(const TSharedPtr<FJsonObject>& Params);
+
+	/** Find a specific timer across all frames in the trace.
+	 *  Returns min/avg/max/p95/p99 stats + worst frames list. */
+	TSharedPtr<FJsonObject> HandleGetSearch(const TSharedPtr<FJsonObject>& Params);
+
+	/** Frame time distribution histogram for pattern detection.
+	 *  Returns bucket counts + budget summary (on-budget / over 2x / over 4x). */
+	TSharedPtr<FJsonObject> HandleGetHistogram(const TSharedPtr<FJsonObject>& Params);
+
 	// ── Provider Queries (EpicUnrealMCPProfilingProviders.cpp) ─
 
 	/** Network profiling - game instances, connections, packet overview. */

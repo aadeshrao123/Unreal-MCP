@@ -75,13 +75,18 @@ def performance_analyze_insight(
     category: str = "",
     event_name: str = "",
     min_deviation_pct: float = 0.0,
+    bucket_size_ms: float = 0.0,
 ) -> str:
     """Query profiling data from a loaded .utrace trace.
 
     RECOMMENDED WORKFLOW (compact output, saves context):
-      1. "bottlenecks" — Auto-categorized frame summary (~200 bytes vs 15KB)
-      2. "hotpath"     — Drill into a specific category or event
-      3. "compare"     — Find outlier events vs trace median
+      1. "summary"      — Get trace overview (frame count, avg/p95/p99 frame times)
+      2. "histogram"    — See frame time distribution (periodic hitches vs sustained?)
+      3. "spikes"       — Auto worst frames + category breakdown in ONE call
+      4. "bottlenecks"  — Drill into a specific frame's categories
+      5. "hotpath"      — Drill into a category or event's children
+      6. "search"       — Find a timer across all frames (stats + worst frames)
+      7. "compare"      — Compare frame vs trace median, show outlier events
 
     Use performance_start_trace/stop_trace to record and auto-load a trace,
     or use query="load" to load an existing .utrace file.
@@ -94,6 +99,12 @@ def performance_analyze_insight(
                                 with total time per category and top event. VERY compact.
             - "hotpath"       — Drill into a category or event's children, sorted by time
             - "compare"       — Compare frame vs trace median, show outlier events only
+            - "spikes"        — Auto worst frames + category breakdown (combines worst_frames
+                                + bottlenecks). Shows top 3 categories per spike frame.
+            - "search"        — Find a timer across ALL frames. Returns min/avg/max/p95/p99
+                                stats + worst frames list. Use filter= for timer name.
+            - "histogram"     — Frame time distribution. Shows bucket counts + budget
+                                summary (on-budget / slightly over / 2x / 4x over).
 
             STANDARD QUERIES:
             - "load"          — Load an existing .utrace file (requires trace_path)
@@ -115,18 +126,18 @@ def performance_analyze_insight(
 
         trace_path: (load) Absolute path to a .utrace file
         frame_index: (bottlenecks, hotpath, compare, frame_details) Which frame (0-based)
-        target_fps: (bottlenecks) Target FPS for budget calculation (default: 60)
+        target_fps: (bottlenecks, spikes, histogram) Target FPS for budget (default: 60)
         category: (hotpath) Category to drill into: Animation, Slate, Network, Physics,
                   Rendering, Gameplay, Audio, Loading, GarbageCollection, Other
         event_name: (hotpath) Specific event name to show children of
         min_deviation_pct: (compare) Min deviation % to report (default: 50)
-        thread: (bottlenecks, hotpath, compare) Thread to analyze (default: GameThread)
-        count: (worst_frames, timer_stats, hotpath, etc.) Max results
-        threshold_ms: (worst_frames) Only show frames slower than this
+        thread: (bottlenecks, hotpath, compare, spikes, search) Thread (default: GameThread)
+        count: (worst_frames, spikes, search, timer_stats, hotpath) Max results
+        threshold_ms: (worst_frames, spikes) Only show frames slower than this
         max_depth: (frame_details, butterfly, hotpath) Max call stack depth
         min_duration_ms: (frame_details) Hide events shorter than this
         thread_name: (frame_details) Filter to threads containing this string
-        filter: (timer_stats, counters, logs, memory, regions, bookmarks) Name filter
+        filter: (search, timer_stats, counters, logs, memory, regions, bookmarks) Name filter
         start_time: Start of time range in seconds (-1 = trace start)
         end_time: End of time range in seconds (-1 = trace end)
         include_values: (counters) Include sampled values
@@ -136,6 +147,7 @@ def performance_analyze_insight(
         connection_index: (net_stats) Connection index for packet details
         verbosity: (logs) Filter: Fatal, Error, Warning, Display, Log, Verbose
         tracker: (memory) Memory tracker ID
+        bucket_size_ms: (histogram) Custom bucket width in ms (0 = auto based on target_fps)
     """
     params = {"query": query}
 
@@ -183,5 +195,7 @@ def performance_analyze_insight(
         params["event_name"] = event_name
     if min_deviation_pct > 0.0:
         params["min_deviation_pct"] = min_deviation_pct
+    if bucket_size_ms > 0.0:
+        params["bucket_size_ms"] = bucket_size_ms
 
     return _call("performance_analyze_insight", params)

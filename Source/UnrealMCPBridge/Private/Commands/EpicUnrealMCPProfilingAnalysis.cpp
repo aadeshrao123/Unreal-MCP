@@ -1502,3 +1502,620 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPProfilingCommands::HandleGetCounters(
 
 	return Result;
 }
+
+// ════════════════════════════════════════════════════════════
+//  ADDITIONAL SMART QUERIES
+// ════════════════════════════════════════════════════════════
+
+// ────────────────────────────────────────────────────────────
+// spikes — Auto-detect worst frames AND categorize them
+// Combines worst_frames + bottlenecks in one compact call.
+// ────────────────────────────────────────────────────────────
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPProfilingCommands::HandleGetSpikes(
+	const TSharedPtr<FJsonObject>& Params)
+{
+	TraceServices::FAnalysisSessionReadScope ReadScope(*CurrentSession);
+
+	int32 MaxResults = 10;
+	if (Params->HasField(TEXT("count")))
+	{
+		MaxResults = FMath::Clamp(
+			static_cast<int32>(Params->GetNumberField(TEXT("count"))), 1, 50);
+	}
+
+	double ThresholdMs = 0.0;
+	if (Params->HasField(TEXT("threshold_ms")))
+	{
+		ThresholdMs = Params->GetNumberField(TEXT("threshold_ms"));
+	}
+
+	double TargetFps = 60.0;
+	if (Params->HasField(TEXT("target_fps")))
+	{
+		TargetFps = FMath::Max(1.0, Params->GetNumberField(TEXT("target_fps")));
+	}
+
+	FString ThreadFilter = TEXT("GameThread");
+	Params->TryGetStringField(TEXT("thread"), ThreadFilter);
+
+	const TraceServices::IFrameProvider& FrameProvider =
+		TraceServices::ReadFrameProvider(*CurrentSession);
+	const TraceServices::ITimingProfilerProvider* TimingProvider =
+		TraceServices::ReadTimingProfilerProvider(*CurrentSession);
+	const TraceServices::IThreadProvider& ThreadProvider =
+		TraceServices::ReadThreadProvider(*CurrentSession);
+
+	if (!TimingProvider)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Timing profiler not available"));
+	}
+
+	// Step 1: Collect all frames and sort by duration
+	struct FFrameEntry
+	{
+		uint64 Index;
+		double StartTime;
+		double EndTime;
+		double DurationMs;
+	};
+
+	TArray<FFrameEntry> AllFrames;
+	const uint64 GameFrameCount = FrameProvider.GetFrameCount(ETraceFrameType::TraceFrameType_Game);
+	AllFrames.Reserve(static_cast<int32>(FMath::Min(GameFrameCount, (uint64)100000)));
+
+	FrameProvider.EnumerateFrames(ETraceFrameType::TraceFrameType_Game, 0, GameFrameCount,
+		[&](const TraceServices::FFrame& Frame)
+		{
+			double DurationMs = (Frame.EndTime - Frame.StartTime) * 1000.0;
+			if (std::isfinite(DurationMs) && DurationMs > 0.0 && DurationMs >= ThresholdMs)
+			{
+				AllFrames.Add({ Frame.Index, Frame.StartTime, Frame.EndTime, DurationMs });
+			}
+		});
+
+	AllFrames.Sort([](const FFrameEntry& A, const FFrameEntry& B)
+	{
+		return A.DurationMs > B.DurationMs;
+	});
+
+	if (AllFrames.Num() > MaxResults)
+	{
+		AllFrames.SetNum(MaxResults);
+	}
+
+	// Step 2: For each worst frame, run category bucketing
+	double TargetMs = 1000.0 / TargetFps;
+
+	TArray<TSharedPtr<FJsonValue>> SpikesArray;
+	for (const FFrameEntry& Entry : AllFrames)
+	{
+		// Category buckets for this frame
+		struct FCategoryBucket
+		{
+			double TotalMs = 0.0;
+			FString TopEventName;
+			double TopEventMs = 0.0;
+		};
+
+		FCategoryBucket Buckets[static_cast<int32>(EProfilingCategory::MAX)];
+
+		ThreadProvider.EnumerateThreads(
+			[&](const TraceServices::FThreadInfo& ThreadInfo)
+			{
+				FString ThreadName(ThreadInfo.Name ? ThreadInfo.Name : TEXT("Unknown"));
+				if (!ThreadName.Contains(ThreadFilter))
+				{
+					return;
+				}
+
+				uint32 TimelineIndex = 0;
+				if (!TimingProvider->GetCpuThreadTimelineIndex(ThreadInfo.Id, TimelineIndex))
+				{
+					return;
+				}
+
+				TimingProvider->ReadTimeline(TimelineIndex,
+					[&](const TraceServices::ITimingProfilerProvider::Timeline& Timeline)
+					{
+						// Auto-detect bucketing depth (same logic as bottlenecks)
+						int32 EventCountByDepth[6] = {};
+						Timeline.EnumerateEvents(Entry.StartTime, Entry.EndTime,
+							[&](double StartTime, double EndTime, uint32 Depth,
+								const TraceServices::FTimingProfilerEvent& Event) -> TraceServices::EEventEnumerate
+							{
+								if (Depth < 6)
+								{
+									double DurMs = (EndTime - StartTime) * 1000.0;
+									if (std::isfinite(DurMs) && DurMs > 0.1)
+									{
+										EventCountByDepth[Depth]++;
+									}
+								}
+								return TraceServices::EEventEnumerate::Continue;
+							});
+
+						uint32 BucketDepth = 0;
+						for (int32 d = 0; d < 6; ++d)
+						{
+							if (EventCountByDepth[d] >= 2)
+							{
+								BucketDepth = d;
+								break;
+							}
+							BucketDepth = d + 1;
+						}
+						BucketDepth = FMath::Min(BucketDepth, (uint32)5);
+
+						// Bucket events at detected depth
+						Timeline.EnumerateEvents(Entry.StartTime, Entry.EndTime,
+							[&](double StartTime, double EndTime, uint32 Depth,
+								const TraceServices::FTimingProfilerEvent& Event) -> TraceServices::EEventEnumerate
+							{
+								if (Depth != BucketDepth)
+								{
+									return TraceServices::EEventEnumerate::Continue;
+								}
+
+								double DurMs = SafeDouble((EndTime - StartTime) * 1000.0);
+								if (!std::isfinite(DurMs) || DurMs < 0.01)
+								{
+									return TraceServices::EEventEnumerate::Continue;
+								}
+
+								FString TimerName;
+								TimingProvider->ReadTimers(
+									[&](const TraceServices::ITimingProfilerTimerReader& Reader)
+									{
+										const TraceServices::FTimingProfilerTimer* Timer =
+											Reader.GetTimer(Event.TimerIndex);
+										if (Timer && Timer->Name)
+										{
+											TimerName = Timer->Name;
+										}
+									});
+
+								if (TimerName.IsEmpty())
+								{
+									return TraceServices::EEventEnumerate::Continue;
+								}
+
+								EProfilingCategory Cat = CategorizeTimerName(TimerName);
+								int32 CatIdx = static_cast<int32>(Cat);
+								FCategoryBucket& Bucket = Buckets[CatIdx];
+
+								Bucket.TotalMs += DurMs;
+								if (DurMs > Bucket.TopEventMs)
+								{
+									Bucket.TopEventMs = DurMs;
+									Bucket.TopEventName = TimerName;
+								}
+
+								return TraceServices::EEventEnumerate::Continue;
+							});
+					});
+			});
+
+		// Build compact spike entry: frame info + top 3 categories
+		TSharedPtr<FJsonObject> SpikeObj = MakeShared<FJsonObject>();
+		SpikeObj->SetNumberField(TEXT("frame"), static_cast<double>(Entry.Index));
+		SpikeObj->SetNumberField(TEXT("ms"), SafeDouble(Entry.DurationMs));
+		SpikeObj->SetNumberField(TEXT("over_budget_ms"), SafeDouble(Entry.DurationMs - TargetMs));
+
+		// Sort categories and take top 3
+		struct FSortedCat
+		{
+			EProfilingCategory Category;
+			double TotalMs;
+			FString TopEvent;
+			double TopMs;
+		};
+
+		TArray<FSortedCat> SortedCats;
+		for (int32 i = 0; i < static_cast<int32>(EProfilingCategory::MAX); ++i)
+		{
+			if (Buckets[i].TotalMs > 0.1)
+			{
+				SortedCats.Add({
+					static_cast<EProfilingCategory>(i),
+					Buckets[i].TotalMs,
+					Buckets[i].TopEventName,
+					Buckets[i].TopEventMs
+				});
+			}
+		}
+
+		SortedCats.Sort([](const FSortedCat& A, const FSortedCat& B)
+		{
+			return A.TotalMs > B.TotalMs;
+		});
+
+		TArray<TSharedPtr<FJsonValue>> CatsArray;
+		int32 CatLimit = FMath::Min(SortedCats.Num(), 3);
+		for (int32 i = 0; i < CatLimit; ++i)
+		{
+			TSharedPtr<FJsonObject> CatObj = MakeShared<FJsonObject>();
+			CatObj->SetStringField(TEXT("cat"), GetCategoryName(SortedCats[i].Category));
+			CatObj->SetNumberField(TEXT("ms"), SafeDouble(SortedCats[i].TotalMs));
+			CatObj->SetStringField(TEXT("top"), SortedCats[i].TopEvent);
+			CatObj->SetNumberField(TEXT("top_ms"), SafeDouble(SortedCats[i].TopMs));
+			CatsArray.Add(MakeShared<FJsonValueObject>(CatObj));
+		}
+		SpikeObj->SetArrayField(TEXT("cats"), CatsArray);
+
+		SpikesArray.Add(MakeShared<FJsonValueObject>(SpikeObj));
+	}
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetBoolField(TEXT("success"), true);
+	Result->SetNumberField(TEXT("target_fps"), TargetFps);
+	Result->SetNumberField(TEXT("target_ms"), SafeDouble(TargetMs));
+	Result->SetNumberField(TEXT("spike_count"), SpikesArray.Num());
+	Result->SetArrayField(TEXT("spikes"), SpikesArray);
+
+	return Result;
+}
+
+// ────────────────────────────────────────────────────────────
+// search — Find a specific timer across all frames
+// Returns: which frames it appears in, min/avg/max/p95, worst frame index.
+// ────────────────────────────────────────────────────────────
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPProfilingCommands::HandleGetSearch(
+	const TSharedPtr<FJsonObject>& Params)
+{
+	TraceServices::FAnalysisSessionReadScope ReadScope(*CurrentSession);
+
+	FString TimerFilter;
+	if (!Params->TryGetStringField(TEXT("filter"), TimerFilter) || TimerFilter.IsEmpty())
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			TEXT("Missing 'filter'. Provide a timer name or substring to search for."));
+	}
+
+	FString ThreadFilter = TEXT("GameThread");
+	Params->TryGetStringField(TEXT("thread"), ThreadFilter);
+
+	int32 MaxFrameResults = 10;
+	if (Params->HasField(TEXT("count")))
+	{
+		MaxFrameResults = FMath::Clamp(
+			static_cast<int32>(Params->GetNumberField(TEXT("count"))), 1, 50);
+	}
+
+	const TraceServices::IFrameProvider& FrameProvider =
+		TraceServices::ReadFrameProvider(*CurrentSession);
+	const TraceServices::ITimingProfilerProvider* TimingProvider =
+		TraceServices::ReadTimingProfilerProvider(*CurrentSession);
+	const TraceServices::IThreadProvider& ThreadProvider =
+		TraceServices::ReadThreadProvider(*CurrentSession);
+
+	if (!TimingProvider)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Timing profiler not available"));
+	}
+
+	// Find target thread's timeline index
+	uint32 TargetTimelineIndex = UINT32_MAX;
+	ThreadProvider.EnumerateThreads(
+		[&](const TraceServices::FThreadInfo& ThreadInfo)
+		{
+			if (TargetTimelineIndex != UINT32_MAX)
+			{
+				return;
+			}
+
+			FString ThreadName(ThreadInfo.Name ? ThreadInfo.Name : TEXT("Unknown"));
+			if (!ThreadName.Contains(ThreadFilter))
+			{
+				return;
+			}
+
+			uint32 TimelineIndex = 0;
+			if (TimingProvider->GetCpuThreadTimelineIndex(ThreadInfo.Id, TimelineIndex))
+			{
+				TargetTimelineIndex = TimelineIndex;
+			}
+		});
+
+	if (TargetTimelineIndex == UINT32_MAX)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Thread '%s' not found"), *ThreadFilter));
+	}
+
+	// Scan all frames for the timer
+	struct FTimerOccurrence
+	{
+		uint64 FrameIndex;
+		double DurationMs;
+		double FrameDurationMs;
+	};
+
+	TArray<FTimerOccurrence> Occurrences;
+	TArray<double> AllDurations;
+	TSet<FString> MatchedTimerNames;
+
+	const uint64 GameFrameCount = FrameProvider.GetFrameCount(ETraceFrameType::TraceFrameType_Game);
+
+	FrameProvider.EnumerateFrames(ETraceFrameType::TraceFrameType_Game, 0, GameFrameCount,
+		[&](const TraceServices::FFrame& Frame)
+		{
+			double FrameMs = (Frame.EndTime - Frame.StartTime) * 1000.0;
+			if (!std::isfinite(FrameMs) || FrameMs <= 0.0)
+			{
+				return;
+			}
+
+			// Accumulate all matching timer instances within this frame
+			double FrameTimerTotalMs = 0.0;
+			bool bFoundInFrame = false;
+
+			TimingProvider->ReadTimeline(TargetTimelineIndex,
+				[&](const TraceServices::ITimingProfilerProvider::Timeline& Timeline)
+				{
+					Timeline.EnumerateEvents(Frame.StartTime, Frame.EndTime,
+						[&](double StartTime, double EndTime, uint32 Depth,
+							const TraceServices::FTimingProfilerEvent& Event) -> TraceServices::EEventEnumerate
+						{
+							// Only check first few depths to avoid excessive scanning
+							if (Depth > 6)
+							{
+								return TraceServices::EEventEnumerate::Continue;
+							}
+
+							FString TimerName;
+							TimingProvider->ReadTimers(
+								[&](const TraceServices::ITimingProfilerTimerReader& Reader)
+								{
+									const TraceServices::FTimingProfilerTimer* Timer =
+										Reader.GetTimer(Event.TimerIndex);
+									if (Timer && Timer->Name)
+									{
+										TimerName = Timer->Name;
+									}
+								});
+
+							if (!TimerName.IsEmpty() && TimerName.Contains(TimerFilter))
+							{
+								double DurMs = SafeDouble((EndTime - StartTime) * 1000.0);
+								if (std::isfinite(DurMs) && DurMs > 0.001)
+								{
+									FrameTimerTotalMs += DurMs;
+									bFoundInFrame = true;
+									MatchedTimerNames.Add(TimerName);
+								}
+							}
+
+							return TraceServices::EEventEnumerate::Continue;
+						});
+				});
+
+			if (bFoundInFrame && FrameTimerTotalMs > 0.001)
+			{
+				Occurrences.Add({ Frame.Index, FrameTimerTotalMs, FrameMs });
+				AllDurations.Add(FrameTimerTotalMs);
+			}
+		});
+
+	if (Occurrences.Num() == 0)
+	{
+		TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+		Result->SetBoolField(TEXT("success"), true);
+		Result->SetStringField(TEXT("filter"), TimerFilter);
+		Result->SetNumberField(TEXT("frames_found"), 0);
+		Result->SetStringField(TEXT("message"), TEXT("Timer not found in any frame."));
+		return Result;
+	}
+
+	// Compute stats
+	AllDurations.Sort();
+	int32 N = AllDurations.Num();
+
+	double TotalMs = 0.0;
+	for (double D : AllDurations)
+	{
+		TotalMs += D;
+	}
+
+	double MinMs = AllDurations[0];
+	double MaxMs = AllDurations[N - 1];
+	double AvgMs = TotalMs / N;
+	double MedianMs = AllDurations[N / 2];
+	double P95Ms = AllDurations[FMath::Clamp(FMath::FloorToInt32(N * 0.95f), 0, N - 1)];
+	double P99Ms = AllDurations[FMath::Clamp(FMath::FloorToInt32(N * 0.99f), 0, N - 1)];
+
+	// Sort occurrences by timer duration to find worst frames
+	Occurrences.Sort([](const FTimerOccurrence& A, const FTimerOccurrence& B)
+	{
+		return A.DurationMs > B.DurationMs;
+	});
+
+	// Build worst frames list
+	TArray<TSharedPtr<FJsonValue>> WorstArray;
+	int32 WorstLimit = FMath::Min(Occurrences.Num(), MaxFrameResults);
+	for (int32 i = 0; i < WorstLimit; ++i)
+	{
+		TSharedPtr<FJsonObject> FrameObj = MakeShared<FJsonObject>();
+		FrameObj->SetNumberField(TEXT("frame"), static_cast<double>(Occurrences[i].FrameIndex));
+		FrameObj->SetNumberField(TEXT("timer_ms"), SafeDouble(Occurrences[i].DurationMs));
+		FrameObj->SetNumberField(TEXT("frame_ms"), SafeDouble(Occurrences[i].FrameDurationMs));
+		FrameObj->SetNumberField(TEXT("pct_of_frame"),
+			SafeDouble(Occurrences[i].FrameDurationMs > 0.0
+				? (Occurrences[i].DurationMs / Occurrences[i].FrameDurationMs) * 100.0
+				: 0.0));
+		WorstArray.Add(MakeShared<FJsonValueObject>(FrameObj));
+	}
+
+	// Matched timer names list
+	TArray<TSharedPtr<FJsonValue>> NamesArray;
+	for (const FString& Name : MatchedTimerNames)
+	{
+		NamesArray.Add(MakeShared<FJsonValueString>(Name));
+	}
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetBoolField(TEXT("success"), true);
+	Result->SetStringField(TEXT("filter"), TimerFilter);
+	Result->SetNumberField(TEXT("frames_found"), Occurrences.Num());
+	Result->SetNumberField(TEXT("total_frames"), static_cast<double>(GameFrameCount));
+	Result->SetArrayField(TEXT("matched_timers"), NamesArray);
+
+	TSharedPtr<FJsonObject> Stats = MakeShared<FJsonObject>();
+	Stats->SetNumberField(TEXT("min_ms"), SafeDouble(MinMs));
+	Stats->SetNumberField(TEXT("max_ms"), SafeDouble(MaxMs));
+	Stats->SetNumberField(TEXT("avg_ms"), SafeDouble(AvgMs));
+	Stats->SetNumberField(TEXT("median_ms"), SafeDouble(MedianMs));
+	Stats->SetNumberField(TEXT("p95_ms"), SafeDouble(P95Ms));
+	Stats->SetNumberField(TEXT("p99_ms"), SafeDouble(P99Ms));
+	Result->SetObjectField(TEXT("stats"), Stats);
+
+	Result->SetArrayField(TEXT("worst_frames"), WorstArray);
+
+	return Result;
+}
+
+// ────────────────────────────────────────────────────────────
+// histogram — Frame time distribution for quick pattern detection
+// ────────────────────────────────────────────────────────────
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPProfilingCommands::HandleGetHistogram(
+	const TSharedPtr<FJsonObject>& Params)
+{
+	TraceServices::FAnalysisSessionReadScope ReadScope(*CurrentSession);
+
+	double BucketSizeMs = 0.0;
+	if (Params->HasField(TEXT("bucket_size_ms")))
+	{
+		BucketSizeMs = Params->GetNumberField(TEXT("bucket_size_ms"));
+	}
+
+	double TargetFps = 60.0;
+	if (Params->HasField(TEXT("target_fps")))
+	{
+		TargetFps = FMath::Max(1.0, Params->GetNumberField(TEXT("target_fps")));
+	}
+
+	const TraceServices::IFrameProvider& FrameProvider =
+		TraceServices::ReadFrameProvider(*CurrentSession);
+
+	const uint64 GameFrameCount = FrameProvider.GetFrameCount(ETraceFrameType::TraceFrameType_Game);
+
+	// Collect all frame times
+	TArray<double> FrameTimes;
+	FrameTimes.Reserve(static_cast<int32>(FMath::Min(GameFrameCount, (uint64)1000000)));
+
+	FrameProvider.EnumerateFrames(ETraceFrameType::TraceFrameType_Game, 0, GameFrameCount,
+		[&](const TraceServices::FFrame& Frame)
+		{
+			double DurationMs = (Frame.EndTime - Frame.StartTime) * 1000.0;
+			if (std::isfinite(DurationMs) && DurationMs > 0.0)
+			{
+				FrameTimes.Add(DurationMs);
+			}
+		});
+
+	if (FrameTimes.Num() == 0)
+	{
+		TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+		Result->SetBoolField(TEXT("success"), true);
+		Result->SetNumberField(TEXT("total_frames"), 0);
+		return Result;
+	}
+
+	FrameTimes.Sort();
+
+	double TargetMs = 1000.0 / TargetFps;
+
+	if (BucketSizeMs <= 0.0)
+	{
+		// Auto-size buckets based on target FPS
+		// Use half the target frame time as bucket size for good granularity
+		BucketSizeMs = FMath::Max(1.0, FMath::CeilToDouble(TargetMs / 4.0));
+	}
+
+	// Build histogram buckets
+	// Find max frame time to determine bucket count
+	double MaxMs = FrameTimes.Last();
+	int32 NumBuckets = FMath::CeilToInt32(MaxMs / BucketSizeMs) + 1;
+	NumBuckets = FMath::Min(NumBuckets, 50); // Cap at 50 buckets for sanity
+
+	TArray<int32> BucketCounts;
+	BucketCounts.SetNumZeroed(NumBuckets);
+
+	for (double FrameMs : FrameTimes)
+	{
+		int32 BucketIdx = FMath::Clamp(FMath::FloorToInt32(FrameMs / BucketSizeMs), 0, NumBuckets - 1);
+		BucketCounts[BucketIdx]++;
+	}
+
+	// Build result with non-empty buckets only
+	TArray<TSharedPtr<FJsonValue>> BucketsArray;
+	for (int32 i = 0; i < NumBuckets; ++i)
+	{
+		if (BucketCounts[i] == 0)
+		{
+			continue;
+		}
+
+		double RangeStart = i * BucketSizeMs;
+		double RangeEnd = (i + 1) * BucketSizeMs;
+
+		TSharedPtr<FJsonObject> BucketObj = MakeShared<FJsonObject>();
+		BucketObj->SetStringField(TEXT("range"),
+			FString::Printf(TEXT("%.0f-%.0fms"), RangeStart, RangeEnd));
+		BucketObj->SetNumberField(TEXT("count"), BucketCounts[i]);
+		BucketObj->SetNumberField(TEXT("pct"),
+			SafeDouble((static_cast<double>(BucketCounts[i]) / FrameTimes.Num()) * 100.0));
+		BucketsArray.Add(MakeShared<FJsonValueObject>(BucketObj));
+	}
+
+	// Summary stats
+	int32 N = FrameTimes.Num();
+	int32 OnBudget = 0;
+	int32 SlightlyOver = 0;
+	int32 Over2x = 0;
+	int32 Over4x = 0;
+
+	for (double FrameMs : FrameTimes)
+	{
+		if (FrameMs <= TargetMs)
+		{
+			OnBudget++;
+		}
+		else if (FrameMs <= TargetMs * 2.0)
+		{
+			SlightlyOver++;
+		}
+		else if (FrameMs <= TargetMs * 4.0)
+		{
+			Over2x++;
+		}
+		else
+		{
+			Over4x++;
+		}
+	}
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetBoolField(TEXT("success"), true);
+	Result->SetNumberField(TEXT("total_frames"), N);
+	Result->SetNumberField(TEXT("bucket_size_ms"), BucketSizeMs);
+	Result->SetNumberField(TEXT("target_ms"), SafeDouble(TargetMs));
+
+	// Budget summary — very compact
+	TSharedPtr<FJsonObject> Budget = MakeShared<FJsonObject>();
+	Budget->SetStringField(TEXT("on_budget"),
+		FString::Printf(TEXT("%d (%.1f%%)"), OnBudget, (OnBudget * 100.0) / N));
+	Budget->SetStringField(TEXT("slightly_over"),
+		FString::Printf(TEXT("%d (%.1f%%)"), SlightlyOver, (SlightlyOver * 100.0) / N));
+	Budget->SetStringField(TEXT("over_2x"),
+		FString::Printf(TEXT("%d (%.1f%%)"), Over2x, (Over2x * 100.0) / N));
+	Budget->SetStringField(TEXT("over_4x"),
+		FString::Printf(TEXT("%d (%.1f%%)"), Over4x, (Over4x * 100.0) / N));
+	Result->SetObjectField(TEXT("budget"), Budget);
+
+	Result->SetArrayField(TEXT("buckets"), BucketsArray);
+
+	return Result;
+}

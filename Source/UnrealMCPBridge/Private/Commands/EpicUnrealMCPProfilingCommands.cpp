@@ -105,7 +105,7 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPProfilingCommands::HandleAnalyzeInsight(
 	if (!Params->TryGetStringField(TEXT("query"), Query))
 	{
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
-			TEXT("Missing 'query'. Valid: load, summary, bottlenecks, hotpath, compare, ")
+			TEXT("Missing 'query'. Valid: load, summary, bottlenecks, hotpath, compare, spikes, search, histogram, ")
 			TEXT("worst_frames, frame_details, timer_stats, butterfly, threads, counters, ")
 			TEXT("net_stats, loading, logs, memory, regions, bookmarks"));
 	}
@@ -125,6 +125,9 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPProfilingCommands::HandleAnalyzeInsight(
 	if (Query == TEXT("bottlenecks"))  return HandleGetBottlenecks(Params);
 	if (Query == TEXT("hotpath"))      return HandleGetHotpath(Params);
 	if (Query == TEXT("compare"))      return HandleGetCompare(Params);
+	if (Query == TEXT("spikes"))       return HandleGetSpikes(Params);
+	if (Query == TEXT("search"))       return HandleGetSearch(Params);
+	if (Query == TEXT("histogram"))    return HandleGetHistogram(Params);
 
 	// Standard queries
 	if (Query == TEXT("summary"))         return HandleGetSummary(Params);
