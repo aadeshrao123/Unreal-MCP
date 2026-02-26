@@ -131,6 +131,24 @@ def performance_analyze_insight(
             - "regions"       — Timing regions (needs 'region' channel)
             - "bookmarks"     — Bookmark events (needs 'bookmark' channel)
 
+            EXTENDED PROVIDER QUERIES:
+            - "session"       — Session metadata: platform, app, project, build version,
+                                branch, changelist, config, target type. Essential context.
+            - "modules"       — Loaded modules/DLLs with symbol resolution stats.
+                                Shows resolved/failed/pending counts per module.
+            - "file_io"       — File I/O activity: per-file read/write counts, bytes,
+                                duration. Sorted by impact. Needs 'loadtime' channel.
+            - "tasks"         — Task graph: task lifecycle (created→finished), duration,
+                                wait time, prerequisites, nested tasks. Sorted by duration.
+            - "context_switches" — CPU core scheduling: core count, per-thread context
+                                switch frequency. Needs elevated/admin trace.
+            - "allocations"   — Memory allocation timeline: peak/min memory, live alloc
+                                count, alloc/free events, heaps, swap. Needs 'memalloc'.
+            - "stack_samples" — CPU sampling profiler: flat profile of hotspot functions
+                                by sample count with percentage. Needs sampling enabled.
+            - "screenshots"   — Screenshot metadata captured during trace recording.
+                                Needs 'screenshot' channel.
+
         trace_path: (load) Absolute path to a .utrace file
         frame_index: (bottlenecks, hotpath, compare, frame_details) Which frame (0-based)
         target_fps: (bottlenecks, spikes, histogram) Target FPS for budget (default: 60)
@@ -139,12 +157,14 @@ def performance_analyze_insight(
         event_name: (hotpath) Specific event name to show children of
         min_deviation_pct: (compare) Min deviation % to report (default: 50)
         thread: (bottlenecks, hotpath, compare, spikes, search) Thread (default: GameThread)
-        count: (worst_frames, spikes, search, timer_stats, hotpath) Max results
+        count: (worst_frames, spikes, search, timer_stats, hotpath, file_io, tasks,
+                  modules, stack_samples) Max results
         threshold_ms: (worst_frames, spikes) Only show frames slower than this
         max_depth: (frame_details, butterfly, hotpath) Max call stack depth
         min_duration_ms: (frame_details) Hide events shorter than this
         thread_name: (frame_details) Filter to threads containing this string
-        filter: (search, timer_stats, counters, logs, memory, regions, bookmarks) Name filter
+        filter: (search, timer_stats, counters, logs, memory, regions, bookmarks,
+                  modules, file_io, tasks, stack_samples) Name/path filter
         start_time: Start of time range in seconds (-1 = trace start)
         end_time: End of time range in seconds (-1 = trace end)
         include_values: (counters) Include sampled values

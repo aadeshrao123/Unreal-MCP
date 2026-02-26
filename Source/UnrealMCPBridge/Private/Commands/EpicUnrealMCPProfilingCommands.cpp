@@ -107,7 +107,8 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPProfilingCommands::HandleAnalyzeInsight(
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
 			TEXT("Missing 'query'. Valid: load, diagnose, summary, bottlenecks, hotpath, compare, spikes, search, histogram, flame, ")
 			TEXT("worst_frames, frame_details, timer_stats, butterfly, threads, counters, ")
-			TEXT("net_stats, loading, logs, memory, regions, bookmarks"));
+			TEXT("net_stats, loading, logs, memory, regions, bookmarks, ")
+			TEXT("session, modules, file_io, tasks, context_switches, allocations, stack_samples, screenshots"));
 	}
 
 	if (Query == TEXT("load"))
@@ -147,6 +148,16 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPProfilingCommands::HandleAnalyzeInsight(
 	if (Query == TEXT("memory"))          return HandleGetMemory(Params);
 	if (Query == TEXT("regions"))         return HandleGetRegions(Params);
 	if (Query == TEXT("bookmarks"))       return HandleGetBookmarks(Params);
+
+	// Extended provider queries
+	if (Query == TEXT("session"))            return HandleGetSession(Params);
+	if (Query == TEXT("modules"))            return HandleGetModules(Params);
+	if (Query == TEXT("file_io"))            return HandleGetFileIO(Params);
+	if (Query == TEXT("tasks"))              return HandleGetTasks(Params);
+	if (Query == TEXT("context_switches"))   return HandleGetContextSwitches(Params);
+	if (Query == TEXT("allocations"))        return HandleGetAllocations(Params);
+	if (Query == TEXT("stack_samples"))      return HandleGetStackSamples(Params);
+	if (Query == TEXT("screenshots"))        return HandleGetScreenshots(Params);
 
 	return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
 		FString::Printf(TEXT("Unknown query: %s"), *Query));

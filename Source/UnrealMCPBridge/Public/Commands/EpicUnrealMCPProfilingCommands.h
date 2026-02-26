@@ -125,6 +125,30 @@ private:
 	/** Bookmark events from the trace. */
 	TSharedPtr<FJsonObject> HandleGetBookmarks(const TSharedPtr<FJsonObject>& Params);
 
+	/** Session diagnostics — platform, build info, project name, config. */
+	TSharedPtr<FJsonObject> HandleGetSession(const TSharedPtr<FJsonObject>& Params);
+
+	/** Loaded modules with symbol resolution stats. */
+	TSharedPtr<FJsonObject> HandleGetModules(const TSharedPtr<FJsonObject>& Params);
+
+	/** File I/O activity — read/write stats per file, sorted by impact. */
+	TSharedPtr<FJsonObject> HandleGetFileIO(const TSharedPtr<FJsonObject>& Params);
+
+	/** Task graph profiling — task lifecycle, duration, wait time, dependencies. */
+	TSharedPtr<FJsonObject> HandleGetTasks(const TSharedPtr<FJsonObject>& Params);
+
+	/** CPU context switches — core usage, thread migration frequency. */
+	TSharedPtr<FJsonObject> HandleGetContextSwitches(const TSharedPtr<FJsonObject>& Params);
+
+	/** Memory allocation timeline — peak/min memory, alloc/free events, heaps. */
+	TSharedPtr<FJsonObject> HandleGetAllocations(const TSharedPtr<FJsonObject>& Params);
+
+	/** CPU stack sampling — flat profile of hotspot functions by sample count. */
+	TSharedPtr<FJsonObject> HandleGetStackSamples(const TSharedPtr<FJsonObject>& Params);
+
+	/** Screenshot metadata from the trace. */
+	TSharedPtr<FJsonObject> HandleGetScreenshots(const TSharedPtr<FJsonObject>& Params);
+
 	// ── Helpers ───────────────────────────────────────────────
 
 	TSharedPtr<FJsonObject> EnsureSession() const;
