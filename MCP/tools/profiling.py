@@ -80,12 +80,12 @@ def performance_analyze_insight(
     """Query profiling data from a loaded .utrace trace.
 
     RECOMMENDED WORKFLOW (compact output, saves context):
-      1. "summary"      — Get trace overview (frame count, avg/p95/p99 frame times)
-      2. "histogram"    — See frame time distribution (periodic hitches vs sustained?)
-      3. "spikes"       — Auto worst frames + category breakdown in ONE call
-      4. "bottlenecks"  — Drill into a specific frame's categories
-      5. "hotpath"      — Drill into a category or event's children
-      6. "search"       — Find a timer across all frames (stats + worst frames)
+      1. "diagnose"     — ONE CALL full report: verdict, findings, categories, top timers
+      2. "spikes"       — Auto worst frames + category breakdown
+      3. "flame"        — Top timers by exclusive (self) time — actual bottleneck code
+      4. "hotpath"      — Drill into a category or event's children
+      5. "search"       — Find a timer across all frames (stats + worst frames)
+      6. "histogram"    — Frame time distribution (periodic hitches vs sustained?)
       7. "compare"      — Compare frame vs trace median, show outlier events
 
     Use performance_start_trace/stop_trace to record and auto-load a trace,
@@ -95,6 +95,10 @@ def performance_analyze_insight(
         query: Type of analysis. One of:
 
             SMART QUERIES (compact output, do analysis in C++):
+            - "diagnose"      — ONE CALL full performance report. Returns: verdict string,
+                                severity-rated findings with recommendations, category
+                                breakdown (avg per-frame exclusive ms), top 10 exclusive
+                                timers, GPU-bound detection. Start here.
             - "bottlenecks"   — Auto-categorize frame into Animation/Slate/Network/etc
                                 with total time per category and top event. VERY compact.
             - "hotpath"       — Drill into a category or event's children, sorted by time
@@ -105,6 +109,9 @@ def performance_analyze_insight(
                                 stats + worst frames list. Use filter= for timer name.
             - "histogram"     — Frame time distribution. Shows bucket counts + budget
                                 summary (on-budget / slightly over / 2x / 4x over).
+            - "flame"         — Top timers by EXCLUSIVE (self) time. Shows per-frame avg
+                                exclusive ms, self_pct (excl/incl ratio), category label.
+                                Answers "what code actually consumes the most CPU?"
 
             STANDARD QUERIES:
             - "load"          — Load an existing .utrace file (requires trace_path)

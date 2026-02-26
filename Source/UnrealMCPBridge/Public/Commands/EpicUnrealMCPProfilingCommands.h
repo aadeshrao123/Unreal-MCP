@@ -97,6 +97,14 @@ private:
 	 *  Returns bucket counts + budget summary (on-budget / over 2x / over 4x). */
 	TSharedPtr<FJsonObject> HandleGetHistogram(const TSharedPtr<FJsonObject>& Params);
 
+	/** Full auto-diagnosis: verdict, severity-rated findings with recommendations,
+	 *  category breakdown, top exclusive timers, GPU-bound detection. One call = full report. */
+	TSharedPtr<FJsonObject> HandleGetDiagnose(const TSharedPtr<FJsonObject>& Params);
+
+	/** Top timers by exclusive (self) time — finds the actual bottleneck code.
+	 *  Shows per-frame average exclusive ms + category label per timer. */
+	TSharedPtr<FJsonObject> HandleGetFlame(const TSharedPtr<FJsonObject>& Params);
+
 	// ── Provider Queries (EpicUnrealMCPProfilingProviders.cpp) ─
 
 	/** Network profiling - game instances, connections, packet overview. */

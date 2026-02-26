@@ -1212,11 +1212,16 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPProfilingCommands::HandleGetTimerStats(
 			TSharedPtr<FJsonObject> StatObj = MakeShared<FJsonObject>();
 			StatObj->SetStringField(TEXT("name"), TimerName);
 			StatObj->SetNumberField(TEXT("count"), static_cast<double>(Row->InstanceCount));
-			StatObj->SetNumberField(TEXT("total_ms"), SafeDouble(Row->TotalInclusiveTime * 1000.0));
-			StatObj->SetNumberField(TEXT("avg_ms"), SafeDouble(Row->AverageInclusiveTime * 1000.0));
-			StatObj->SetNumberField(TEXT("median_ms"), SafeDouble(Row->MedianInclusiveTime * 1000.0));
-			StatObj->SetNumberField(TEXT("max_ms"),
+			StatObj->SetNumberField(TEXT("total_incl_ms"), SafeDouble(Row->TotalInclusiveTime * 1000.0));
+			StatObj->SetNumberField(TEXT("avg_incl_ms"), SafeDouble(Row->AverageInclusiveTime * 1000.0));
+			StatObj->SetNumberField(TEXT("median_incl_ms"), SafeDouble(Row->MedianInclusiveTime * 1000.0));
+			StatObj->SetNumberField(TEXT("max_incl_ms"),
 				SafeDouble(Row->MaxInclusiveTime > -DBL_MAX ? Row->MaxInclusiveTime * 1000.0 : 0.0));
+			StatObj->SetNumberField(TEXT("total_excl_ms"), SafeDouble(Row->TotalExclusiveTime * 1000.0));
+			StatObj->SetNumberField(TEXT("avg_excl_ms"), SafeDouble(Row->AverageExclusiveTime * 1000.0));
+			StatObj->SetNumberField(TEXT("median_excl_ms"), SafeDouble(Row->MedianExclusiveTime * 1000.0));
+			StatObj->SetNumberField(TEXT("max_excl_ms"),
+				SafeDouble(Row->MaxExclusiveTime > -DBL_MAX ? Row->MaxExclusiveTime * 1000.0 : 0.0));
 
 			StatsArray.Add(MakeShared<FJsonValueObject>(StatObj));
 			Count++;
@@ -2116,6 +2121,621 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPProfilingCommands::HandleGetHistogram(
 	Result->SetObjectField(TEXT("budget"), Budget);
 
 	Result->SetArrayField(TEXT("buckets"), BucketsArray);
+
+	return Result;
+}
+
+// ════════════════════════════════════════════════════════════
+//  PROFESSIONAL ANALYSIS QUERIES
+// ════════════════════════════════════════════════════════════
+
+// ────────────────────────────────────────────────────────────
+// diagnose — Full auto-diagnosis report with findings & recommendations
+// One call = verdict, findings, category breakdown, top exclusive timers
+// ────────────────────────────────────────────────────────────
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPProfilingCommands::HandleGetDiagnose(
+	const TSharedPtr<FJsonObject>& Params)
+{
+	TraceServices::FAnalysisSessionReadScope ReadScope(*CurrentSession);
+
+	double TargetFps = 60.0;
+	if (Params->HasField(TEXT("target_fps")))
+	{
+		TargetFps = FMath::Max(1.0, Params->GetNumberField(TEXT("target_fps")));
+	}
+	double TargetMs = 1000.0 / TargetFps;
+
+	// ── Step 1: Frame statistics ─────────────────────────────
+
+	const TraceServices::IFrameProvider& FrameProvider =
+		TraceServices::ReadFrameProvider(*CurrentSession);
+	const uint64 GameFrameCount = FrameProvider.GetFrameCount(ETraceFrameType::TraceFrameType_Game);
+
+	TArray<double> FrameTimes;
+	FrameTimes.Reserve(static_cast<int32>(FMath::Min(GameFrameCount, (uint64)100000)));
+
+	int32 OnBudget = 0;
+	int32 StartupSpikes = 0;
+	int32 TotalSpikes = 0;
+
+	FrameProvider.EnumerateFrames(ETraceFrameType::TraceFrameType_Game, 0, GameFrameCount,
+		[&](const TraceServices::FFrame& Frame)
+		{
+			double Ms = (Frame.EndTime - Frame.StartTime) * 1000.0;
+			if (!std::isfinite(Ms) || Ms <= 0.0)
+			{
+				return;
+			}
+
+			FrameTimes.Add(Ms);
+
+			if (Ms <= TargetMs)
+			{
+				OnBudget++;
+			}
+			if (Ms > TargetMs * 4.0)
+			{
+				TotalSpikes++;
+				if (Frame.Index < 20)
+				{
+					StartupSpikes++;
+				}
+			}
+		});
+
+	if (FrameTimes.Num() == 0)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No valid frames in trace"));
+	}
+
+	FrameTimes.Sort();
+	int32 N = FrameTimes.Num();
+
+	double TotalMs = 0.0;
+	for (double Ms : FrameTimes)
+	{
+		TotalMs += Ms;
+	}
+
+	double AvgMs = TotalMs / N;
+	double MedianMs = FrameTimes[N / 2];
+	double P95Ms = FrameTimes[FMath::Clamp(FMath::FloorToInt32(N * 0.95f), 0, N - 1)];
+	double P99Ms = FrameTimes[FMath::Clamp(FMath::FloorToInt32(N * 0.99f), 0, N - 1)];
+	double MaxMs = FrameTimes.Last();
+	double OnBudgetPct = (static_cast<double>(OnBudget) / N) * 100.0;
+
+	// ── Step 2: GPU bound detection ──────────────────────────
+
+	const TraceServices::ITimingProfilerProvider* TimingProvider =
+		TraceServices::ReadTimingProfilerProvider(*CurrentSession);
+
+	bool bHasGpu = false;
+	double GpuAvgMs = 0.0;
+	FString GpuQueueName;
+
+	if (TimingProvider && TimingProvider->HasGpuTiming())
+	{
+		// Find the primary GPU queue
+		uint32 GpuTimelineIndex = UINT32_MAX;
+		TimingProvider->EnumerateGpuQueues(
+			[&](const TraceServices::FGpuQueueInfo& QueueInfo)
+			{
+				if (GpuTimelineIndex == UINT32_MAX)
+				{
+					GpuTimelineIndex = QueueInfo.TimelineIndex;
+					GpuQueueName = QueueInfo.Name ? FString(QueueInfo.Name) : TEXT("GPU");
+				}
+			});
+
+		if (GpuTimelineIndex != UINT32_MAX)
+		{
+			bHasGpu = true;
+
+			// Sample GPU frame times from ~50 evenly spaced frames
+			int32 SampleCount = FMath::Min(N, 50);
+			int32 Step = FMath::Max(1, N / SampleCount);
+			double GpuTotalSampled = 0.0;
+			int32 GpuSamples = 0;
+
+			for (int32 SampleIdx = 0; SampleIdx < SampleCount; ++SampleIdx)
+			{
+				int32 FrameIdx = SampleIdx * Step;
+				if (FrameIdx >= static_cast<int32>(GameFrameCount))
+				{
+					break;
+				}
+
+				const TraceServices::FFrame* Frame = FrameProvider.GetFrame(
+					ETraceFrameType::TraceFrameType_Game, FrameIdx);
+				if (!Frame)
+				{
+					continue;
+				}
+
+				double MaxGpuEventMs = 0.0;
+				TimingProvider->ReadTimeline(GpuTimelineIndex,
+					[&](const TraceServices::ITimingProfilerProvider::Timeline& Timeline)
+					{
+						Timeline.EnumerateEvents(Frame->StartTime, Frame->EndTime,
+							[&](double StartTime, double EndTime, uint32 Depth,
+								const TraceServices::FTimingProfilerEvent& Event) -> TraceServices::EEventEnumerate
+							{
+								if (Depth == 0)
+								{
+									double DurMs = (EndTime - StartTime) * 1000.0;
+									if (std::isfinite(DurMs) && DurMs > MaxGpuEventMs)
+									{
+										MaxGpuEventMs = DurMs;
+									}
+								}
+								return TraceServices::EEventEnumerate::Continue;
+							});
+					});
+
+				if (MaxGpuEventMs > 0.0)
+				{
+					GpuTotalSampled += MaxGpuEventMs;
+					GpuSamples++;
+				}
+			}
+
+			if (GpuSamples > 0)
+			{
+				GpuAvgMs = GpuTotalSampled / GpuSamples;
+			}
+		}
+	}
+
+	// ── Step 3: Category breakdown via aggregation ───────────
+
+	struct FCatStats
+	{
+		double TotalExclMs = 0.0;
+		FString TopTimer;
+		double TopTimerExclMs = 0.0;
+		int32 TimerCount = 0;
+	};
+	FCatStats CatStats[static_cast<int32>(EProfilingCategory::MAX)];
+
+	struct FExclTimer
+	{
+		FString Name;
+		double PerFrameExclMs;
+		double PerFrameInclMs;
+		int32 Count;
+		EProfilingCategory Category;
+	};
+	TArray<FExclTimer> TopExclusive;
+
+	if (TimingProvider)
+	{
+		TraceServices::FCreateAggregationParams AggParams;
+		AggParams.IntervalStart = 0.0;
+		AggParams.IntervalEnd = CurrentSession->GetDurationSeconds();
+		AggParams.CpuThreadFilter = [](uint32) { return true; };
+		AggParams.SortBy = TraceServices::FCreateAggregationParams::ESortBy::TotalInclusiveTime;
+		AggParams.SortOrder = TraceServices::FCreateAggregationParams::ESortOrder::Descending;
+		AggParams.TableEntryLimit = 0; // All timers for accurate category totals
+
+		TraceServices::ITable<TraceServices::FTimingProfilerAggregatedStats>* AggTable =
+			TimingProvider->CreateAggregation(AggParams);
+
+		if (AggTable)
+		{
+			TraceServices::ITableReader<TraceServices::FTimingProfilerAggregatedStats>* Reader =
+				AggTable->CreateReader();
+
+			while (Reader->IsValid())
+			{
+				const TraceServices::FTimingProfilerAggregatedStats* Row = Reader->GetCurrentRow();
+				if (Row && Row->Timer && Row->Timer->Name)
+				{
+					FString TimerName(Row->Timer->Name);
+
+					// Per-frame average = total across trace / frame count
+					double PerFrameExclMs = SafeDouble(
+						(Row->TotalExclusiveTime / FMath::Max(1.0, static_cast<double>(GameFrameCount))) * 1000.0);
+					double PerFrameInclMs = SafeDouble(
+						(Row->TotalInclusiveTime / FMath::Max(1.0, static_cast<double>(GameFrameCount))) * 1000.0);
+
+					// Categorize and accumulate
+					EProfilingCategory Cat = CategorizeTimerName(TimerName);
+					int32 CatIdx = static_cast<int32>(Cat);
+
+					CatStats[CatIdx].TotalExclMs += PerFrameExclMs;
+					CatStats[CatIdx].TimerCount++;
+
+					if (PerFrameExclMs > CatStats[CatIdx].TopTimerExclMs)
+					{
+						CatStats[CatIdx].TopTimerExclMs = PerFrameExclMs;
+						CatStats[CatIdx].TopTimer = TimerName;
+					}
+
+					// Collect all non-negligible timers for exclusive sorting
+					if (PerFrameExclMs > 0.01)
+					{
+						TopExclusive.Add({
+							TimerName,
+							PerFrameExclMs,
+							PerFrameInclMs,
+							static_cast<int32>(Row->InstanceCount),
+							Cat
+						});
+					}
+				}
+				Reader->NextRow();
+			}
+
+			delete Reader;
+			delete AggTable;
+
+			// Sort by exclusive time and keep top 10
+			TopExclusive.Sort([](const FExclTimer& A, const FExclTimer& B)
+			{
+				return A.PerFrameExclMs > B.PerFrameExclMs;
+			});
+			if (TopExclusive.Num() > 10)
+			{
+				TopExclusive.SetNum(10);
+			}
+		}
+	}
+
+	// ── Step 4: Build sorted categories ──────────────────────
+
+	struct FSortedCat
+	{
+		EProfilingCategory Category;
+		double ExclMs;
+		FString TopTimer;
+		double TopMs;
+	};
+
+	TArray<FSortedCat> SortedCats;
+	double TotalCatExclMs = 0.0;
+
+	for (int32 i = 0; i < static_cast<int32>(EProfilingCategory::MAX); ++i)
+	{
+		if (CatStats[i].TotalExclMs > 0.01)
+		{
+			SortedCats.Add({
+				static_cast<EProfilingCategory>(i),
+				CatStats[i].TotalExclMs,
+				CatStats[i].TopTimer,
+				CatStats[i].TopTimerExclMs
+			});
+			TotalCatExclMs += CatStats[i].TotalExclMs;
+		}
+	}
+
+	SortedCats.Sort([](const FSortedCat& A, const FSortedCat& B)
+	{
+		return A.ExclMs > B.ExclMs;
+	});
+
+	// ── Step 5: Generate findings ────────────────────────────
+
+	TArray<TSharedPtr<FJsonValue>> FindingsArray;
+
+	auto AddFinding = [&](const TCHAR* Severity, const FString& Message)
+	{
+		TSharedPtr<FJsonObject> F = MakeShared<FJsonObject>();
+		F->SetStringField(TEXT("sev"), Severity);
+		F->SetStringField(TEXT("msg"), Message);
+		FindingsArray.Add(MakeShared<FJsonValueObject>(F));
+	};
+
+	// Budget finding
+	if (OnBudgetPct < 25.0)
+	{
+		AddFinding(TEXT("critical"),
+			FString::Printf(TEXT("Only %.0f%% of frames meet %.0f FPS target. Median %.1fms (%.0f FPS). p95=%.1fms."),
+				OnBudgetPct, TargetFps, MedianMs, 1000.0 / MedianMs, P95Ms));
+	}
+	else if (OnBudgetPct < 50.0)
+	{
+		AddFinding(TEXT("high"),
+			FString::Printf(TEXT("%.0f%% of frames miss %.0f FPS target. Median %.1fms (%.0f FPS)."),
+				100.0 - OnBudgetPct, TargetFps, MedianMs, 1000.0 / MedianMs));
+	}
+	else if (OnBudgetPct < 75.0)
+	{
+		AddFinding(TEXT("medium"),
+			FString::Printf(TEXT("%.0f%% of frames miss %.0f FPS. Median %.1fms."),
+				100.0 - OnBudgetPct, TargetFps, MedianMs));
+	}
+	else
+	{
+		AddFinding(TEXT("ok"),
+			FString::Printf(TEXT("%.0f%% on budget at %.0f FPS. Median %.1fms."),
+				OnBudgetPct, TargetFps, MedianMs));
+	}
+
+	// GPU vs CPU finding
+	if (bHasGpu && GpuAvgMs > 0.1)
+	{
+		if (GpuAvgMs > AvgMs * 1.2)
+		{
+			AddFinding(TEXT("high"),
+				FString::Printf(TEXT("GPU-bound: GPU %.1fms avg vs CPU %.1fms avg. Optimize rendering."),
+					GpuAvgMs, AvgMs));
+		}
+		else if (AvgMs > GpuAvgMs * 1.2)
+		{
+			AddFinding(TEXT("info"),
+				FString::Printf(TEXT("CPU-bound: CPU %.1fms avg vs GPU %.1fms avg. GPU has headroom."),
+					AvgMs, GpuAvgMs));
+		}
+		else
+		{
+			AddFinding(TEXT("high"),
+				FString::Printf(TEXT("Both CPU (%.1fms) and GPU (%.1fms) near budget. Optimize both."),
+					AvgMs, GpuAvgMs));
+		}
+	}
+
+	// Spike findings
+	if (StartupSpikes > 3)
+	{
+		AddFinding(TEXT("medium"),
+			FString::Printf(TEXT("Startup hitches: %d frames >%.0fms in first 20 frames (max %.0fms). Likely shader compilation / asset loading."),
+				StartupSpikes, TargetMs * 4.0, MaxMs));
+	}
+
+	int32 NonStartupSpikes = TotalSpikes - StartupSpikes;
+	if (NonStartupSpikes > 5)
+	{
+		AddFinding(TEXT("high"),
+			FString::Printf(TEXT("Runtime hitches: %d frames >%.0fms outside startup. Check GC, streaming, or periodic operations."),
+				NonStartupSpikes, TargetMs * 4.0));
+	}
+
+	// Category findings with recommendations
+	for (const FSortedCat& Cat : SortedCats)
+	{
+		double Pct = TotalCatExclMs > 0.0 ? (Cat.ExclMs / TotalCatExclMs) * 100.0 : 0.0;
+		if (Pct < 5.0)
+		{
+			continue;
+		}
+
+		const TCHAR* Severity = Pct > 40.0 ? TEXT("high") : (Pct > 20.0 ? TEXT("medium") : TEXT("info"));
+		const TCHAR* Recommendation = GetCategoryRecommendation(Cat.Category);
+
+		FString Msg = FString::Printf(TEXT("%s: %.0f%% of CPU (%.1fms/frame). Top: %s (%.1fms)."),
+			GetCategoryName(Cat.Category), Pct, Cat.ExclMs, *Cat.TopTimer, Cat.TopMs);
+
+		if (FCString::Strlen(Recommendation) > 0)
+		{
+			Msg += FString::Printf(TEXT(" Tip: %s"), Recommendation);
+		}
+
+		AddFinding(Severity, Msg);
+	}
+
+	// ── Step 6: Build verdict ────────────────────────────────
+
+	FString BoundType;
+	if (bHasGpu && GpuAvgMs > 0.1)
+	{
+		if (GpuAvgMs > AvgMs * 1.2)
+		{
+			BoundType = TEXT("GPU-bound");
+		}
+		else if (AvgMs > GpuAvgMs * 1.2)
+		{
+			BoundType = TEXT("CPU-bound");
+		}
+		else
+		{
+			BoundType = TEXT("CPU+GPU bound");
+		}
+	}
+	else
+	{
+		BoundType = TEXT("CPU-bound (no GPU data)");
+	}
+
+	FString Verdict = FString::Printf(TEXT("%s. %.0f FPS median, %.0f%% on budget."),
+		*BoundType, 1000.0 / MedianMs, OnBudgetPct);
+
+	if (TotalSpikes > 0)
+	{
+		Verdict += FString::Printf(TEXT(" %d spike frames (max %.0fms)."), TotalSpikes, MaxMs);
+	}
+
+	// ── Step 7: Build result ─────────────────────────────────
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetBoolField(TEXT("success"), true);
+
+	// Overview
+	TSharedPtr<FJsonObject> Overview = MakeShared<FJsonObject>();
+	Overview->SetNumberField(TEXT("frames"), N);
+	Overview->SetNumberField(TEXT("duration_s"), SafeDouble(CurrentSession->GetDurationSeconds()));
+	Overview->SetNumberField(TEXT("avg_fps"), SafeDouble(AvgMs > 0.0 ? 1000.0 / AvgMs : 0.0));
+	Overview->SetNumberField(TEXT("avg_ms"), SafeDouble(AvgMs));
+	Overview->SetNumberField(TEXT("median_ms"), SafeDouble(MedianMs));
+	Overview->SetNumberField(TEXT("p95_ms"), SafeDouble(P95Ms));
+	Overview->SetNumberField(TEXT("p99_ms"), SafeDouble(P99Ms));
+	Overview->SetNumberField(TEXT("target_fps"), TargetFps);
+	Overview->SetNumberField(TEXT("on_budget_pct"), SafeDouble(OnBudgetPct));
+	if (bHasGpu)
+	{
+		Overview->SetNumberField(TEXT("gpu_avg_ms"), SafeDouble(GpuAvgMs));
+		Overview->SetStringField(TEXT("gpu_queue"), GpuQueueName);
+	}
+	Result->SetObjectField(TEXT("overview"), Overview);
+
+	Result->SetStringField(TEXT("verdict"), Verdict);
+	Result->SetArrayField(TEXT("findings"), FindingsArray);
+
+	// Categories (top 5)
+	TArray<TSharedPtr<FJsonValue>> CatsArray;
+	int32 CatLimit = FMath::Min(SortedCats.Num(), 5);
+	for (int32 i = 0; i < CatLimit; ++i)
+	{
+		double Pct = TotalCatExclMs > 0.0 ? (SortedCats[i].ExclMs / TotalCatExclMs) * 100.0 : 0.0;
+		TSharedPtr<FJsonObject> CatObj = MakeShared<FJsonObject>();
+		CatObj->SetStringField(TEXT("name"), GetCategoryName(SortedCats[i].Category));
+		CatObj->SetNumberField(TEXT("excl_ms"), SafeDouble(SortedCats[i].ExclMs));
+		CatObj->SetNumberField(TEXT("pct"), SafeDouble(Pct));
+		CatObj->SetStringField(TEXT("top_timer"), SortedCats[i].TopTimer);
+		CatsArray.Add(MakeShared<FJsonValueObject>(CatObj));
+	}
+	Result->SetArrayField(TEXT("categories"), CatsArray);
+
+	// Top exclusive timers
+	TArray<TSharedPtr<FJsonValue>> ExclArray;
+	for (const FExclTimer& T : TopExclusive)
+	{
+		TSharedPtr<FJsonObject> TimerObj = MakeShared<FJsonObject>();
+		TimerObj->SetStringField(TEXT("name"), T.Name);
+		TimerObj->SetNumberField(TEXT("excl_ms"), SafeDouble(T.PerFrameExclMs));
+		TimerObj->SetNumberField(TEXT("incl_ms"), SafeDouble(T.PerFrameInclMs));
+		TimerObj->SetNumberField(TEXT("count"), T.Count);
+		TimerObj->SetStringField(TEXT("cat"), GetCategoryName(T.Category));
+		ExclArray.Add(MakeShared<FJsonValueObject>(TimerObj));
+	}
+	Result->SetArrayField(TEXT("top_exclusive"), ExclArray);
+
+	return Result;
+}
+
+// ────────────────────────────────────────────────────────────
+// flame — Top timers by exclusive (self) time
+// Shows per-frame average exclusive ms + category label.
+// ────────────────────────────────────────────────────────────
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPProfilingCommands::HandleGetFlame(
+	const TSharedPtr<FJsonObject>& Params)
+{
+	TraceServices::FAnalysisSessionReadScope ReadScope(*CurrentSession);
+
+	int32 MaxResults = 30;
+	if (Params->HasField(TEXT("count")))
+	{
+		MaxResults = FMath::Clamp(
+			static_cast<int32>(Params->GetNumberField(TEXT("count"))), 1, 200);
+	}
+
+	FString NameFilter;
+	Params->TryGetStringField(TEXT("filter"), NameFilter);
+
+	const TraceServices::ITimingProfilerProvider* TimingProvider =
+		TraceServices::ReadTimingProfilerProvider(*CurrentSession);
+	if (!TimingProvider)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Timing profiler not available"));
+	}
+
+	const TraceServices::IFrameProvider& FrameProvider =
+		TraceServices::ReadFrameProvider(*CurrentSession);
+	const uint64 GameFrameCount = FrameProvider.GetFrameCount(ETraceFrameType::TraceFrameType_Game);
+	double FrameCountDbl = FMath::Max(1.0, static_cast<double>(GameFrameCount));
+
+	double IntervalStart = 0.0;
+	double IntervalEnd = CurrentSession->GetDurationSeconds();
+	ParseTimeRange(Params, IntervalEnd, IntervalStart, IntervalEnd);
+
+	TraceServices::FCreateAggregationParams AggParams;
+	AggParams.IntervalStart = IntervalStart;
+	AggParams.IntervalEnd = IntervalEnd;
+	AggParams.CpuThreadFilter = [](uint32) { return true; };
+	// API only supports sorting by TotalInclusiveTime, so we fetch all and re-sort by exclusive
+	AggParams.SortBy = TraceServices::FCreateAggregationParams::ESortBy::TotalInclusiveTime;
+	AggParams.SortOrder = TraceServices::FCreateAggregationParams::ESortOrder::Descending;
+	AggParams.TableEntryLimit = 0; // Get all so we can re-sort by exclusive
+
+	TraceServices::ITable<TraceServices::FTimingProfilerAggregatedStats>* AggTable =
+		TimingProvider->CreateAggregation(AggParams);
+
+	if (!AggTable)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create aggregation"));
+	}
+
+	// Collect all timers first, then sort by exclusive time
+	struct FFlameEntry
+	{
+		FString Name;
+		double PerFrameExclMs;
+		double PerFrameInclMs;
+		int32 Count;
+	};
+
+	TArray<FFlameEntry> AllEntries;
+	TraceServices::ITableReader<TraceServices::FTimingProfilerAggregatedStats>* Reader =
+		AggTable->CreateReader();
+
+	while (Reader->IsValid())
+	{
+		const TraceServices::FTimingProfilerAggregatedStats* Row = Reader->GetCurrentRow();
+		if (Row && Row->Timer && Row->Timer->Name)
+		{
+			FString TimerName(Row->Timer->Name);
+
+			if (!NameFilter.IsEmpty() && !TimerName.Contains(NameFilter))
+			{
+				Reader->NextRow();
+				continue;
+			}
+
+			double PerFrameExclMs = SafeDouble((Row->TotalExclusiveTime / FrameCountDbl) * 1000.0);
+			double PerFrameInclMs = SafeDouble((Row->TotalInclusiveTime / FrameCountDbl) * 1000.0);
+
+			if (PerFrameExclMs > 0.001 || !NameFilter.IsEmpty())
+			{
+				AllEntries.Add({
+					TimerName,
+					PerFrameExclMs,
+					PerFrameInclMs,
+					static_cast<int32>(Row->InstanceCount)
+				});
+			}
+		}
+		Reader->NextRow();
+	}
+
+	delete Reader;
+	delete AggTable;
+
+	// Sort by exclusive time descending
+	AllEntries.Sort([](const FFlameEntry& A, const FFlameEntry& B)
+	{
+		return A.PerFrameExclMs > B.PerFrameExclMs;
+	});
+
+	if (AllEntries.Num() > MaxResults)
+	{
+		AllEntries.SetNum(MaxResults);
+	}
+
+	TArray<TSharedPtr<FJsonValue>> TimersArray;
+	for (const FFlameEntry& Entry : AllEntries)
+	{
+		TSharedPtr<FJsonObject> TimerObj = MakeShared<FJsonObject>();
+		TimerObj->SetStringField(TEXT("name"), Entry.Name);
+		TimerObj->SetNumberField(TEXT("excl_ms"), SafeDouble(Entry.PerFrameExclMs));
+		TimerObj->SetNumberField(TEXT("incl_ms"), SafeDouble(Entry.PerFrameInclMs));
+		TimerObj->SetNumberField(TEXT("self_pct"),
+			SafeDouble(Entry.PerFrameInclMs > 0.0 ? (Entry.PerFrameExclMs / Entry.PerFrameInclMs) * 100.0 : 100.0));
+		TimerObj->SetNumberField(TEXT("count"), Entry.Count);
+		TimerObj->SetStringField(TEXT("cat"),
+			GetCategoryName(CategorizeTimerName(Entry.Name)));
+
+		TimersArray.Add(MakeShared<FJsonValueObject>(TimerObj));
+	}
+
+	int32 Count = TimersArray.Num();
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetBoolField(TEXT("success"), true);
+	Result->SetNumberField(TEXT("timer_count"), Count);
+	Result->SetNumberField(TEXT("frame_count"), static_cast<double>(GameFrameCount));
+	Result->SetStringField(TEXT("note"), TEXT("excl_ms/incl_ms are per-frame averages. self_pct = excl/incl ratio."));
+	Result->SetArrayField(TEXT("timers"), TimersArray);
 
 	return Result;
 }

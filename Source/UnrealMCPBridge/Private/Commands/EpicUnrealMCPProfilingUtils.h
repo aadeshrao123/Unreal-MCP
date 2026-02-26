@@ -209,6 +209,37 @@ inline EProfilingCategory CategorizeTimerName(const FString& TimerName)
 }
 
 // ────────────────────────────────────────────────────────────
+// Category-specific optimization recommendations
+// ────────────────────────────────────────────────────────────
+
+inline const TCHAR* GetCategoryRecommendation(EProfilingCategory Cat)
+{
+	switch (Cat)
+	{
+	case EProfilingCategory::Animation:
+		return TEXT("Reduce skeletal meshes, enable URO, simplify AnimBPs, use LODs");
+	case EProfilingCategory::Slate:
+		return TEXT("Reduce widget count, use invalidation boxes, cache widget refs");
+	case EProfilingCategory::Network:
+		return TEXT("Reduce replicated properties, batch RPCs, use net relevancy");
+	case EProfilingCategory::Physics:
+		return TEXT("Simplify collision, reduce physics bodies, use async queries");
+	case EProfilingCategory::Rendering:
+		return TEXT("Reduce draw calls, use Nanite/instancing, optimize materials");
+	case EProfilingCategory::Gameplay:
+		return TEXT("Reduce tick frequency, use timers, optimize BP event graphs");
+	case EProfilingCategory::Audio:
+		return TEXT("Reduce concurrent sounds, use concurrency, pool AudioComponents");
+	case EProfilingCategory::Loading:
+		return TEXT("Use async loading, stream assets, pre-cache on level load");
+	case EProfilingCategory::GarbageCollection:
+		return TEXT("Reduce UObject churn, use pools, extend GC interval");
+	default:
+		return TEXT("");
+	}
+}
+
+// ────────────────────────────────────────────────────────────
 // Common time-range parameter parsing
 // ────────────────────────────────────────────────────────────
 
