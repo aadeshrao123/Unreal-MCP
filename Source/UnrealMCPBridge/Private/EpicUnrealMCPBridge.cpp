@@ -18,6 +18,7 @@
 #include "Misc/Paths.h"
 #include "HAL/PlatformFileManager.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Editor/EditorPerformanceSettings.h"
 
 #define MCP_SERVER_HOST "127.0.0.1"
 #define MCP_DEFAULT_PORT 55557
@@ -34,6 +35,7 @@ UEpicUnrealMCPBridge::UEpicUnrealMCPBridge()
 	DataAssetCommands = MakeShared<FEpicUnrealMCPDataAssetCommands>();
 	WidgetCommands = MakeShared<FEpicUnrealMCPWidgetCommands>();
 	EnhancedInputCommands = MakeShared<FEpicUnrealMCPEnhancedInputCommands>();
+	ProfilingCommands = MakeShared<FEpicUnrealMCPProfilingCommands>();
 }
 
 UEpicUnrealMCPBridge::~UEpicUnrealMCPBridge()
@@ -47,6 +49,7 @@ UEpicUnrealMCPBridge::~UEpicUnrealMCPBridge()
 	DataAssetCommands.Reset();
 	WidgetCommands.Reset();
 	EnhancedInputCommands.Reset();
+	ProfilingCommands.Reset();
 }
 
 void UEpicUnrealMCPBridge::Initialize(FSubsystemCollectionBase& Collection)
@@ -167,6 +170,14 @@ void UEpicUnrealMCPBridge::StartServer()
 		StopServer();
 		return;
 	}
+
+	// Disable the editor's background CPU throttle while the MCP server is active.
+	// Without this, the editor drops to ~3 FPS when not in the foreground, causing
+	// ~333ms delays on every game-thread command dispatch.
+	UEditorPerformanceSettings* PerfSettings = GetMutableDefault<UEditorPerformanceSettings>();
+	bOriginalThrottleSetting = PerfSettings->bThrottleCPUWhenNotForeground;
+	PerfSettings->bThrottleCPUWhenNotForeground = false;
+	UE_LOG(LogTemp, Display, TEXT("UnrealMCP: Disabled background CPU throttling for responsive command execution"));
 }
 
 void UEpicUnrealMCPBridge::StopServer()
@@ -177,6 +188,9 @@ void UEpicUnrealMCPBridge::StopServer()
 	}
 
 	bIsRunning = false;
+
+	// Restore the original background CPU throttle setting
+	GetMutableDefault<UEditorPerformanceSettings>()->bThrottleCPUWhenNotForeground = bOriginalThrottleSetting;
 
 	if (ServerThread)
 	{
@@ -341,12 +355,46 @@ static TSharedPtr<FJsonObject> ExecutePythonCode(const FString& Code)
 	return Result;
 }
 
+// Helper to serialize a response JSON object to a string
+static FString SerializeResponse(const TSharedPtr<FJsonObject>& ResponseJson)
+{
+	FString ResultString;
+	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&ResultString);
+	FJsonSerializer::Serialize(ResponseJson.ToSharedRef(), Writer);
+	return ResultString;
+}
+
 FString UEpicUnrealMCPBridge::ExecuteCommand(
 	const FString& CommandType,
 	const TSharedPtr<FJsonObject>& Params)
 {
 	UE_LOG(LogTemp, Display, TEXT("EpicUnrealMCPBridge: Executing command: %s"), *CommandType);
 
+	// Fast-path: commands that don't touch UObjects are handled immediately
+	// on the server thread, bypassing the game thread dispatch entirely.
+	if (CommandType == TEXT("ping"))
+	{
+		TSharedPtr<FJsonObject> ResponseJson = MakeShareable(new FJsonObject);
+		ResponseJson->SetStringField(TEXT("status"), TEXT("success"));
+		TSharedPtr<FJsonObject> ResultJson = MakeShareable(new FJsonObject);
+		ResultJson->SetStringField(TEXT("message"), TEXT("pong"));
+		ResponseJson->SetObjectField(TEXT("result"), ResultJson);
+		return SerializeResponse(ResponseJson);
+	}
+
+	if (CommandType == TEXT("health_check"))
+	{
+		TSharedPtr<FJsonObject> ResponseJson = MakeShareable(new FJsonObject);
+		ResponseJson->SetStringField(TEXT("status"), TEXT("success"));
+		TSharedPtr<FJsonObject> ResultJson = MakeShareable(new FJsonObject);
+		ResultJson->SetBoolField(TEXT("success"), true);
+		ResultJson->SetStringField(TEXT("status"), TEXT("ok"));
+		ResultJson->SetStringField(TEXT("editor"), TEXT("UnrealEngine5"));
+		ResponseJson->SetObjectField(TEXT("result"), ResultJson);
+		return SerializeResponse(ResponseJson);
+	}
+
+	// All other commands require the game thread for UObject/Editor API access
 	TPromise<FString> Promise;
 	TFuture<FString> Future = Promise.GetFuture();
 
@@ -359,21 +407,9 @@ FString UEpicUnrealMCPBridge::ExecuteCommand(
 		{
 			TSharedPtr<FJsonObject> ResultJson;
 
-			if (CommandType == TEXT("ping"))
-			{
-				ResultJson = MakeShareable(new FJsonObject);
-				ResultJson->SetStringField(TEXT("message"), TEXT("pong"));
-			}
-			else if (CommandType == TEXT("execute_python"))
+			if (CommandType == TEXT("execute_python"))
 			{
 				ResultJson = ExecutePythonCode(Params->GetStringField(TEXT("code")));
-			}
-			else if (CommandType == TEXT("health_check"))
-			{
-				ResultJson = MakeShareable(new FJsonObject);
-				ResultJson->SetBoolField(TEXT("success"), true);
-				ResultJson->SetStringField(TEXT("status"), TEXT("ok"));
-				ResultJson->SetStringField(TEXT("editor"), TEXT("UnrealEngine5"));
 			}
 			else if (CommandType == TEXT("get_actors_in_level") ||
 				CommandType == TEXT("find_actors_by_name") ||
@@ -526,6 +562,12 @@ FString UEpicUnrealMCPBridge::ExecuteCommand(
 				CommandType == TEXT("list_input_keys"))
 			{
 				ResultJson = EnhancedInputCommands->HandleCommand(CommandType, Params);
+			}
+			else if (CommandType == TEXT("performance_start_trace") ||
+				CommandType == TEXT("performance_stop_trace") ||
+				CommandType == TEXT("performance_analyze_insight"))
+			{
+				ResultJson = ProfilingCommands->HandleCommand(CommandType, Params);
 			}
 			else
 			{

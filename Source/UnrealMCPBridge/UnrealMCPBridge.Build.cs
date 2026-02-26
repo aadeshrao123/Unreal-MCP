@@ -68,7 +68,10 @@ public class UnrealMCPBridge : ModuleRules
 				"UMGEditor",
 				"LevelEditor",
 				"ImageWrapper",
-				"EnhancedInput"
+				"EnhancedInput",
+				"TraceAnalysis",
+				"TraceServices",
+				"TraceLog"
 			}
 		);
 

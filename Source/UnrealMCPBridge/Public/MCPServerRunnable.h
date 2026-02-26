@@ -23,6 +23,9 @@ public:
 	virtual void Exit() override;
 
 private:
+	/** Send all bytes with EWOULDBLOCK retry. Returns false on fatal error. */
+	bool SendAllBytes(const uint8* Data, int32 Size);
+
 	UEpicUnrealMCPBridge* Bridge;
 	TSharedPtr<FSocket> ListenerSocket;
 	TSharedPtr<FSocket> ClientSocket;

@@ -17,6 +17,7 @@
 #include "Commands/EpicUnrealMCPDataAssetCommands.h"
 #include "Commands/EpicUnrealMCPWidgetCommands.h"
 #include "Commands/EpicUnrealMCPEnhancedInputCommands.h"
+#include "Commands/EpicUnrealMCPProfilingCommands.h"
 #include "EpicUnrealMCPBridge.generated.h"
 
 class FMCPServerRunnable;
@@ -67,6 +68,9 @@ private:
 	FIPv4Address ServerAddress;
 	uint16 Port;
 
+	// Saved editor throttle setting, restored when MCP server stops
+	bool bOriginalThrottleSetting;
+
 	// Command handler instances
 	TSharedPtr<FEpicUnrealMCPEditorCommands> EditorCommands;
 	TSharedPtr<FEpicUnrealMCPBlueprintCommands> BlueprintCommands;
@@ -77,4 +81,5 @@ private:
 	TSharedPtr<FEpicUnrealMCPDataAssetCommands> DataAssetCommands;
 	TSharedPtr<FEpicUnrealMCPWidgetCommands> WidgetCommands;
 	TSharedPtr<FEpicUnrealMCPEnhancedInputCommands> EnhancedInputCommands;
+	TSharedPtr<FEpicUnrealMCPProfilingCommands> ProfilingCommands;
 };
