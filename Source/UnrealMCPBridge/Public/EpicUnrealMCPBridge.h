@@ -17,7 +17,7 @@
 #include "Commands/EpicUnrealMCPDataAssetCommands.h"
 #include "Commands/EpicUnrealMCPWidgetCommands.h"
 #include "Commands/EpicUnrealMCPEnhancedInputCommands.h"
-#include "Commands/EpicUnrealMCPProfilingCommands.h"
+#include "Commands/Profiling/EpicUnrealMCPProfilingCommands.h"
 #include "EpicUnrealMCPBridge.generated.h"
 
 class FMCPServerRunnable;

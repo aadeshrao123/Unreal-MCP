@@ -14,7 +14,8 @@ public class UnrealMCPBridge : ModuleRules
 				System.IO.Path.Combine(ModuleDirectory, "Public/Commands"),
 				System.IO.Path.Combine(ModuleDirectory, "Public/Commands/BlueprintGraph"),
 				System.IO.Path.Combine(ModuleDirectory, "Public/Commands/BlueprintGraph/Nodes"),
-				System.IO.Path.Combine(ModuleDirectory, "Public/Commands/BlueprintGraph/Function")
+				System.IO.Path.Combine(ModuleDirectory, "Public/Commands/BlueprintGraph/Function"),
+				System.IO.Path.Combine(ModuleDirectory, "Public/Commands/Profiling")
 			}
 		);
 
@@ -24,7 +25,8 @@ public class UnrealMCPBridge : ModuleRules
 				System.IO.Path.Combine(ModuleDirectory, "Private/Commands"),
 				System.IO.Path.Combine(ModuleDirectory, "Private/Commands/BlueprintGraph"),
 				System.IO.Path.Combine(ModuleDirectory, "Private/Commands/BlueprintGraph/Nodes"),
-				System.IO.Path.Combine(ModuleDirectory, "Private/Commands/BlueprintGraph/Function")
+				System.IO.Path.Combine(ModuleDirectory, "Private/Commands/BlueprintGraph/Function"),
+				System.IO.Path.Combine(ModuleDirectory, "Private/Commands/Profiling")
 			}
 		);
 

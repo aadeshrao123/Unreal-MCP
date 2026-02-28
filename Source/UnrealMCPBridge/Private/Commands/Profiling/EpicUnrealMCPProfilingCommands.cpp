@@ -1,4 +1,4 @@
-#include "Commands/EpicUnrealMCPProfilingCommands.h"
+#include "Commands/Profiling/EpicUnrealMCPProfilingCommands.h"
 #include "Commands/EpicUnrealMCPCommonUtils.h"
 #include "EpicUnrealMCPProfilingUtils.h"
 
