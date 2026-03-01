@@ -43,6 +43,9 @@ LARGE_OPERATION_COMMANDS = {
     "build_material_graph",
     "performance_start_trace",
     "performance_analyze_insight",
+    "add_widget",
+    "set_widget_properties",
+    "duplicate_widget",
 }
 
 
@@ -231,12 +234,16 @@ class _TCPConnection:
                     "type": command,
                     "params": params or {},
                 })
+                payload_bytes = payload.encode("utf-8")
                 logger.info(
                     "Sending command: %s (%d bytes)",
-                    command, len(payload),
+                    command, len(payload_bytes),
                 )
+                # Length-prefix framing: 4-byte big-endian header + JSON
+                # (matches the response protocol)
+                length_header = struct.pack(">I", len(payload_bytes))
                 self._sock.settimeout(10)
-                self._sock.sendall(payload.encode("utf-8"))
+                self._sock.sendall(length_header + payload_bytes)
                 logger.info("Send complete, waiting for response...")
 
                 raw = self._recv_response(command)

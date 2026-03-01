@@ -129,7 +129,7 @@ void UEpicUnrealMCPBridge::StartServer()
 		FIPv4Endpoint Endpoint(ServerAddress, TryPort);
 		if (NewListenerSocket->Bind(*Endpoint.ToInternetAddr()))
 		{
-			if (NewListenerSocket->Listen(5))
+			if (NewListenerSocket->Listen(16))
 			{
 				Port = TryPort;
 				ListenerSocket = NewListenerSocket;
@@ -616,6 +616,17 @@ FString UEpicUnrealMCPBridge::ExecuteCommand(
 		FJsonSerializer::Serialize(ResponseJson.ToSharedRef(), Writer);
 		Promise.SetValue(ResultString);
 	});
+
+	// Wait with a timeout to prevent permanently blocking the server thread
+	// if the game thread hangs or crashes before setting the Promise.
+	constexpr double TimeoutSeconds = 120.0;
+	if (!Future.WaitFor(FTimespan::FromSeconds(TimeoutSeconds)))
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("UnrealMCP: Command '%s' timed out after %.0fs waiting for game thread"),
+			*CommandType, TimeoutSeconds);
+		return TEXT("{\"status\":\"error\",\"error\":\"Command timed out waiting for game thread\"}");
+	}
 
 	return Future.Get();
 }
