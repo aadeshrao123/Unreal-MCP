@@ -25,6 +25,7 @@
 #define MCP_PORT_SCAN_RANGE 100
 
 UEpicUnrealMCPBridge::UEpicUnrealMCPBridge()
+	: bDebugTokenEstimation(false)
 {
 	EditorCommands = MakeShared<FEpicUnrealMCPEditorCommands>();
 	BlueprintCommands = MakeShared<FEpicUnrealMCPBlueprintCommands>();
@@ -69,6 +70,13 @@ void UEpicUnrealMCPBridge::Initialize(FSubsystemCollectionBase& Collection)
 		ConfigPort = MCP_DEFAULT_PORT;
 	}
 	Port = static_cast<uint16>(ConfigPort);
+
+	// Read optional debug token estimation flag from [UnrealMCP] DebugTokens
+	GConfig->GetBool(TEXT("UnrealMCP"), TEXT("DebugTokens"), bDebugTokenEstimation, GEngineIni);
+	if (bDebugTokenEstimation)
+	{
+		UE_LOG(LogTemp, Display, TEXT("UnrealMCP: Token debug estimation ENABLED"));
+	}
 
 	FIPv4Address::Parse(MCP_SERVER_HOST, ServerAddress);
 
@@ -364,6 +372,63 @@ static FString SerializeResponse(const TSharedPtr<FJsonObject>& ResponseJson)
 	return ResultString;
 }
 
+// ---------------------------------------------------------------------------
+// Token Debug Estimation
+//
+// Estimates token count from serialized JSON using a ~4 chars/token heuristic.
+// Claude's BPE tokenizer typically yields 3-4 chars/token for JSON/code.
+// This is a rough estimate for relative comparison, not exact billing.
+// ---------------------------------------------------------------------------
+
+void UEpicUnrealMCPBridge::InjectTokenDebugInfo(
+	const FString& CommandType,
+	TSharedPtr<FJsonObject>& ResponseJson,
+	const TSharedPtr<FJsonObject>& ResultJson)
+{
+	if (!ResultJson.IsValid())
+	{
+		return;
+	}
+
+	// Serialize just the result portion to measure its size
+	FString ResultPart;
+	TSharedRef<TJsonWriter<>> MeasureWriter = TJsonWriterFactory<>::Create(&ResultPart);
+	FJsonSerializer::Serialize(ResultJson.ToSharedRef(), MeasureWriter);
+
+	int64 ResponseBytes = ResultPart.Len();
+	int64 EstimatedTokens = FMath::Max<int64>(1, ResponseBytes / 4);
+
+	// Accumulate stats
+	FMCPCommandTokenStats& Stats = TokenStats.FindOrAdd(CommandType);
+	Stats.CallCount++;
+	Stats.TotalResponseBytes += ResponseBytes;
+	Stats.TotalEstimatedTokens += EstimatedTokens;
+	Stats.MaxResponseBytes = FMath::Max(Stats.MaxResponseBytes, ResponseBytes);
+	Stats.MaxEstimatedTokens = FMath::Max(Stats.MaxEstimatedTokens, EstimatedTokens);
+	Stats.MinResponseBytes = FMath::Min(Stats.MinResponseBytes, ResponseBytes);
+
+	// Inject _debug field into the response
+	TSharedPtr<FJsonObject> DebugObj = MakeShared<FJsonObject>();
+	DebugObj->SetStringField(TEXT("command"), CommandType);
+	DebugObj->SetNumberField(TEXT("response_chars"), ResponseBytes);
+	DebugObj->SetNumberField(TEXT("estimated_tokens"), EstimatedTokens);
+	DebugObj->SetNumberField(TEXT("call_count"), Stats.CallCount);
+	DebugObj->SetNumberField(TEXT("avg_tokens"),
+		Stats.CallCount > 0 ? Stats.TotalEstimatedTokens / Stats.CallCount : 0);
+	DebugObj->SetNumberField(TEXT("max_tokens"), Stats.MaxEstimatedTokens);
+	ResponseJson->SetObjectField(TEXT("_debug"), DebugObj);
+
+	// Log to Output Log for easy scanning
+	UE_LOG(LogTemp, Display,
+		TEXT("UnrealMCP [TOKEN DEBUG] %s — %lld chars, ~%lld tokens (avg ~%lld, max ~%lld, calls %d)"),
+		*CommandType,
+		ResponseBytes,
+		EstimatedTokens,
+		Stats.CallCount > 0 ? Stats.TotalEstimatedTokens / Stats.CallCount : 0,
+		Stats.MaxEstimatedTokens,
+		Stats.CallCount);
+}
+
 FString UEpicUnrealMCPBridge::ExecuteCommand(
 	const FString& CommandType,
 	const TSharedPtr<FJsonObject>& Params)
@@ -390,6 +455,90 @@ FString UEpicUnrealMCPBridge::ExecuteCommand(
 		ResultJson->SetBoolField(TEXT("success"), true);
 		ResultJson->SetStringField(TEXT("status"), TEXT("ok"));
 		ResultJson->SetStringField(TEXT("editor"), TEXT("UnrealEngine5"));
+		ResponseJson->SetObjectField(TEXT("result"), ResultJson);
+		return SerializeResponse(ResponseJson);
+	}
+
+	// Toggle token debug estimation at runtime
+	if (CommandType == TEXT("set_mcp_debug"))
+	{
+		bool bEnable = true;
+		if (Params.IsValid() && Params->HasField(TEXT("enabled")))
+		{
+			bEnable = Params->GetBoolField(TEXT("enabled"));
+		}
+
+		bDebugTokenEstimation = bEnable;
+
+		if (!bEnable)
+		{
+			TokenStats.Empty();
+		}
+
+		TSharedPtr<FJsonObject> ResponseJson = MakeShareable(new FJsonObject);
+		ResponseJson->SetStringField(TEXT("status"), TEXT("success"));
+		TSharedPtr<FJsonObject> ResultJson = MakeShareable(new FJsonObject);
+		ResultJson->SetBoolField(TEXT("debug_tokens_enabled"), bDebugTokenEstimation);
+		ResultJson->SetStringField(TEXT("message"),
+			bDebugTokenEstimation
+				? TEXT("Token debug enabled. All responses will include _debug with estimated token counts.")
+				: TEXT("Token debug disabled. Stats cleared."));
+		ResponseJson->SetObjectField(TEXT("result"), ResultJson);
+
+		UE_LOG(LogTemp, Display, TEXT("UnrealMCP: Token debug estimation %s"),
+			bDebugTokenEstimation ? TEXT("ENABLED") : TEXT("DISABLED"));
+
+		return SerializeResponse(ResponseJson);
+	}
+
+	// Return accumulated per-command token stats
+	if (CommandType == TEXT("get_mcp_token_stats"))
+	{
+		TSharedPtr<FJsonObject> ResponseJson = MakeShareable(new FJsonObject);
+		ResponseJson->SetStringField(TEXT("status"), TEXT("success"));
+		TSharedPtr<FJsonObject> ResultJson = MakeShareable(new FJsonObject);
+
+		ResultJson->SetBoolField(TEXT("debug_tokens_enabled"), bDebugTokenEstimation);
+
+		// Sort by max_estimated_tokens descending so worst offenders appear first
+		TArray<TPair<FString, FMCPCommandTokenStats>> Sorted;
+		for (const auto& Pair : TokenStats)
+		{
+			Sorted.Add(TPair<FString, FMCPCommandTokenStats>(Pair.Key, Pair.Value));
+		}
+		Sorted.Sort([](const auto& A, const auto& B)
+		{
+			return A.Value.MaxEstimatedTokens > B.Value.MaxEstimatedTokens;
+		});
+
+		TArray<TSharedPtr<FJsonValue>> CommandsArr;
+		int64 GrandTotalTokens = 0;
+
+		for (const auto& Pair : Sorted)
+		{
+			const FString& Cmd = Pair.Key;
+			const FMCPCommandTokenStats& S = Pair.Value;
+
+			TSharedPtr<FJsonObject> CmdObj = MakeShared<FJsonObject>();
+			CmdObj->SetStringField(TEXT("command"), Cmd);
+			CmdObj->SetNumberField(TEXT("call_count"), S.CallCount);
+			CmdObj->SetNumberField(TEXT("total_estimated_tokens"), S.TotalEstimatedTokens);
+			CmdObj->SetNumberField(TEXT("avg_estimated_tokens"),
+				S.CallCount > 0 ? S.TotalEstimatedTokens / S.CallCount : 0);
+			CmdObj->SetNumberField(TEXT("max_estimated_tokens"), S.MaxEstimatedTokens);
+			CmdObj->SetNumberField(TEXT("min_response_chars"),
+				S.MinResponseBytes == INT64_MAX ? 0 : S.MinResponseBytes);
+			CmdObj->SetNumberField(TEXT("max_response_chars"), S.MaxResponseBytes);
+			CmdObj->SetNumberField(TEXT("total_response_chars"), S.TotalResponseBytes);
+
+			CommandsArr.Add(MakeShared<FJsonValueObject>(CmdObj));
+			GrandTotalTokens += S.TotalEstimatedTokens;
+		}
+
+		ResultJson->SetArrayField(TEXT("commands"), CommandsArr);
+		ResultJson->SetNumberField(TEXT("total_commands_tracked"), TokenStats.Num());
+		ResultJson->SetNumberField(TEXT("grand_total_estimated_tokens"), GrandTotalTokens);
+
 		ResponseJson->SetObjectField(TEXT("result"), ResultJson);
 		return SerializeResponse(ResponseJson);
 	}
@@ -598,6 +747,12 @@ FString UEpicUnrealMCPBridge::ExecuteCommand(
 			{
 				ResponseJson->SetStringField(TEXT("status"), TEXT("success"));
 				ResponseJson->SetObjectField(TEXT("result"), ResultJson);
+
+				// Inject token debug info when enabled
+				if (bDebugTokenEstimation)
+				{
+					InjectTokenDebugInfo(CommandType, ResponseJson, ResultJson);
+				}
 			}
 			else
 			{

@@ -23,6 +23,19 @@
 class FMCPServerRunnable;
 
 /**
+ * Per-command token usage statistics, accumulated while debug mode is active.
+ */
+struct FMCPCommandTokenStats
+{
+	int32 CallCount = 0;
+	int64 TotalResponseBytes = 0;
+	int64 TotalEstimatedTokens = 0;
+	int64 MaxResponseBytes = 0;
+	int64 MaxEstimatedTokens = 0;
+	int64 MinResponseBytes = INT64_MAX;
+};
+
+/**
  * Editor subsystem for MCP Bridge
  * Handles communication between external tools and the Unreal Editor
  * through a TCP socket connection. Commands are received as JSON and
@@ -57,10 +70,16 @@ private:
 	void WritePortFile() const;
 	void DeletePortFile() const;
 
+	// Token debug: estimate tokens from a JSON result and optionally inject _debug field
+	void InjectTokenDebugInfo(
+		const FString& CommandType,
+		TSharedPtr<FJsonObject>& ResponseJson,
+		const TSharedPtr<FJsonObject>& ResultJson);
+
 	// Server state
 	bool bIsRunning;
 	TSharedPtr<FSocket> ListenerSocket;
-	
+
 	TSharedPtr<FSocket> ConnectionSocket;
 	FRunnableThread* ServerThread;
 
@@ -70,6 +89,10 @@ private:
 
 	// Saved editor throttle setting, restored when MCP server stops
 	bool bOriginalThrottleSetting;
+
+	// Token estimation debug mode
+	bool bDebugTokenEstimation;
+	TMap<FString, FMCPCommandTokenStats> TokenStats;
 
 	// Command handler instances
 	TSharedPtr<FEpicUnrealMCPEditorCommands> EditorCommands;

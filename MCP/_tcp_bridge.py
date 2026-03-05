@@ -316,10 +316,36 @@ def _tcp_send_raw(
         return {"status": "error", "error": str(exc)}
 
 
+def _format_debug_header(debug: dict) -> str:
+    """Format a visible token debug header from the _debug field."""
+    cmd = debug.get("command", "?")
+    tokens = debug.get("estimated_tokens", 0)
+    chars = debug.get("response_chars", 0)
+    calls = debug.get("call_count", 0)
+    avg = debug.get("avg_tokens", 0)
+    max_t = debug.get("max_tokens", 0)
+
+    line = f"[TOKEN DEBUG] {cmd} — ~{tokens:,} tokens ({chars:,} chars)"
+    if calls > 1:
+        line += f" | avg ~{avg:,}, max ~{max_t:,}, calls {calls}"
+
+    separator = "─" * min(len(line), 70)
+    return f"{line}\n{separator}\n"
+
+
 def _call(command: str, params: dict | None = None) -> str:
-    """Send a command and return the JSON-formatted response string."""
-    return json.dumps(
-        _tcp_send_raw(command, params or {}),
-        default=str,
-        indent=2,
-    )
+    """Send a command and return the JSON-formatted response string.
+
+    When token debug is enabled, prepends a visible header with token
+    estimates so it's always visible at the top, even for long responses.
+    """
+    resp = _tcp_send_raw(command, params or {})
+
+    # Extract _debug before serializing, prepend as visible header
+    debug = resp.pop("_debug", None)
+    body = json.dumps(resp, default=str, indent=2)
+
+    if debug:
+        return _format_debug_header(debug) + body
+
+    return body

@@ -14,3 +14,4 @@ from tools import data_assets      # noqa: F401 — C++ bridge: data asset CRUD
 from tools import widgets          # noqa: F401 — C++ bridge: widget tree CRUD
 from tools import enhanced_input   # noqa: F401 — C++ bridge: Enhanced Input IA/IMC
 from tools import profiling        # noqa: F401 — C++ bridge: .utrace profiling analysis
+from tools import debug            # noqa: F401 — C++ bridge: token debug & response analysis
