@@ -26,6 +26,7 @@ public class UnrealMCPBridge : ModuleRules
 				System.IO.Path.Combine(ModuleDirectory, "Private/Commands/BlueprintGraph"),
 				System.IO.Path.Combine(ModuleDirectory, "Private/Commands/BlueprintGraph/Nodes"),
 				System.IO.Path.Combine(ModuleDirectory, "Private/Commands/BlueprintGraph/Function"),
+				System.IO.Path.Combine(ModuleDirectory, "Private/Commands/Material"),
 				System.IO.Path.Combine(ModuleDirectory, "Private/Commands/Profiling")
 			}
 		);

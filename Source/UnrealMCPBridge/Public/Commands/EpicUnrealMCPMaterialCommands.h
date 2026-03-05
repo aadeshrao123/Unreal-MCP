@@ -55,9 +55,9 @@ private:
 	// ---- Discovery ----
 	TSharedPtr<FJsonObject> HandleListMaterialExpressionTypes(const TSharedPtr<FJsonObject>& Params);
 
-	// ---- Internal Helpers ----
+	// ---- Internal Helpers (MaterialHelpers.cpp) ----
 
-	/** Find a UMaterialExpression subclass by short name (e.g. "Multiply" → UMaterialExpressionMultiply). */
+	/** Find a UMaterialExpression subclass by short name (e.g. "Multiply" -> UMaterialExpressionMultiply). */
 	static UClass* FindExpressionClass(const FString& TypeName);
 
 	/**
@@ -76,18 +76,6 @@ private:
 	static void HandleCustomHLSLNode(UMaterialExpression* Expr, const TSharedPtr<FJsonObject>& NodeDef);
 
 	/**
-	 * Serialise one expression node to a JSON object.
-	 * @param bIncludeAvailablePins  When true, adds "available_inputs" and "available_outputs" arrays
-	 *                               showing all pins regardless of whether they are connected.
-	 *                               Set false for compact bulk responses (get_material_graph_nodes default).
-	 *                               Set true for detailed single-node responses (get_material_expression_info).
-	 */
-	static TSharedPtr<FJsonObject> SerializeMaterialExpression(
-		UMaterialExpression* Expr, int32 Index,
-		const TMap<UMaterialExpression*, int32>& ExprIndexMap,
-		bool bIncludeAvailablePins = false);
-
-	/**
 	 * Resolve snake_case or exact property name to the PascalCase name that UE reflection expects.
 	 * Returns the normalised name (or the original if no PascalCase equivalent was found).
 	 */
@@ -96,9 +84,38 @@ private:
 	/** Parse an integer from a JSON value that may be EJson::Number or a numeric EJson::String. */
 	static bool TryParseIntFromJson(const TSharedPtr<FJsonValue>& Val, int32& OutInt);
 
-	// ---- Enum Resolution ----
-	static EBlendMode         ResolveBlendMode(const FString& Name);
+	// ---- Enum Resolution (MaterialHelpers.cpp) ----
+	static EBlendMode           ResolveBlendMode(const FString& Name);
 	static EMaterialShadingModel ResolveShadingModel(const FString& Name);
-	static EMaterialProperty  ResolveMaterialProperty(const FString& Name);
-	static FString            MaterialPropertyToString(EMaterialProperty Prop);
+	static EMaterialProperty    ResolveMaterialProperty(const FString& Name);
+	static FString              MaterialPropertyToString(EMaterialProperty Prop);
+
+	// ---- Serialization (MaterialSerializer.cpp) ----
+
+	/**
+	 * Serialise one expression node to a JSON object.
+	 * @param bIncludeAvailablePins  When true, adds "available_inputs" and "available_outputs" arrays.
+	 */
+	static TSharedPtr<FJsonObject> SerializeMaterialExpression(
+		UMaterialExpression* Expr, int32 Index,
+		const TMap<UMaterialExpression*, int32>& ExprIndexMap,
+		bool bIncludeAvailablePins = false);
+
+	/** Serialize Custom HLSL node properties (code, inputs, outputs). */
+	static void SerializeCustomHLSLProperties(
+		class UMaterialExpressionCustom* Custom, TSharedPtr<FJsonObject>& OutProps);
+
+	/** Serialize generic expression properties via UE reflection. */
+	static void SerializeGenericExpressionProperties(
+		UMaterialExpression* Expr, TSharedPtr<FJsonObject>& OutProps);
+
+	/** Serialize input connections for a node. */
+	static void SerializeInputConnections(
+		UMaterialExpression* Expr,
+		const TMap<UMaterialExpression*, int32>& ExprIndexMap,
+		TSharedPtr<FJsonObject>& OutNode);
+
+	/** Serialize available input/output pins for a node. */
+	static void SerializeAvailablePins(
+		UMaterialExpression* Expr, TSharedPtr<FJsonObject>& OutNode);
 };
