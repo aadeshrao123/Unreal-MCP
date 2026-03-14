@@ -543,6 +543,18 @@ The `.mcp.json` configuration format is standard across all MCP clients.
 
 ---
 
+## Contributing
+
+Contributions are welcome! Whether it's bug fixes, new tools, documentation, or feature ideas — feel free to get involved.
+
+- **Found a bug?** [Open an issue](https://github.com/aadeshrao123/Unreal-MCP/issues/new)
+- **Have a feature idea?** [Open an issue](https://github.com/aadeshrao123/Unreal-MCP/issues/new) and describe what you'd like
+- **Want to contribute code?** [Fork the repo](https://github.com/aadeshrao123/Unreal-MCP/fork), make your changes, and open a Pull Request
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines on submitting PRs and adding new tools.
+
+---
+
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE) for details.
