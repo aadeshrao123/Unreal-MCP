@@ -3,7 +3,6 @@ __pycache__/
 Binaries/
 Intermediate/
 Content/
-!Content/Python/
 
 # Python build artifacts
 dist/
