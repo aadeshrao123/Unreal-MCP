@@ -4,3 +4,8 @@ Binaries/
 Intermediate/
 Content/
 !Content/Python/
+
+# Python build artifacts
+dist/
+build/
+*.egg-info/

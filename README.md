@@ -24,7 +24,6 @@ The C++ bridge writes its TCP port to `Saved/UnrealMCP/port.txt` on startup. The
 
 - **Unreal Engine 5** (5.3+ recommended, source build or binary)
 - **Python 3.10+**
-- **Python packages:** `fastmcp`, `requests`
 - **UE5 Plugins** (enabled automatically by the `.uplugin`):
   - `PythonScriptPlugin`
   - `EditorScriptingUtilities`
@@ -32,7 +31,45 @@ The C++ bridge writes its TCP port to `Saved/UnrealMCP/port.txt` on startup. The
 
 ---
 
-## Installation
+## Quick Install
+
+Run one command from your **Unreal project root** (where your `.uproject` file is):
+
+**Windows:**
+```cmd
+curl -o install.bat https://raw.githubusercontent.com/aadeshrao123/Unreal-MCP/main/install.bat && install.bat
+```
+
+**macOS / Linux:**
+```bash
+curl -sL https://raw.githubusercontent.com/aadeshrao123/Unreal-MCP/main/install.sh | bash
+```
+
+The installer will:
+1. Clone the C++ plugin (project or engine-level, your choice)
+2. Install `unrealmcp` via pip (global command, works from any project)
+3. Set up the MCP config for your AI tool (Claude Code, Cursor, VS Code, Gemini, Windsurf, JetBrains, Zed, Amazon Q)
+
+### Manual Quick Start
+
+If you prefer to install manually:
+
+```bash
+# 1. Clone the C++ plugin into your project
+git clone https://github.com/aadeshrao123/Unreal-MCP.git Plugins/UnrealMCP
+
+# 2. Install the MCP server globally
+pip install unrealmcp
+
+# 3. Add to your MCP config (example for Claude Code .mcp.json):
+#    { "mcpServers": { "unreal": { "type": "stdio", "command": "unrealmcp" } } }
+```
+
+Since `unrealmcp` is a global pip command, it works regardless of where the C++ plugin is installed (project or engine level).
+
+---
+
+## Manual Installation
 
 ### Step 1: Copy the Plugin
 
@@ -80,41 +117,147 @@ This confirms the C++ bridge is running and ready for connections.
 
 ### Step 5: Configure Your AI Tool
 
-Create a `.mcp.json` file in your **project root** (next to `.uproject`):
+Each AI tool uses a slightly different config file and format. After installing via `pip install unrealmcp`, pick your tool below.
+
+> **Tip:** Since `unrealmcp` is a global pip command, the same config works on Windows, macOS, and Linux — no platform-specific paths needed.
+
+<details>
+<summary><b>Claude Code</b> — <code>.mcp.json</code> (project root)</summary>
 
 ```json
 {
   "mcpServers": {
     "unreal": {
       "type": "stdio",
-      "command": "cmd",
-      "args": [
-        "/c",
-        "python",
-        "Plugins/UnrealMCP/MCP/mcp_server.py"
-      ],
+      "command": "unrealmcp",
+      "args": [],
       "env": {}
     }
   }
 }
 ```
+Claude Code is the only tool that requires `"type": "stdio"` explicitly.
+</details>
 
-**macOS / Linux** — replace `"command"` and `"args"`:
+<details>
+<summary><b>Cursor</b> — <code>.cursor/mcp.json</code> (project root)</summary>
 
 ```json
 {
   "mcpServers": {
     "unreal": {
-      "type": "stdio",
-      "command": "python",
-      "args": [
-        "Plugins/UnrealMCP/MCP/mcp_server.py"
-      ],
+      "command": "unrealmcp",
+      "args": [],
       "env": {}
     }
   }
 }
 ```
+</details>
+
+<details>
+<summary><b>VS Code / Copilot</b> — <code>.vscode/mcp.json</code> (project root)</summary>
+
+```json
+{
+  "servers": {
+    "unreal": {
+      "command": "unrealmcp",
+      "args": [],
+      "env": {}
+    }
+  }
+}
+```
+Note: VS Code uses `"servers"`, not `"mcpServers"`.
+</details>
+
+<details>
+<summary><b>Windsurf</b> — <code>~/.codeium/windsurf/mcp_config.json</code> (user-level)</summary>
+
+```json
+{
+  "mcpServers": {
+    "unreal": {
+      "command": "unrealmcp",
+      "args": [],
+      "env": {}
+    }
+  }
+}
+```
+</details>
+
+<details>
+<summary><b>Gemini CLI</b> — <code>.gemini/settings.json</code> (project root)</summary>
+
+```json
+{
+  "mcpServers": {
+    "unreal": {
+      "command": "unrealmcp",
+      "args": [],
+      "env": {}
+    }
+  }
+}
+```
+</details>
+
+<details>
+<summary><b>JetBrains / Rider</b> — <code>.junie/mcp/mcp.json</code> (project root)</summary>
+
+```json
+{
+  "servers": [
+    {
+      "name": "unreal",
+      "command": "unrealmcp",
+      "args": [],
+      "env": {}
+    }
+  ]
+}
+```
+Note: JetBrains uses `"servers"` as an **array** with a `"name"` field. Requires IDE 2025.1+ with AI Assistant.
+</details>
+
+<details>
+<summary><b>Zed</b> — <code>~/.config/zed/settings.json</code></summary>
+
+Add to your Zed `settings.json`:
+```json
+{
+  "context_servers": {
+    "unreal": {
+      "source": "custom",
+      "command": {
+        "path": "unrealmcp",
+        "args": [],
+        "env": {}
+      }
+    }
+  }
+}
+```
+Note: Zed uses `"context_servers"` with a nested `"command"` object.
+</details>
+
+<details>
+<summary><b>Amazon Q</b> — <code>.amazonq/mcp.json</code> (project root)</summary>
+
+```json
+{
+  "mcpServers": {
+    "unreal": {
+      "command": "unrealmcp",
+      "args": [],
+      "env": {}
+    }
+  }
+}
+```
+</details>
 
 ### Step 6: Verify
 
@@ -532,14 +675,20 @@ Large operations (profiling analysis, complex Blueprint graphs) have a 300-secon
 
 ## Supported AI Tools
 
-UnrealMCP works with any tool that supports the Model Context Protocol:
+UnrealMCP works with any tool that supports the [Model Context Protocol](https://modelcontextprotocol.io/):
 
-- **Claude Code** (Anthropic CLI)
-- **Cursor**
-- **Windsurf**
-- **Any MCP-compatible client**
+| Tool | Config File | Status |
+|------|------------|--------|
+| **Claude Code** | `.mcp.json` | Tested |
+| **Cursor** | `.cursor/mcp.json` | Tested |
+| **VS Code / Copilot** | `.vscode/mcp.json` | Supported |
+| **Windsurf** | `~/.codeium/windsurf/mcp_config.json` | Supported |
+| **Gemini CLI** | `.gemini/settings.json` | Supported |
+| **JetBrains / Rider** | `.junie/mcp/mcp.json` | Supported |
+| **Zed** | `~/.config/zed/settings.json` | Supported |
+| **Amazon Q** | `.amazonq/mcp.json` | Supported |
 
-The `.mcp.json` configuration format is standard across all MCP clients.
+See [Step 5: Configure Your AI Tool](#step-5-configure-your-ai-tool) for the exact config format for each tool.
 
 ---
 

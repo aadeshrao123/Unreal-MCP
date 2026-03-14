@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "unrealmcp"
+version = "1.0.0"
+description = "MCP (Model Context Protocol) bridge for Unreal Engine 5 — lets AI assistants control the UE5 editor"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    {name = "Aadesh Yadav"}
+]
+keywords = ["unreal-engine", "mcp", "ai", "claude", "cursor", "copilot", "gamedev"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Games/Entertainment",
+]
+dependencies = [
+    "fastmcp>=2.0.0,<3.0.0",
+    "requests>=2.28.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/aadeshrao123/Unreal-MCP"
+Repository = "https://github.com/aadeshrao123/Unreal-MCP"
+Issues = "https://github.com/aadeshrao123/Unreal-MCP/issues"
+
+[project.scripts]
+unrealmcp = "unrealmcp:main"
+
+[tool.setuptools.packages.find]
+include = ["unrealmcp*"]
+
+[tool.setuptools.package-data]
+unrealmcp = ["tools/*.py"]
