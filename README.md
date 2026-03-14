@@ -22,7 +22,7 @@ The C++ bridge writes its TCP port to `Saved/UnrealMCP/port.txt` on startup. The
 
 ## Requirements
 
-- **Unreal Engine 5** (5.3+ recommended, source build or binary)
+- **Unreal Engine 5.7** (tested on 5.7, may work on earlier 5.x versions)
 - **Python 3.10+**
 - **UE5 Plugins** (enabled automatically by the `.uplugin`):
   - `PythonScriptPlugin`
