@@ -7,7 +7,7 @@ UnrealMCP exposes the Unreal Engine 5 editor to AI coding assistants (Claude Cod
 UnrealMCP has two halves:
 
 1. **C++ Editor Plugin** (`UnrealMCPBridge` module) — runs inside the UE5 editor as a TCP server. It receives JSON commands and executes them in-editor using Unreal's C++ API.
-2. **Python MCP Server** (`MCP/mcp_server.py`) — runs as a stdio process spawned by your AI tool. It translates MCP tool calls into TCP commands sent to the C++ bridge.
+2. **Python MCP Server** (`pip install unrealmcp`) — runs as a stdio process spawned by your AI tool. It translates MCP tool calls into TCP commands sent to the C++ bridge.
 
 ```
 ┌─────────────┐   stdio    ┌──────────────────┐   TCP/JSON    ┌──────────────────┐
@@ -108,15 +108,15 @@ YourProject/
 ├── Plugins/
 │   └── UnrealMCP/          ← put it here
 │       ├── UnrealMCP.uplugin
-│       ├── MCP/
-│       └── Source/
+│       ├── unrealmcp/           # Python MCP server (pip package)
+│       └── Source/              # C++ bridge
 └── YourProject.uproject
 ```
 
 ### Step 2: Install Python Dependencies
 
 ```bash
-pip install fastmcp requests
+pip install unrealmcp
 ```
 
 ### Step 3: Regenerate Project Files
@@ -561,8 +561,9 @@ The AI will call `get_data_table_schema`, then `add_data_table_row` with the app
 ```
 Plugins/UnrealMCP/
 ├── UnrealMCP.uplugin                  # Plugin manifest
-├── MCP/                               # Python MCP server
-│   ├── mcp_server.py                  # Entry point (stdio transport)
+├── pyproject.toml                     # pip package config
+├── unrealmcp/                         # Python MCP server (pip install unrealmcp)
+│   ├── __init__.py                    # Entry point (unrealmcp command)
 │   ├── _bridge.py                     # Shared FastMCP instance
 │   ├── _tcp_bridge.py                 # TCP communication layer
 │   └── tools/                         # Tool modules (one per category)
@@ -578,7 +579,7 @@ Plugins/UnrealMCP/
 │       ├── widgets.py                 # Widget tree manipulation
 │       ├── enhanced_input.py          # Input Actions & Mapping Contexts
 │       ├── level.py                   # Level info & actor selection
-│       ├── profiling.py              # Performance tracing & analysis
+│       ├── profiling.py               # Performance tracing & analysis
 │       └── debug.py                   # Token stats & debug mode
 └── Source/UnrealMCPBridge/
     ├── Public/
@@ -634,12 +635,12 @@ This means multiple editor instances can run simultaneously without conflicts.
 
 ### Python Side
 
-Create a new file in `MCP/tools/`:
+Create a new file in `unrealmcp/tools/`:
 
 ```python
-# MCP/tools/my_tools.py
-from _bridge import mcp
-from _tcp_bridge import _call
+# unrealmcp/tools/my_tools.py
+from unrealmcp._bridge import mcp
+from unrealmcp._tcp_bridge import _call
 
 @mcp.tool()
 def my_custom_tool(param1: str, param2: int = 10) -> str:
@@ -650,10 +651,10 @@ def my_custom_tool(param1: str, param2: int = 10) -> str:
     })
 ```
 
-Register it in `MCP/tools/__init__.py`:
+Register it in `unrealmcp/tools/__init__.py`:
 
 ```python
-from tools import my_tools  # noqa: F401
+from unrealmcp.tools import my_tools  # noqa: F401
 ```
 
 ### C++ Side

@@ -27,10 +27,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install ruff
 
-      - name: Lint MCP/ (legacy standalone server)
-        run: |
-          ruff check MCP/ --select=E,F,W --ignore=E501,F401
-
       - name: Lint unrealmcp/ (pip package)
         run: |
           ruff check unrealmcp/ --select=E,F,W --ignore=E501,F401
@@ -74,16 +70,6 @@ jobs:
         run: |
           which unrealmcp
           unrealmcp --help || true
-
-      - name: Check MCP/ standalone still imports
-        run: |
-          cd MCP
-          python -c "
-          import sys, os
-          sys.path.insert(0, os.getcwd())
-          import _bridge
-          print('  MCP/ standalone bridge OK')
-          "
 
       - name: Verify plugin descriptor is valid JSON
         run: |
