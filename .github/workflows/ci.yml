@@ -99,7 +99,11 @@ jobs:
       - name: Verify pyproject.toml metadata
         run: |
           python -c "
-          import tomllib
+          import sys
+          if sys.version_info >= (3, 11):
+              import tomllib
+          else:
+              import pip._vendor.tomli as tomllib
           with open('pyproject.toml', 'rb') as f:
               data = tomllib.load(f)
           project = data['project']
