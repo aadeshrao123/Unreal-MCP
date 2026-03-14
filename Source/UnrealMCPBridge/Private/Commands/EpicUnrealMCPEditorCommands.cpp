@@ -12,9 +12,6 @@
 #include "IImageWrapperModule.h"
 #include "Framework/Application/SlateApplication.h"
 
-#include "Windows/AllowWindowsPlatformTypes.h"
-#include <Windows.h>
-#include "Windows/HideWindowsPlatformTypes.h"
 
 #include "GameFramework/Actor.h"
 #include "Engine/Selection.h"
@@ -589,7 +586,7 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleTakeScreenshot(
 
 	if (Mode == TEXT("window"))
 	{
-		// Capture the entire active editor window via Windows API (DWM)
+		// Find the active editor window
 		TSharedPtr<SWindow> Window = FSlateApplication::Get().GetActiveTopLevelWindow();
 
 		// Fall back to the first visible window if editor lost focus
@@ -608,68 +605,20 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleTakeScreenshot(
 			return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No editor window found"));
 		}
 
-		TSharedPtr<FGenericWindow> NativeWindow = Window->GetNativeWindow();
-		if (!NativeWindow.IsValid())
-		{
-			return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No native OS window handle"));
-		}
+		// Use Slate TakeScreenshot — cross-platform, captures the full editor window
+		// including BP graphs, material editors, data tables, and all Slate UI
+		FIntVector Size;
+		bool bCaptureSuccess = FSlateApplication::Get().TakeScreenshot(
+			Window.ToSharedRef(), Pixels, Size);
 
-		HWND Hwnd = reinterpret_cast<HWND>(NativeWindow->GetOSWindowHandle());
-		if (!Hwnd)
-		{
-			return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Invalid OS window handle"));
-		}
-
-		// Client area dimensions (excludes OS title bar / borders)
-		RECT ClientRect;
-		::GetClientRect(Hwnd, &ClientRect);
-		Width = ClientRect.right - ClientRect.left;
-		Height = ClientRect.bottom - ClientRect.top;
-
-		if (Width <= 0 || Height <= 0)
-		{
-			return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
-				TEXT("Window has invalid size (may be minimized)"));
-		}
-
-		// Create a memory DC + bitmap to receive the capture
-		HDC WindowDC = ::GetDC(Hwnd);
-		HDC MemDC = ::CreateCompatibleDC(WindowDC);
-		HBITMAP HBitmap = ::CreateCompatibleBitmap(WindowDC, Width, Height);
-		HBITMAP OldBitmap = static_cast<HBITMAP>(::SelectObject(MemDC, HBitmap));
-
-		// PW_RENDERFULLCONTENT captures D3D/DWM content
-		const UINT PW_RENDERFULLCONTENT_FLAG = 0x00000002;
-		BOOL bCaptured = ::PrintWindow(Hwnd, MemDC, PW_RENDERFULLCONTENT_FLAG);
-
-		if (!bCaptured)
-		{
-			::BitBlt(MemDC, 0, 0, Width, Height, WindowDC, 0, 0, SRCCOPY);
-		}
-
-		// Read pixel data from the bitmap (top-down BGRA)
-		BITMAPINFOHEADER BMI = {};
-		BMI.biSize = sizeof(BITMAPINFOHEADER);
-		BMI.biWidth = Width;
-		BMI.biHeight = -Height;
-		BMI.biPlanes = 1;
-		BMI.biBitCount = 32;
-		BMI.biCompression = BI_RGB;
-
-		Pixels.SetNum(Width * Height);
-		::GetDIBits(MemDC, HBitmap, 0, Height, Pixels.GetData(),
-			reinterpret_cast<BITMAPINFO*>(&BMI), DIB_RGB_COLORS);
-
-		::SelectObject(MemDC, OldBitmap);
-		::DeleteObject(HBitmap);
-		::DeleteDC(MemDC);
-		::ReleaseDC(Hwnd, WindowDC);
-
-		if (Pixels.Num() == 0)
+		if (!bCaptureSuccess || Pixels.Num() == 0)
 		{
 			return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
 				TEXT("Failed to capture editor window"));
 		}
+
+		Width = Size.X;
+		Height = Size.Y;
 	}
 	else
 	{
