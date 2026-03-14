@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  python-checks:
+    name: Python Lint & Import Check
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r MCP/requirements.txt
+          pip install ruff
+
+      - name: Lint with ruff
+        run: |
+          ruff check MCP/ --select=E,F,W --ignore=E501,F401
+
+      - name: Check all tool modules import cleanly
+        run: |
+          cd MCP
+          python -c "
+          import importlib, sys, os
+
+          # Add MCP dir to path (tools use relative imports)
+          sys.path.insert(0, os.getcwd())
+
+          # Import bridge first (tools depend on it)
+          import _bridge
+
+          # Import each tool module
+          tools_dir = os.path.join(os.getcwd(), 'tools')
+          for f in sorted(os.listdir(tools_dir)):
+              if f.endswith('.py') and f != '__init__.py':
+                  mod_name = f'tools.{f[:-3]}'
+                  print(f'  Importing {mod_name}...', end=' ')
+                  importlib.import_module(mod_name)
+                  print('OK')
+
+          print(f'\nAll {len([f for f in os.listdir(tools_dir) if f.endswith(\".py\") and f != \"__init__.py\"])} tool modules imported successfully.')
+          "
+
+      - name: Verify plugin descriptor is valid JSON
+        run: |
+          python -c "
+          import json
+          with open('UnrealMCP.uplugin') as f:
+              data = json.load(f)
+          assert 'Modules' in data, 'Missing Modules key'
+          assert 'FriendlyName' in data, 'Missing FriendlyName key'
+          print('Plugin descriptor is valid.')
+          "
