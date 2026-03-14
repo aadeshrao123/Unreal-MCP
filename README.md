@@ -31,41 +31,67 @@ The C++ bridge writes its TCP port to `Saved/UnrealMCP/port.txt` on startup. The
 
 ---
 
-## Quick Install
+## Setup
 
-Run one command from your **Unreal project root** (where your `.uproject` file is):
+There are two parts to UnrealMCP:
+
+1. **C++ Plugin** — lives inside your project or engine `Plugins/` folder. You get this by cloning the repo.
+2. **Python MCP Server** — a global `pip` package. Install once, works everywhere.
+
+### Step 1: Clone the Plugin
+
+```bash
+# Into your project
+git clone https://github.com/aadeshrao123/Unreal-MCP.git Plugins/UnrealMCP
+
+# OR into your engine (shared across all projects using this engine version)
+git clone https://github.com/aadeshrao123/Unreal-MCP.git "C:/Program Files/Epic Games/UE_5.5/Engine/Plugins/Marketplace/UnrealMCP"
+```
+
+### Step 2: Run the Setup Script
+
+The setup script installs the `unrealmcp` pip package and creates the MCP config for your AI tool.
 
 **Windows:**
 ```cmd
-curl -o install.bat https://raw.githubusercontent.com/aadeshrao123/Unreal-MCP/main/install.bat && install.bat
+cd Plugins\UnrealMCP
+install.bat
 ```
 
 **macOS / Linux:**
 ```bash
-curl -sL https://raw.githubusercontent.com/aadeshrao123/Unreal-MCP/main/install.sh | bash
+cd Plugins/UnrealMCP
+bash install.sh
 ```
 
-The installer will:
-1. Clone the C++ plugin (project or engine-level, your choice)
-2. Install `unrealmcp` via pip (global command, works from any project)
-3. Set up the MCP config for your AI tool (Claude Code, Cursor, VS Code, Gemini, Windsurf, JetBrains, Zed, Amazon Q)
+You can run the script from anywhere inside your project — it automatically detects the project root by searching upward for the `.uproject` file.
 
-### Manual Quick Start
+### How Scope Works
 
-If you prefer to install manually:
+The setup script asks where to create the MCP config:
+
+| Scope | What it does | When to use |
+|-------|-------------|-------------|
+| **Project** | Creates config in your project root (e.g., `.mcp.json` next to your `.uproject`) | You only want UnrealMCP in this one project |
+| **Global** | Creates config in your user folder (e.g., `~/.claude.json`) | You want UnrealMCP available in all projects |
+
+**If you run the script from inside an engine folder** (e.g., `Engine/Plugins/...`), it only offers global scope — because engine-level plugins are shared across projects, so project-scope config doesn't make sense there.
+
+**If you run it from inside a project** (anywhere under a folder with a `.uproject`), you get to choose between project scope and global scope.
+
+### Manual Setup (Without the Script)
+
+If you prefer to set things up yourself:
 
 ```bash
-# 1. Clone the C++ plugin into your project
-git clone https://github.com/aadeshrao123/Unreal-MCP.git Plugins/UnrealMCP
-
-# 2. Install the MCP server globally
+# Install the MCP server globally
 pip install unrealmcp
 
-# 3. Add to your MCP config (example for Claude Code .mcp.json):
-#    { "mcpServers": { "unreal": { "type": "stdio", "command": "unrealmcp" } } }
+# Add to your AI tool's config (example for Claude Code .mcp.json):
+# { "mcpServers": { "unreal": { "type": "stdio", "command": "unrealmcp" } } }
 ```
 
-Since `unrealmcp` is a global pip command, it works regardless of where the C++ plugin is installed (project or engine level).
+See [Step 5: Configure Your AI Tool](#step-5-configure-your-ai-tool) for the exact config format for each AI tool.
 
 ---
 
