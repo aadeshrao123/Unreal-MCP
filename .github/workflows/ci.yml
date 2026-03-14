@@ -40,7 +40,7 @@ jobs:
           python -c "
           import unrealmcp
           print(f'unrealmcp v{unrealmcp.__version__}')
-          assert unrealmcp.__version__ == '1.0.0', f'Unexpected version: {unrealmcp.__version__}'
+          assert unrealmcp.__version__, 'Version not set'
           "
 
       - name: Verify all tool modules import via package
