@@ -158,10 +158,11 @@ echo   Setup complete!
 echo  ============================================
 echo.
 echo  Next steps:
-echo    1. Open your project in Unreal Editor
-echo    2. Check Output Log for: "MCP Bridge initialized on port XXXXX"
-echo    3. Open your AI tool in the project directory
-echo    4. Try: "Use the health_check tool"
+echo    1. Restart your AI tool (Claude Code, Cursor, etc.) to load the new config
+echo    2. Open your project in Unreal Editor
+echo    3. Check Output Log for: "MCP Bridge initialized on port XXXXX"
+echo    4. Open your AI tool in the project directory
+echo    5. Try: "Use the health_check tool"
 echo.
 echo  Docs: https://github.com/aadeshrao123/Unreal-MCP
 echo  Help: https://github.com/aadeshrao123/Unreal-MCP/issues
