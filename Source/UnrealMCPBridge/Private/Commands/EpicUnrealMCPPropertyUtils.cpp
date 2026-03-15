@@ -311,6 +311,47 @@ bool FEpicUnrealMCPPropertyUtils::SetProperty(
 		return true;
 	}
 
+	// FClassProperty — TSubclassOf<T> (e.g., HighResTemplateActor, RepresentationSubsystemClass)
+	if (FClassProperty* ClassProp = CastField<FClassProperty>(Prop))
+	{
+		if (Value->Type == EJson::Null || Value->AsString() == TEXT("None") || Value->AsString().IsEmpty())
+		{
+			ClassProp->SetObjectPropertyValue(PropAddr, nullptr);
+			return true;
+		}
+
+		FString ClassPath = Value->AsString();
+
+		// Try loading as a class directly
+		UClass* LoadedClass = LoadObject<UClass>(nullptr, *ClassPath);
+
+		// If that fails, try appending _C for Blueprint classes
+		if (!LoadedClass && !ClassPath.EndsWith(TEXT("_C")))
+		{
+			// Try /Game/Path/BP_Name.BP_Name_C format
+			FString BPClassPath = ClassPath + TEXT("_C");
+			LoadedClass = LoadObject<UClass>(nullptr, *BPClassPath);
+		}
+
+		if (!LoadedClass)
+		{
+			OutError = FString::Printf(TEXT("Could not load class '%s' for TSubclassOf property '%s'"),
+				*ClassPath, *PropertyName);
+			return false;
+		}
+
+		// Validate the class is compatible with the expected meta class
+		if (!LoadedClass->IsChildOf(ClassProp->MetaClass))
+		{
+			OutError = FString::Printf(TEXT("Class '%s' is not a subclass of '%s' for property '%s'"),
+				*LoadedClass->GetName(), *ClassProp->MetaClass->GetName(), *PropertyName);
+			return false;
+		}
+
+		ClassProp->SetObjectPropertyValue(PropAddr, LoadedClass);
+		return true;
+	}
+
 	// Other FObjectPropertyBase subclasses — always path-string based
 	if (FObjectPropertyBase* ObjPropBase = CastField<FObjectPropertyBase>(Prop))
 	{

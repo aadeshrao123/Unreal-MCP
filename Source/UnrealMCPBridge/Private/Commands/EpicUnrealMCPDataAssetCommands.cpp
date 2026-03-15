@@ -1014,12 +1014,19 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPDataAssetCommands::HandleGetMassConfigTrai
 		TraitJson->SetStringField(TEXT("class"), TraitObj->GetClass()->GetName());
 		TraitJson->SetStringField(TEXT("class_path"), TraitObj->GetClass()->GetPathName());
 
-		// Serialize all editable properties
+		// Serialize all editable properties (include inherited — traits like
+		// MassCrowdVisualizationTrait inherit HighResTemplateActor from parent)
 		TSharedPtr<FJsonObject> PropsJson = MakeShared<FJsonObject>();
-		for (TFieldIterator<FProperty> PropIt(TraitObj->GetClass(), EFieldIteratorFlags::ExcludeSuper); PropIt; ++PropIt)
+		for (TFieldIterator<FProperty> PropIt(TraitObj->GetClass()); PropIt; ++PropIt)
 		{
 			FProperty* Prop = *PropIt;
 			if (!Prop || !Prop->HasAnyPropertyFlags(CPF_Edit))
+			{
+				continue;
+			}
+
+			// Skip UObject/UMassEntityTraitBase base properties (noise)
+			if (Prop->GetOwnerClass() == UObject::StaticClass())
 			{
 				continue;
 			}
