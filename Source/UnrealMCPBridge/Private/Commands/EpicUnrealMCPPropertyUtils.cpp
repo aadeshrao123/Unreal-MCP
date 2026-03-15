@@ -520,7 +520,22 @@ bool FEpicUnrealMCPPropertyUtils::SetProperty(
 			}
 			return true;
 		}
-		OutError = FString::Printf(TEXT("Expected JSON object for struct property '%s'"), *PropertyName);
+		// String fallback: use UE's ImportText for struct properties.
+		// This handles complex structs with fixed-size arrays, enums, etc.
+		// e.g., "(LODRepresentation[0]=HighResSpawnedActor,LODRepresentation[1]=HighResSpawnedActor,...)"
+		if (Value->Type == EJson::String)
+		{
+			const FString TextValue = Value->AsString();
+			const TCHAR* Buffer = *TextValue;
+			if (StructProp->ImportText_Direct(Buffer, PropAddr, nullptr, PPF_None))
+			{
+				return true;
+			}
+			OutError = FString::Printf(TEXT("ImportText failed for struct property '%s' with value '%s'"),
+				*PropertyName, *TextValue);
+			return false;
+		}
+		OutError = FString::Printf(TEXT("Expected JSON object or text string for struct property '%s'"), *PropertyName);
 		return false;
 	}
 
