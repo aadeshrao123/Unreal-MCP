@@ -70,6 +70,25 @@ def set_data_asset_property(asset_path: str, property_name: str, property_value)
     arrays, object refs ("/Game/..."), soft refs, and None (clears reference).
 
     property_name is case-sensitive (exact FProperty name).
+
+    **Mass Entity Config — Editing Trait Properties:**
+    To edit trait properties on a MassEntityConfigAsset (e.g., BeltSpeed, SlotCount),
+    set property_name="Config" with a JSON value containing the Traits array.
+    Each trait needs a "_ClassName" with FULL path "/Script/Module.ClassName".
+
+    Example — set BeltSpeed on a conveyor config:
+        set_data_asset_property(
+            asset_path="/Game/.../DA_ConveyorMassConfig_Mk2",
+            property_name="Config",
+            property_value={
+                "Traits": [{"_ClassName": "/Script/Jiggify.MassConveyorBeltTrait", "BeltSpeed": 200}]
+            }
+        )
+
+    IMPORTANT: _ClassName MUST be full path ("/Script/Jiggify.MassConveyorBeltTrait"),
+    NOT short name ("MassConveyorBeltTrait"). Short names create wrong base class.
+    For configs with multiple traits, include ALL traits in the array (entire array is replaced).
+    Only set the properties you want to change — others use C++ defaults.
     """
     return _call("set_data_asset_property", {
         "asset_path":     asset_path,
@@ -122,6 +141,64 @@ def get_property_valid_types(
         "property_path":    property_path,
         "filter":           filter,
         "include_abstract": include_abstract,
+    })
+
+
+@mcp.tool()
+def search_class_paths(
+    filter: str = "",
+    parent_class: str = "",
+    max_results: int = 50,
+    include_properties: bool = False,
+) -> str:
+    """Search for UClass types by name filter and parent class constraint.
+    Returns full /Script/Module.ClassName paths needed for _ClassName in trait editing.
+
+    Use this to find the correct class_path before calling set_data_asset_property
+    with Mass Entity Config traits.
+
+    Args:
+        filter: Case-insensitive substring match on class name (e.g. "Conveyor", "Miner")
+        parent_class: Only return subclasses of this class (e.g. "MassEntityTraitBase"
+            for traits, "MassFragment" for fragments, "MassTag" for tags,
+            "MassProcessor" for processors). Empty = search all classes.
+        max_results: Maximum results to return (default 50)
+        include_properties: If true, also return each class's editable UPROPERTY names,
+            types, and default values. Use sparingly — adds tokens per result.
+
+    Examples:
+        search_class_paths(filter="Conveyor", parent_class="MassEntityTraitBase")
+        → finds MassConveyorBeltTrait with class_path "/Script/Jiggify.MassConveyorBeltTrait"
+
+        search_class_paths(filter="Pipeline", parent_class="MassFragment")
+        → finds all pipeline-related fragments
+
+        search_class_paths(parent_class="MassEntityTraitBase")
+        → lists ALL available traits (no filter)
+    """
+    return _call("search_class_paths", {
+        "filter":             filter,
+        "parent_class":       parent_class,
+        "max_results":        max_results,
+        "include_properties": include_properties,
+    })
+
+
+@mcp.tool()
+def get_mass_config_traits(asset_path: str) -> str:
+    """Read all traits from a Mass Entity Config asset with their properties expanded.
+
+    Unlike get_data_asset_properties (which shows trait object paths), this tool
+    expands each trait's editable properties with current values.
+
+    Args:
+        asset_path: Path to MassEntityConfigAsset (e.g. "/Game/.../DA_ConveyorMassConfig_Mk1")
+
+    Returns per trait: index, name, class, class_path (for _ClassName), and all
+    editable properties with current values.
+    """
+    return _call("get_mass_config_traits", {
+        "asset_path": asset_path,
     })
 
 

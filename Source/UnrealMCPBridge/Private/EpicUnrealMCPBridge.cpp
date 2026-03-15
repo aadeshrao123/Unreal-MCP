@@ -655,7 +655,9 @@ FString UEpicUnrealMCPBridge::ExecuteCommand(
 				CommandType == TEXT("set_data_asset_property") ||
 				CommandType == TEXT("set_data_asset_properties") ||
 				CommandType == TEXT("list_data_assets") ||
-				CommandType == TEXT("get_property_valid_types"))
+				CommandType == TEXT("get_property_valid_types") ||
+				CommandType == TEXT("search_class_paths") ||
+				CommandType == TEXT("get_mass_config_traits"))
 			{
 				ResultJson = DataAssetCommands->HandleCommand(CommandType, Params);
 			}
