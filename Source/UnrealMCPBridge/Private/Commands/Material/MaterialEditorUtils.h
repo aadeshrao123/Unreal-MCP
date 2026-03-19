@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 
 class UMaterial;
+class UMaterialFunction;
 class IMaterialEditor;
 
 /**
@@ -44,3 +45,25 @@ void NotifyMaterialEditorRefresh(UMaterial* OriginalMaterial);
  * may have changed.
  */
 void RebuildMaterialEditorGraph(UMaterial* OriginalMaterial);
+
+// ---- Material Function Editor Helpers ----
+
+/**
+ * Find the IMaterialEditor for a Material Function and get its transient copy.
+ *
+ * The MF editor duplicates the original MF into a transient copy and sets
+ * ParentFunction = OriginalMF. We find the editor via UAssetEditorSubsystem,
+ * then locate the transient copy to work on.
+ */
+bool GetMaterialFunctionEditorContext(UMaterialFunction* OriginalFunction,
+                                      IMaterialEditor*& OutEditor,
+                                      UMaterialFunction*& OutPreviewFunction);
+
+/** Resolve a MF to its editor transient copy (if the editor is open). */
+UMaterialFunction* ResolveWorkingMaterialFunction(UMaterialFunction* OriginalFunction);
+
+/**
+ * Refresh the Material Function editor after graph changes.
+ * Syncs new expressions into graph nodes, links pins, and refreshes the visual editor.
+ */
+void NotifyMaterialFunctionEditorRefresh(UMaterialFunction* OriginalFunction);

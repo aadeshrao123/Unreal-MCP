@@ -640,7 +640,16 @@ FString UEpicUnrealMCPBridge::ExecuteCommand(
 				CommandType == TEXT("search_material_functions") ||
 				CommandType == TEXT("validate_material_graph") ||
 				CommandType == TEXT("trace_material_connection") ||
-				CommandType == TEXT("cleanup_material_graph"))
+				CommandType == TEXT("cleanup_material_graph") ||
+				CommandType == TEXT("create_material_function") ||
+				CommandType == TEXT("get_material_function_info") ||
+				CommandType == TEXT("build_material_function_graph") ||
+				CommandType == TEXT("add_material_function_input") ||
+				CommandType == TEXT("add_material_function_output") ||
+				CommandType == TEXT("set_material_function_input") ||
+				CommandType == TEXT("set_material_function_output") ||
+				CommandType == TEXT("validate_material_function") ||
+				CommandType == TEXT("cleanup_material_function"))
 			{
 				ResultJson = MaterialCommands->HandleCommand(CommandType, Params);
 			}

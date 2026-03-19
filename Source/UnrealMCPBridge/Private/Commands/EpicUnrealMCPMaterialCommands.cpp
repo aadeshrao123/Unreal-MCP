@@ -14,6 +14,7 @@
  *                              get_material_property_connections, get_material_errors
  *   MaterialNodeMutations.cpp — add/set/move/duplicate/delete/connect/layout expressions
  *   MaterialInstance.cpp     — get/set material instance parameters, list_material_expression_types
+ *   MaterialFunctionOps.cpp  — create/inspect/build material functions, add/set inputs & outputs
  */
 
 // ---------------------------------------------------------------------------
@@ -67,6 +68,17 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleCommand(
 	// ---- Discovery ----
 	else if (CommandType == TEXT("list_material_expression_types"))   return HandleListMaterialExpressionTypes(Params);
 	else if (CommandType == TEXT("search_material_functions"))      return HandleSearchMaterialFunctions(Params);
+
+	// ---- Material Function ----
+	else if (CommandType == TEXT("create_material_function"))        return HandleCreateMaterialFunction(Params);
+	else if (CommandType == TEXT("get_material_function_info"))      return HandleGetMaterialFunctionInfo(Params);
+	else if (CommandType == TEXT("build_material_function_graph"))   return HandleBuildMaterialFunctionGraph(Params);
+	else if (CommandType == TEXT("add_material_function_input"))     return HandleAddMaterialFunctionInput(Params);
+	else if (CommandType == TEXT("add_material_function_output"))    return HandleAddMaterialFunctionOutput(Params);
+	else if (CommandType == TEXT("set_material_function_input"))     return HandleSetMaterialFunctionInput(Params);
+	else if (CommandType == TEXT("set_material_function_output"))    return HandleSetMaterialFunctionOutput(Params);
+	else if (CommandType == TEXT("validate_material_function"))     return HandleValidateMaterialFunction(Params);
+	else if (CommandType == TEXT("cleanup_material_function"))      return HandleCleanupMaterialFunction(Params);
 
 	return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
 		FString::Printf(TEXT("Unknown material command: %s"), *CommandType));

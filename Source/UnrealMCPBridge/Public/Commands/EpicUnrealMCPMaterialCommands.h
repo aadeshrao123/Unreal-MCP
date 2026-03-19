@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Json.h"
+#include "Materials/MaterialExpressionFunctionInput.h"
 
 class UMaterialExpression;
 class UMaterial;
@@ -22,6 +23,10 @@ public:
 	FEpicUnrealMCPMaterialCommands();
 
 	TSharedPtr<FJsonObject> HandleCommand(const FString& CommandType, const TSharedPtr<FJsonObject>& Params);
+
+	// ---- Public Enum Helpers (used by free-function helpers in MaterialFunctionOps.cpp) ----
+	static EFunctionInputType ResolveFunctionInputType(const FString& Name);
+	static FString            FunctionInputTypeToString(EFunctionInputType Type);
 
 private:
 	// ---- Material Creation & Bulk Operations ----
@@ -60,6 +65,17 @@ private:
 	// ---- Discovery ----
 	TSharedPtr<FJsonObject> HandleListMaterialExpressionTypes(const TSharedPtr<FJsonObject>& Params);
 	TSharedPtr<FJsonObject> HandleSearchMaterialFunctions(const TSharedPtr<FJsonObject>& Params);
+
+	// ---- Material Function (MaterialFunctionOps.cpp) ----
+	TSharedPtr<FJsonObject> HandleCreateMaterialFunction(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleGetMaterialFunctionInfo(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleBuildMaterialFunctionGraph(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleAddMaterialFunctionInput(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleAddMaterialFunctionOutput(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleSetMaterialFunctionInput(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleSetMaterialFunctionOutput(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleValidateMaterialFunction(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleCleanupMaterialFunction(const TSharedPtr<FJsonObject>& Params);
 
 	// ---- Internal Helpers (MaterialHelpers.cpp) ----
 

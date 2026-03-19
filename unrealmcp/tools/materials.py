@@ -550,3 +550,270 @@ def cleanup_material_graph(
         "mode": mode,
         "dry_run": dry_run,
     })
+
+
+# ---------------------------------------------------------------------------
+# Material Function tools
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def create_material_function(
+    name: str,
+    path: str = "/Game/Materials/Functions",
+    description: str = "",
+    expose_to_library: bool = True,
+) -> str:
+    """Create a new Material Function asset.
+
+    Args:
+        name: Function name (e.g. "MF_CustomBlend")
+        path: Content Browser path
+        description: Function description shown in tooltips
+        expose_to_library: Whether the function appears in the material editor's function library
+    """
+    params: dict = {
+        "name": name,
+        "path": path,
+        "expose_to_library": expose_to_library,
+    }
+    if description:
+        params["description"] = description
+    return _call("create_material_function", params)
+
+
+@mcp.tool()
+def get_material_function_info(function_path: str) -> str:
+    """Inspect a Material Function: inputs, outputs, internal nodes.
+
+    Returns all FunctionInput pins (name, type, default value, sort priority),
+    all FunctionOutput pins (name, connections), and a summary of internal nodes.
+    """
+    return _call("get_material_function_info", {"function_path": function_path})
+
+
+@mcp.tool()
+def build_material_function_graph(
+    function_path: str,
+    nodes: str,
+    connections: str,
+    clear_existing: bool = True,
+) -> str:
+    """Build the internal node graph of a Material Function in one atomic call.
+
+    Same interface as build_material_graph but for Material Functions.
+
+    FunctionInput nodes use type="FunctionInput" with extra fields:
+        input_name, input_type (Scalar/Vector2/Vector3/Vector4/Texture2D/TextureCube/
+        Texture2DArray/VolumeTexture/StaticBool/MaterialAttributes/TextureExternal/Bool/Substrate),
+        description, sort_priority, use_preview_as_default, preview_value ([x,y,z,w])
+
+    FunctionOutput nodes use type="FunctionOutput" with extra fields:
+        output_name, description, sort_priority
+
+    Connections between nodes use the same format as build_material_graph:
+        from_node (int), from_pin (str), to_node (int), to_pin (str)
+
+    To connect a node to a FunctionOutput's input, use to_pin="" (the output has
+    a single unnamed input pin labeled "A" internally).
+
+    Args:
+        function_path: Full path to existing material function
+        nodes: JSON array of node definitions
+        connections: JSON array of connections
+        clear_existing: Remove existing expressions before building (default True)
+    """
+    return _call("build_material_function_graph", {
+        "function_path": function_path,
+        "nodes": json.loads(nodes),
+        "connections": json.loads(connections),
+        "clear_existing": clear_existing,
+    })
+
+
+@mcp.tool()
+def add_material_function_input(
+    function_path: str,
+    input_name: str,
+    input_type: str = "Scalar",
+    description: str = "",
+    sort_priority: int = 0,
+    use_preview_as_default: bool = False,
+    preview_value: Optional[str] = None,
+    pos_x: int = -600,
+    pos_y: int = 0,
+) -> str:
+    """Add an input pin to a Material Function.
+
+    Args:
+        function_path: Full path to existing material function
+        input_name: Pin name (e.g. "BaseColor", "Strength", "UV")
+        input_type: Scalar | Vector2 | Vector3 | Vector4 | Texture2D | TextureCube |
+            Texture2DArray | VolumeTexture | StaticBool | MaterialAttributes |
+            TextureExternal | Bool | Substrate
+        description: Tooltip text
+        sort_priority: Controls display order (lower = higher)
+        use_preview_as_default: Use preview_value as the default when input is unconnected
+        preview_value: JSON array for default value (e.g. "[0.5]", "[1.0, 0.0, 0.0, 1.0]")
+        pos_x: Graph X position (default -600)
+        pos_y: Graph Y position (default 0)
+    """
+    params: dict = {
+        "function_path": function_path,
+        "input_name": input_name,
+        "input_type": input_type,
+        "pos_x": pos_x,
+        "pos_y": pos_y,
+    }
+    if description:
+        params["description"] = description
+    if sort_priority != 0:
+        params["sort_priority"] = sort_priority
+    if use_preview_as_default:
+        params["use_preview_as_default"] = True
+    if preview_value is not None:
+        params["preview_value"] = json.loads(preview_value)
+    return _call("add_material_function_input", params)
+
+
+@mcp.tool()
+def add_material_function_output(
+    function_path: str,
+    output_name: str,
+    description: str = "",
+    sort_priority: int = 0,
+    pos_x: int = 200,
+    pos_y: int = 0,
+) -> str:
+    """Add an output pin to a Material Function.
+
+    Args:
+        function_path: Full path to existing material function
+        output_name: Pin name (e.g. "Result", "Normal", "Mask")
+        description: Tooltip text
+        sort_priority: Controls display order (lower = higher)
+        pos_x: Graph X position (default 200)
+        pos_y: Graph Y position (default 0)
+    """
+    params: dict = {
+        "function_path": function_path,
+        "output_name": output_name,
+        "pos_x": pos_x,
+        "pos_y": pos_y,
+    }
+    if description:
+        params["description"] = description
+    if sort_priority != 0:
+        params["sort_priority"] = sort_priority
+    return _call("add_material_function_output", params)
+
+
+@mcp.tool()
+def set_material_function_input(
+    function_path: str,
+    node_index: int,
+    input_name: Optional[str] = None,
+    input_type: Optional[str] = None,
+    description: Optional[str] = None,
+    sort_priority: Optional[int] = None,
+    use_preview_as_default: Optional[bool] = None,
+    preview_value: Optional[str] = None,
+) -> str:
+    """Modify an existing FunctionInput node's properties.
+
+    Args:
+        function_path: Full path to existing material function
+        node_index: Index of the FunctionInput node (from get_material_function_info)
+        input_name: New pin name
+        input_type: New type (Scalar/Vector2/Vector3/Vector4/Texture2D/TextureCube/
+            Texture2DArray/VolumeTexture/StaticBool/MaterialAttributes/
+            TextureExternal/Bool/Substrate)
+        description: New tooltip
+        sort_priority: New display order
+        use_preview_as_default: Use preview value as default
+        preview_value: JSON array for default value (e.g. "[0.5]", "[1.0, 0.0, 0.0, 1.0]")
+    """
+    params: dict = {
+        "function_path": function_path,
+        "node_index": node_index,
+    }
+    if input_name is not None:
+        params["input_name"] = input_name
+    if input_type is not None:
+        params["input_type"] = input_type
+    if description is not None:
+        params["description"] = description
+    if sort_priority is not None:
+        params["sort_priority"] = sort_priority
+    if use_preview_as_default is not None:
+        params["use_preview_as_default"] = use_preview_as_default
+    if preview_value is not None:
+        params["preview_value"] = json.loads(preview_value)
+    return _call("set_material_function_input", params)
+
+
+@mcp.tool()
+def set_material_function_output(
+    function_path: str,
+    node_index: int,
+    output_name: Optional[str] = None,
+    description: Optional[str] = None,
+    sort_priority: Optional[int] = None,
+) -> str:
+    """Modify an existing FunctionOutput node's properties.
+
+    Args:
+        function_path: Full path to existing material function
+        node_index: Index of the FunctionOutput node (from get_material_function_info)
+        output_name: New pin name
+        description: New tooltip
+        sort_priority: New display order
+    """
+    params: dict = {
+        "function_path": function_path,
+        "node_index": node_index,
+    }
+    if output_name is not None:
+        params["output_name"] = output_name
+    if description is not None:
+        params["description"] = description
+    if sort_priority is not None:
+        params["sort_priority"] = sort_priority
+    return _call("set_material_function_output", params)
+
+
+@mcp.tool()
+def validate_material_function(function_path: str) -> str:
+    """Diagnose issues in a Material Function's internal graph.
+
+    Reports:
+    - unconnected_outputs: FunctionOutput nodes with nothing wired to their input
+    - unused_inputs: FunctionInput nodes whose output nobody consumes
+    - orphaned: internal nodes with no connections at all
+
+    Returns healthy=true when no issues found.
+    """
+    return _call("validate_material_function", {"function_path": function_path})
+
+
+@mcp.tool()
+def cleanup_material_function(
+    function_path: str,
+    dry_run: bool = False,
+) -> str:
+    """Remove unconnected/orphaned nodes from a Material Function.
+
+    Deletes:
+    - FunctionOutput nodes with no input wired (duplicate output pins)
+    - FunctionInput nodes whose output nobody consumes (duplicate input pins)
+    - Orphaned internal nodes
+
+    WARNING: Only call when the user explicitly asks to clean up.
+
+    Args:
+        dry_run: If true, reports what would be deleted without deleting.
+    """
+    return _call("cleanup_material_function", {
+        "function_path": function_path,
+        "dry_run": dry_run,
+    })

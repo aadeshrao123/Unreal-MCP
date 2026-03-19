@@ -2,6 +2,7 @@
 
 #include "Materials/Material.h"
 #include "Materials/MaterialExpression.h"
+#include "Materials/MaterialFunction.h"
 #include "IMaterialEditor.h"
 #include "MaterialGraph/MaterialGraph.h"
 #include "Subsystems/AssetEditorSubsystem.h"
@@ -98,5 +99,111 @@ void RebuildMaterialEditorGraph(UMaterial* OriginalMaterial)
 	}
 
 	PreviewMat->MaterialGraph->RebuildGraph();
+	Editor->UpdateMaterialAfterGraphChange();
+}
+
+// ---------------------------------------------------------------------------
+// Material Function Editor helpers
+// ---------------------------------------------------------------------------
+
+bool GetMaterialFunctionEditorContext(UMaterialFunction* OriginalFunction,
+                                      IMaterialEditor*& OutEditor,
+                                      UMaterialFunction*& OutPreviewFunction)
+{
+	OutEditor = nullptr;
+	OutPreviewFunction = nullptr;
+
+	if (!OriginalFunction || !GEditor)
+	{
+		return false;
+	}
+
+	UAssetEditorSubsystem* Sub = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>();
+	if (!Sub)
+	{
+		return false;
+	}
+
+	IAssetEditorInstance* EditorInstance = Sub->FindEditorForAsset(OriginalFunction, /*bFocusIfOpen=*/false);
+	if (!EditorInstance)
+	{
+		return false;
+	}
+
+	if (EditorInstance->GetEditorName() != FName("MaterialEditor"))
+	{
+		return false;
+	}
+
+	OutEditor = static_cast<IMaterialEditor*>(EditorInstance);
+
+	// The editor's preview material's MaterialGraph has a pointer to the transient MF copy.
+	// The transient copy has ParentFunction == OriginalFunction.
+	UMaterialInterface* MatInterface = OutEditor->GetMaterialInterface();
+	UMaterial* PreviewMat = Cast<UMaterial>(MatInterface);
+	if (PreviewMat && PreviewMat->MaterialGraph)
+	{
+		OutPreviewFunction = PreviewMat->MaterialGraph->MaterialFunction;
+	}
+
+	return OutPreviewFunction != nullptr;
+}
+
+/** Resolve a MF to its editor transient copy (if the editor is open). */
+UMaterialFunction* ResolveWorkingMaterialFunction(UMaterialFunction* OriginalFunction)
+{
+	IMaterialEditor* Editor = nullptr;
+	UMaterialFunction* PreviewFunc = nullptr;
+	if (GetMaterialFunctionEditorContext(OriginalFunction, Editor, PreviewFunc))
+	{
+		return PreviewFunc;
+	}
+	return OriginalFunction;
+}
+
+void NotifyMaterialFunctionEditorRefresh(UMaterialFunction* OriginalFunction)
+{
+	IMaterialEditor* Editor = nullptr;
+	UMaterialFunction* PreviewFunc = nullptr;
+	if (!GetMaterialFunctionEditorContext(OriginalFunction, Editor, PreviewFunc))
+	{
+		return;
+	}
+
+	// RebuildGraph() reads from Material->GetExpressions(), NOT from the MF.
+	// So we must sync the MF's expression collection into the preview Material
+	// before rebuilding the graph. This mirrors what FMaterialEditor::InitMaterialEditor does.
+	UMaterialInterface* MatInterface = Editor->GetMaterialInterface();
+	UMaterial* PreviewMat = Cast<UMaterial>(MatInterface);
+	if (PreviewMat && PreviewFunc)
+	{
+		// Sync MF expressions into the Material's expression collection
+		FMaterialExpressionCollection& MatCollection = PreviewMat->GetExpressionCollection();
+		FMaterialExpressionCollection& MFCollection = PreviewFunc->GetExpressionCollection();
+
+		// Add any MF expressions that aren't already in the Material
+		for (UMaterialExpression* Expr : MFCollection.Expressions)
+		{
+			if (Expr && !MatCollection.Expressions.Contains(Expr))
+			{
+				MatCollection.Expressions.Add(Expr);
+			}
+		}
+
+		// Remove any Material expressions that are no longer in the MF
+		for (int32 i = MatCollection.Expressions.Num() - 1; i >= 0; --i)
+		{
+			if (!MFCollection.Expressions.Contains(MatCollection.Expressions[i]))
+			{
+				MatCollection.Expressions.RemoveAt(i);
+			}
+		}
+
+		if (PreviewMat->MaterialGraph)
+		{
+			PreviewMat->MaterialGraph->RebuildGraph();
+		}
+	}
+
 	Editor->UpdateMaterialAfterGraphChange();
 }
