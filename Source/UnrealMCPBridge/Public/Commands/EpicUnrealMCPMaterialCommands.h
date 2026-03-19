@@ -38,6 +38,9 @@ private:
 	TSharedPtr<FJsonObject> HandleGetMaterialExpressionInfo(const TSharedPtr<FJsonObject>& Params);
 	TSharedPtr<FJsonObject> HandleGetMaterialPropertyConnections(const TSharedPtr<FJsonObject>& Params);
 	TSharedPtr<FJsonObject> HandleGetMaterialErrors(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleGetExpressionTypeInfo(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleValidateMaterialGraph(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleTraceMaterialConnection(const TSharedPtr<FJsonObject>& Params);
 
 	// ---- Individual Node Mutations ----
 	TSharedPtr<FJsonObject> HandleAddMaterialExpression(const TSharedPtr<FJsonObject>& Params);
@@ -47,6 +50,8 @@ private:
 	TSharedPtr<FJsonObject> HandleDeleteMaterialExpression(const TSharedPtr<FJsonObject>& Params);
 	TSharedPtr<FJsonObject> HandleConnectMaterialExpressions(const TSharedPtr<FJsonObject>& Params);
 	TSharedPtr<FJsonObject> HandleLayoutMaterialExpressions(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleDisconnectMaterialExpression(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleCleanupMaterialGraph(const TSharedPtr<FJsonObject>& Params);
 
 	// ---- Material Instance ----
 	TSharedPtr<FJsonObject> HandleGetMaterialInstanceParameters(const TSharedPtr<FJsonObject>& Params);
@@ -54,6 +59,7 @@ private:
 
 	// ---- Discovery ----
 	TSharedPtr<FJsonObject> HandleListMaterialExpressionTypes(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleSearchMaterialFunctions(const TSharedPtr<FJsonObject>& Params);
 
 	// ---- Internal Helpers (MaterialHelpers.cpp) ----
 
@@ -95,11 +101,13 @@ private:
 	/**
 	 * Serialise one expression node to a JSON object.
 	 * @param bIncludeAvailablePins  When true, adds "available_inputs" and "available_outputs" arrays.
+	 * @param Verbosity  "summary" (index/type/pos only), "connections" (+ input connections), "full" (+ properties).
 	 */
 	static TSharedPtr<FJsonObject> SerializeMaterialExpression(
 		UMaterialExpression* Expr, int32 Index,
 		const TMap<UMaterialExpression*, int32>& ExprIndexMap,
-		bool bIncludeAvailablePins = false);
+		bool bIncludeAvailablePins = false,
+		const FString& Verbosity = TEXT("full"));
 
 	/** Serialize Custom HLSL node properties (code, inputs, outputs). */
 	static void SerializeCustomHLSLProperties(

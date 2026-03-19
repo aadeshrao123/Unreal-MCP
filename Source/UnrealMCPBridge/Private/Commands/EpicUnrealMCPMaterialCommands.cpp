@@ -45,6 +45,9 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleCommand(
 	else if (CommandType == TEXT("get_material_expression_info"))     return HandleGetMaterialExpressionInfo(Params);
 	else if (CommandType == TEXT("get_material_property_connections")) return HandleGetMaterialPropertyConnections(Params);
 	else if (CommandType == TEXT("get_material_errors"))              return HandleGetMaterialErrors(Params);
+	else if (CommandType == TEXT("get_expression_type_info"))       return HandleGetExpressionTypeInfo(Params);
+	else if (CommandType == TEXT("validate_material_graph"))        return HandleValidateMaterialGraph(Params);
+	else if (CommandType == TEXT("trace_material_connection"))      return HandleTraceMaterialConnection(Params);
 
 	// ---- Node Mutations ----
 	else if (CommandType == TEXT("add_material_expression"))          return HandleAddMaterialExpression(Params);
@@ -54,6 +57,8 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleCommand(
 	else if (CommandType == TEXT("delete_material_expression"))       return HandleDeleteMaterialExpression(Params);
 	else if (CommandType == TEXT("connect_material_expressions"))     return HandleConnectMaterialExpressions(Params);
 	else if (CommandType == TEXT("layout_material_expressions"))      return HandleLayoutMaterialExpressions(Params);
+	else if (CommandType == TEXT("disconnect_material_expression")) return HandleDisconnectMaterialExpression(Params);
+	else if (CommandType == TEXT("cleanup_material_graph"))         return HandleCleanupMaterialGraph(Params);
 
 	// ---- Material Instance ----
 	else if (CommandType == TEXT("get_material_instance_parameters")) return HandleGetMaterialInstanceParameters(Params);
@@ -61,6 +66,7 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleCommand(
 
 	// ---- Discovery ----
 	else if (CommandType == TEXT("list_material_expression_types"))   return HandleListMaterialExpressionTypes(Params);
+	else if (CommandType == TEXT("search_material_functions"))      return HandleSearchMaterialFunctions(Params);
 
 	return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
 		FString::Printf(TEXT("Unknown material command: %s"), *CommandType));

@@ -634,7 +634,13 @@ FString UEpicUnrealMCPBridge::ExecuteCommand(
 				CommandType == TEXT("get_material_instance_parameters") ||
 				CommandType == TEXT("set_material_instance_parameter") ||
 				CommandType == TEXT("get_material_errors") ||
-				CommandType == TEXT("list_material_expression_types"))
+				CommandType == TEXT("list_material_expression_types") ||
+				CommandType == TEXT("get_expression_type_info") ||
+				CommandType == TEXT("disconnect_material_expression") ||
+				CommandType == TEXT("search_material_functions") ||
+				CommandType == TEXT("validate_material_graph") ||
+				CommandType == TEXT("trace_material_connection") ||
+				CommandType == TEXT("cleanup_material_graph"))
 			{
 				ResultJson = MaterialCommands->HandleCommand(CommandType, Params);
 			}

@@ -1,4 +1,5 @@
 #include "Commands/EpicUnrealMCPMaterialCommands.h"
+#include "Commands/EpicUnrealMCPPropertyUtils.h"
 
 #include "Materials/Material.h"
 #include "Materials/MaterialExpression.h"
@@ -14,7 +15,8 @@
 TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::SerializeMaterialExpression(
 	UMaterialExpression* Expr, int32 Index,
 	const TMap<UMaterialExpression*, int32>& ExprIndexMap,
-	bool bIncludeAvailablePins)
+	bool bIncludeAvailablePins,
+	const FString& Verbosity)
 {
 	TSharedPtr<FJsonObject> Node = MakeShared<FJsonObject>();
 	Node->SetNumberField(TEXT("index"), Index);
@@ -27,24 +29,28 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::SerializeMaterialExpress
 	Node->SetNumberField(TEXT("pos_x"), Expr->MaterialExpressionEditorX);
 	Node->SetNumberField(TEXT("pos_y"), Expr->MaterialExpressionEditorY);
 
-	// ---- Type-specific properties ----------------------------------------
-	TSharedPtr<FJsonObject> Props = MakeShared<FJsonObject>();
-
-	if (UMaterialExpressionCustom* Custom = Cast<UMaterialExpressionCustom>(Expr))
+	// Properties — skip in summary and connections modes
+	if (Verbosity != TEXT("summary") && Verbosity != TEXT("connections"))
 	{
-		SerializeCustomHLSLProperties(Custom, Props);
+		TSharedPtr<FJsonObject> Props = MakeShared<FJsonObject>();
+		if (UMaterialExpressionCustom* Custom = Cast<UMaterialExpressionCustom>(Expr))
+		{
+			SerializeCustomHLSLProperties(Custom, Props);
+		}
+		else
+		{
+			SerializeGenericExpressionProperties(Expr, Props);
+		}
+		Node->SetObjectField(TEXT("properties"), Props);
 	}
-	else
+
+	// Input connections — skip in summary mode only
+	if (Verbosity != TEXT("summary"))
 	{
-		SerializeGenericExpressionProperties(Expr, Props);
+		SerializeInputConnections(Expr, ExprIndexMap, Node);
 	}
 
-	Node->SetObjectField(TEXT("properties"), Props);
-
-	// ---- Input connections ----
-	SerializeInputConnections(Expr, ExprIndexMap, Node);
-
-	// ---- Available pins (for get_material_expression_info) ----
+	// Available pins (for get_material_expression_info)
 	if (bIncludeAvailablePins)
 	{
 		SerializeAvailablePins(Expr, Node);
@@ -110,137 +116,67 @@ void FEpicUnrealMCPMaterialCommands::SerializeCustomHLSLProperties(
 void FEpicUnrealMCPMaterialCommands::SerializeGenericExpressionProperties(
 	UMaterialExpression* Expr, TSharedPtr<FJsonObject>& OutProps)
 {
-	// ParameterName (ScalarParameter, VectorParameter, TextureParameter, etc.)
-	if (FProperty* P = Expr->GetClass()->FindPropertyByName(TEXT("ParameterName")))
+	if (!Expr)
 	{
-		if (FNameProperty* NP = CastField<FNameProperty>(P))
-		{
-			OutProps->SetStringField(TEXT("ParameterName"),
-				NP->GetPropertyValue_InContainer(Expr).ToString());
-		}
+		return;
 	}
 
-	// Group (parameter group in material instances)
-	if (FProperty* P = Expr->GetClass()->FindPropertyByName(TEXT("Group")))
-	{
-		if (FNameProperty* NP = CastField<FNameProperty>(P))
-		{
-			OutProps->SetStringField(TEXT("Group"),
-				NP->GetPropertyValue_InContainer(Expr).ToString());
-		}
-	}
+	// Get the base class to skip its properties (they are common to ALL expressions)
+	UClass* BaseClass = UMaterialExpression::StaticClass();
+	UClass* ObjectClass = UObject::StaticClass();
 
-	// SortPriority
-	if (FProperty* P = Expr->GetClass()->FindPropertyByName(TEXT("SortPriority")))
+	for (TFieldIterator<FProperty> PropIt(Expr->GetClass()); PropIt; ++PropIt)
 	{
-		if (FIntProperty* IP = CastField<FIntProperty>(P))
-		{
-			OutProps->SetNumberField(TEXT("SortPriority"), IP->GetPropertyValue_InContainer(Expr));
-		}
-	}
+		FProperty* Prop = *PropIt;
 
-	// DefaultValue (float -> ScalarParameter, FLinearColor -> VectorParameter)
-	if (FProperty* P = Expr->GetClass()->FindPropertyByName(TEXT("DefaultValue")))
-	{
-		if (FFloatProperty* FP = CastField<FFloatProperty>(P))
+		// Skip properties owned by UMaterialExpression base or UObject
+		UClass* OwnerClass = Prop->GetOwnerClass();
+		if (OwnerClass == BaseClass || OwnerClass == ObjectClass)
 		{
-			OutProps->SetNumberField(TEXT("DefaultValue"), FP->GetPropertyValue_InContainer(Expr));
+			continue;
 		}
-		else if (FStructProperty* SP = CastField<FStructProperty>(P))
+
+		// Skip FExpressionInput struct properties — those are pin connections, not data
+		if (FStructProperty* SP = CastField<FStructProperty>(Prop))
 		{
-			if (SP->Struct == TBaseStructure<FLinearColor>::Get())
+			FName StructName = SP->Struct->GetFName();
+			static const TSet<FName> InputStructNames = {
+				FName(TEXT("ExpressionInput")),
+				FName(TEXT("ExpressionOutput")),
+				FName(TEXT("ColorMaterialInput")),
+				FName(TEXT("ScalarMaterialInput")),
+				FName(TEXT("VectorMaterialInput")),
+				FName(TEXT("Vector2MaterialInput")),
+				FName(TEXT("MaterialAttributesInput")),
+			};
+			if (InputStructNames.Contains(StructName))
 			{
-				const FLinearColor* C = SP->ContainerPtrToValuePtr<FLinearColor>(Expr);
-				TArray<TSharedPtr<FJsonValue>> Arr;
-				Arr.Add(MakeShared<FJsonValueNumber>(C->R));
-				Arr.Add(MakeShared<FJsonValueNumber>(C->G));
-				Arr.Add(MakeShared<FJsonValueNumber>(C->B));
-				Arr.Add(MakeShared<FJsonValueNumber>(C->A));
-				OutProps->SetArrayField(TEXT("DefaultValue"), Arr);
+				continue;
 			}
 		}
-	}
 
-	// SliderMin / SliderMax (ScalarParameter)
-	if (FProperty* P = Expr->GetClass()->FindPropertyByName(TEXT("SliderMin")))
-	{
-		if (FFloatProperty* FP = CastField<FFloatProperty>(P))
+		// Skip transient and deprecated properties
+		if (Prop->HasAnyPropertyFlags(CPF_Transient | CPF_Deprecated))
 		{
-			OutProps->SetNumberField(TEXT("SliderMin"), FP->GetPropertyValue_InContainer(Expr));
+			continue;
 		}
-	}
-	if (FProperty* P = Expr->GetClass()->FindPropertyByName(TEXT("SliderMax")))
-	{
-		if (FFloatProperty* FP = CastField<FFloatProperty>(P))
-		{
-			OutProps->SetNumberField(TEXT("SliderMax"), FP->GetPropertyValue_InContainer(Expr));
-		}
-	}
 
-	// R / G (Constant, Constant2Vector)
-	if (FProperty* P = Expr->GetClass()->FindPropertyByName(TEXT("R")))
-	{
-		if (FFloatProperty* FP = CastField<FFloatProperty>(P))
+		// Skip delegate, multicast delegate, and weak object properties
+		if (CastField<FDelegateProperty>(Prop) || CastField<FMulticastDelegateProperty>(Prop))
 		{
-			OutProps->SetNumberField(TEXT("R"), FP->GetPropertyValue_InContainer(Expr));
+			continue;
 		}
-	}
-	if (FProperty* P = Expr->GetClass()->FindPropertyByName(TEXT("G")))
-	{
-		if (FFloatProperty* FP = CastField<FFloatProperty>(P))
+		if (CastField<FWeakObjectProperty>(Prop))
 		{
-			OutProps->SetNumberField(TEXT("G"), FP->GetPropertyValue_InContainer(Expr));
+			continue;
 		}
-	}
 
-	// Constant (Constant3Vector/4Vector -> FLinearColor, Constant2Vector -> FVector2D, Constant -> float)
-	if (FProperty* P = Expr->GetClass()->FindPropertyByName(TEXT("Constant")))
-	{
-		if (FFloatProperty* FP = CastField<FFloatProperty>(P))
+		// Use the safe serializer from PropertyUtils
+		const void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(Expr);
+		TSharedPtr<FJsonValue> JsonVal = FEpicUnrealMCPPropertyUtils::SafePropertyToJsonValue(Prop, ValuePtr);
+		if (JsonVal.IsValid() && JsonVal->Type != EJson::Null)
 		{
-			OutProps->SetNumberField(TEXT("Constant"), FP->GetPropertyValue_InContainer(Expr));
-		}
-		else if (FStructProperty* SP = CastField<FStructProperty>(P))
-		{
-			if (SP->Struct == TBaseStructure<FLinearColor>::Get())
-			{
-				const FLinearColor* C = SP->ContainerPtrToValuePtr<FLinearColor>(Expr);
-				TArray<TSharedPtr<FJsonValue>> Arr;
-				Arr.Add(MakeShared<FJsonValueNumber>(C->R));
-				Arr.Add(MakeShared<FJsonValueNumber>(C->G));
-				Arr.Add(MakeShared<FJsonValueNumber>(C->B));
-				Arr.Add(MakeShared<FJsonValueNumber>(C->A));
-				OutProps->SetArrayField(TEXT("Constant"), Arr);
-			}
-			else if (SP->Struct == TBaseStructure<FVector2D>::Get())
-			{
-				const FVector2D* V = SP->ContainerPtrToValuePtr<FVector2D>(Expr);
-				TArray<TSharedPtr<FJsonValue>> Arr;
-				Arr.Add(MakeShared<FJsonValueNumber>(V->X));
-				Arr.Add(MakeShared<FJsonValueNumber>(V->Y));
-				OutProps->SetArrayField(TEXT("Constant"), Arr);
-			}
-		}
-	}
-
-	// CoordinateIndex (TextureCoordinate)
-	if (FProperty* P = Expr->GetClass()->FindPropertyByName(TEXT("CoordinateIndex")))
-	{
-		if (FIntProperty* IP = CastField<FIntProperty>(P))
-		{
-			OutProps->SetNumberField(TEXT("CoordinateIndex"), IP->GetPropertyValue_InContainer(Expr));
-		}
-	}
-
-	// ConstA / ConstB / ConstAlpha (Multiply, Add, Lerp fallback constants)
-	for (const TCHAR* FallbackName : { TEXT("ConstA"), TEXT("ConstB"), TEXT("ConstAlpha") })
-	{
-		if (FProperty* P = Expr->GetClass()->FindPropertyByName(FallbackName))
-		{
-			if (FFloatProperty* FP = CastField<FFloatProperty>(P))
-			{
-				OutProps->SetNumberField(FallbackName, FP->GetPropertyValue_InContainer(Expr));
-			}
+			OutProps->SetField(Prop->GetName(), JsonVal);
 		}
 	}
 }

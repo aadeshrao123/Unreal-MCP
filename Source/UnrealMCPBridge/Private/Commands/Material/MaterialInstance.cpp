@@ -275,6 +275,18 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleListMaterialExpres
 	FString Filter;
 	Params->TryGetStringField(TEXT("filter"), Filter);
 
+	int32 MaxResults = 0; // 0 = unlimited
+	{
+		double Tmp;
+		if (Params->TryGetNumberField(TEXT("max_results"), Tmp))
+		{
+			MaxResults = FMath::Max(0, (int32)Tmp);
+		}
+	}
+
+	bool bIncludeDetails = true;
+	Params->TryGetBoolField(TEXT("include_details"), bIncludeDetails);
+
 	static const FString ExpressionPrefix = TEXT("MaterialExpression");
 
 	// Classes to exclude (same as Epic's MaterialExpressionClasses.cpp)
@@ -364,36 +376,39 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleListMaterialExpres
 			}
 		}
 
-		// Build result entry — only include fields that have values to minimize tokens
+		// Build result entry
 		auto Entry = MakeShared<FJsonObject>();
 		Entry->SetStringField(TEXT("type"), ShortName);
 
-		if (!DisplayName.IsEmpty() && DisplayName != ShortName)
+		if (bIncludeDetails)
 		{
-			Entry->SetStringField(TEXT("display_name"), DisplayName);
-		}
-
-		if (!Keywords.IsEmpty())
-		{
-			Entry->SetStringField(TEXT("keywords"), Keywords);
-		}
-
-		if (CDO)
-		{
-			if (CDO->MenuCategories.Num() > 0)
+			if (!DisplayName.IsEmpty() && DisplayName != ShortName)
 			{
-				TArray<TSharedPtr<FJsonValue>> CatArray;
-				for (const FText& Cat : CDO->MenuCategories)
-				{
-					CatArray.Add(MakeShared<FJsonValueString>(Cat.ToString()));
-				}
-				Entry->SetArrayField(TEXT("categories"), CatArray);
+				Entry->SetStringField(TEXT("display_name"), DisplayName);
 			}
 
-			FString Desc = CDO->GetCreationDescription().ToString();
-			if (!Desc.IsEmpty())
+			if (!Keywords.IsEmpty())
 			{
-				Entry->SetStringField(TEXT("description"), Desc);
+				Entry->SetStringField(TEXT("keywords"), Keywords);
+			}
+
+			if (CDO)
+			{
+				if (CDO->MenuCategories.Num() > 0)
+				{
+					TArray<TSharedPtr<FJsonValue>> CatArray;
+					for (const FText& Cat : CDO->MenuCategories)
+					{
+						CatArray.Add(MakeShared<FJsonValueString>(Cat.ToString()));
+					}
+					Entry->SetArrayField(TEXT("categories"), CatArray);
+				}
+
+				FString Desc = CDO->GetCreationDescription().ToString();
+				if (!Desc.IsEmpty())
+				{
+					Entry->SetStringField(TEXT("description"), Desc);
+				}
 			}
 		}
 
@@ -406,6 +421,12 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleListMaterialExpres
 		return A->AsObject()->GetStringField(TEXT("type")) <
 		       B->AsObject()->GetStringField(TEXT("type"));
 	});
+
+	// Apply max_results limit
+	if (MaxResults > 0 && ResultArray.Num() > MaxResults)
+	{
+		ResultArray.SetNum(MaxResults);
+	}
 
 	auto R = MakeShared<FJsonObject>();
 	R->SetBoolField(TEXT("success"), true);

@@ -127,9 +127,26 @@ def build_material_graph(
 
 
 @mcp.tool()
-def get_material_info(material_path: str) -> str:
-    """Inspect a material: properties, expression count, parameter names, textures."""
-    return _call("get_material_info", {"material_path": material_path})
+def get_material_info(
+    material_path: str,
+    include: Optional[str] = None,
+) -> str:
+    """Inspect a material's properties.
+
+    Always returns: blend mode, shading model, two-sided, expression count.
+
+    Use include (comma-separated) to request additional sections:
+    - "parameters": scalar/vector/texture parameter names
+    - "textures": used texture paths
+    - "statistics": shader instruction counts
+
+    Omit include to get only basic properties (minimal tokens).
+    Pass include="parameters,textures,statistics" for everything.
+    """
+    params: dict = {"material_path": material_path}
+    if include is not None:
+        params["include"] = include
+    return _call("get_material_info", params)
 
 
 @mcp.tool()
@@ -185,15 +202,28 @@ def set_material_properties(
 
 
 @mcp.tool()
-def get_material_graph_nodes(material_path: str) -> str:
-    """Read all expression nodes in a material graph.
+def get_material_graph_nodes(
+    material_path: str,
+    verbosity: str = "connections",
+    type_filter: Optional[str] = None,
+) -> str:
+    """Read expression nodes in a material graph.
 
-    Returns every node with index, type, position, properties, and
-    input_connections. Custom nodes include full HLSL code.
+    Use verbosity to control response size:
+    - "summary": index, type, position only (~30 tokens/node)
+    - "connections": + input connections (default, good balance)
+    - "full": + properties + available pins (large response)
 
-    Node indices are stable and used by add/connect/delete_material_expression.
+    Use type_filter to only return nodes matching a type substring
+    (e.g. "Parameter" returns only parameter nodes).
     """
-    return _call("get_material_graph_nodes", {"material_path": material_path})
+    params: dict = {
+        "material_path": material_path,
+        "verbosity": verbosity,
+    }
+    if type_filter is not None:
+        params["type_filter"] = type_filter
+    return _call("get_material_graph_nodes", params)
 
 
 @mcp.tool()
@@ -373,12 +403,150 @@ def set_material_instance_parameter(
 
 
 @mcp.tool()
-def list_material_expression_types(filter: Optional[str] = None) -> str:
-    """List available material expression node types (class name, display name, category).
+def list_material_expression_types(
+    filter: Optional[str] = None,
+    max_results: int = 0,
+    include_details: bool = True,
+) -> str:
+    """List available material expression node types.
 
     Use filter to narrow results (e.g. "texture", "parameter", "math", "noise").
+    Set max_results to limit output (0 = unlimited).
+    Set include_details=false for compact output (type names only).
     """
     params: dict = {}
     if filter is not None:
         params["filter"] = filter
+    if max_results > 0:
+        params["max_results"] = max_results
+    if not include_details:
+        params["include_details"] = False
     return _call("list_material_expression_types", params)
+
+
+@mcp.tool()
+def get_expression_type_info(type_name: str) -> str:
+    """Look up pin names and editable properties for a node type WITHOUT creating one.
+
+    Returns input pins, output pins, and all editable properties with types and defaults.
+    Use this BEFORE creating nodes to know exact pin names and avoid connection errors.
+
+    Args:
+        type_name: Short type name (e.g. "Multiply", "TextureSample", "Noise", "Custom")
+    """
+    return _call("get_expression_type_info", {"type_name": type_name})
+
+
+@mcp.tool()
+def disconnect_material_expression(
+    material_path: str,
+    node_index: int,
+    input_pin: str,
+) -> str:
+    """Disconnect a specific input pin on a material expression node.
+
+    Args:
+        node_index: The target node whose input pin will be disconnected
+        input_pin: Name of the input pin to disconnect
+    """
+    return _call("disconnect_material_expression", {
+        "material_path": material_path,
+        "node_index": node_index,
+        "input_pin": input_pin,
+    })
+
+
+@mcp.tool()
+def search_material_functions(
+    filter: Optional[str] = None,
+    path: str = "/Game",
+    max_results: int = 50,
+    include_engine: bool = False,
+) -> str:
+    """Search for Material Functions by name.
+
+    Args:
+        filter: Name substring to match (e.g. "Blend", "Normal", "Fresnel")
+        path: Content Browser path to search in (default "/Game")
+        max_results: Maximum results to return (default 50)
+        include_engine: Include engine built-in material functions
+    """
+    params: dict = {
+        "path": path,
+        "max_results": max_results,
+        "include_engine": include_engine,
+    }
+    if filter is not None:
+        params["filter"] = filter
+    return _call("search_material_functions", params)
+
+
+@mcp.tool()
+def validate_material_graph(material_path: str) -> str:
+    """Diagnose connection issues in a material graph.
+
+    Categorises every node into:
+    - orphaned: no inputs AND output not consumed — safe to delete
+    - dead_ends: has inputs but output goes nowhere
+    - missing_inputs: some input pins are empty
+    - unconnected_inputs: ALL input pins are empty (node expects connections)
+    - unconnected_outputs: output not consumed by anything
+
+    Returns healthy=true when no orphaned or dead-end nodes exist.
+    """
+    return _call("validate_material_graph", {"material_path": material_path})
+
+
+@mcp.tool()
+def trace_material_connection(
+    material_path: str,
+    node_index: int,
+    direction: str = "both",
+    max_depth: int = 1,
+) -> str:
+    """Trace connections upstream and/or downstream from a specific node.
+
+    Shows exactly what feeds into each input pin and what consumes each output pin,
+    including connections to material outputs (BaseColor, Normal, etc.).
+
+    Args:
+        node_index: The node to trace from
+        direction: "upstream" (what feeds in), "downstream" (what consumes output),
+            or "both" (default)
+        max_depth: How many hops to trace recursively (1 = immediate neighbors,
+            2+ = follow the chain). Max 50. Default 1.
+    """
+    return _call("trace_material_connection", {
+        "material_path": material_path,
+        "node_index": node_index,
+        "direction": direction,
+        "max_depth": max_depth,
+    })
+
+
+@mcp.tool()
+def cleanup_material_graph(
+    material_path: str,
+    mode: str = "orphaned",
+    dry_run: bool = False,
+) -> str:
+    """Delete orphaned and/or dead-end nodes from a material graph.
+
+    WARNING: NEVER call this tool unless the user explicitly asks to clean up
+    or delete unconnected nodes. Users may intentionally keep disconnected nodes
+    as references, scratchpads, or work-in-progress. Deleting them without
+    permission will cause data loss and frustration.
+
+    Args:
+        mode: What to delete:
+            "orphaned" — only nodes with NO connections at all (safest)
+            "dead_ends" — nodes whose output goes nowhere (has inputs but no consumers)
+            "all" — both orphaned and dead-ends
+        dry_run: If true, reports what WOULD be deleted without actually deleting.
+            Always use dry_run=true first to preview before deleting.
+    """
+    return _call("cleanup_material_graph", {
+        "material_path": material_path,
+        "mode": mode,
+        "dry_run": dry_run,
+    })

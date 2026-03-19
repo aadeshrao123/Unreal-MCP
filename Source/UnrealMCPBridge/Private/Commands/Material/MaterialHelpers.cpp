@@ -4,6 +4,8 @@
 #include "Materials/Material.h"
 #include "Materials/MaterialExpression.h"
 #include "Materials/MaterialExpressionCustom.h"
+#include "Materials/MaterialExpressionMaterialFunctionCall.h"
+#include "Materials/MaterialFunction.h"
 #include "EdGraph/EdGraphNode.h"
 #include "EditorAssetLibrary.h"
 
@@ -53,6 +55,13 @@ EMaterialProperty FEpicUnrealMCPMaterialCommands::ResolveMaterialProperty(const 
 	if (Name == TEXT("Refraction"))          return MP_Refraction;
 	if (Name == TEXT("PixelDepthOffset"))    return MP_PixelDepthOffset;
 	if (Name == TEXT("ShadingModel"))        return MP_ShadingModel;
+	if (Name == TEXT("Anisotropy"))          return MP_Anisotropy;
+	if (Name == TEXT("Tangent"))             return MP_Tangent;
+	if (Name == TEXT("CustomData0"))         return MP_CustomData0;
+	if (Name == TEXT("CustomData1"))         return MP_CustomData1;
+	if (Name == TEXT("SurfaceThickness"))    return MP_SurfaceThickness;
+	if (Name == TEXT("Displacement"))        return MP_Displacement;
+	if (Name == TEXT("FrontMaterial"))       return MP_FrontMaterial;
 	return MP_MAX;
 }
 
@@ -73,6 +82,14 @@ FString FEpicUnrealMCPMaterialCommands::MaterialPropertyToString(EMaterialProper
 	case MP_SubsurfaceColor:     return TEXT("SubsurfaceColor");
 	case MP_Refraction:          return TEXT("Refraction");
 	case MP_PixelDepthOffset:    return TEXT("PixelDepthOffset");
+	case MP_Anisotropy:          return TEXT("Anisotropy");
+	case MP_Tangent:             return TEXT("Tangent");
+	case MP_CustomData0:         return TEXT("CustomData0");
+	case MP_CustomData1:         return TEXT("CustomData1");
+	case MP_SurfaceThickness:    return TEXT("SurfaceThickness");
+	case MP_Displacement:        return TEXT("Displacement");
+	case MP_FrontMaterial:       return TEXT("FrontMaterial");
+	case MP_ShadingModel:        return TEXT("ShadingModel");
 	default:                     return TEXT("Unknown");
 	}
 }
@@ -89,6 +106,7 @@ UClass* FEpicUnrealMCPMaterialCommands::FindExpressionClass(const FString& TypeN
 		ClassName = TEXT("MaterialExpression") + ClassName;
 	}
 
+	// Fast path: check common modules first
 	static const TCHAR* Modules[] = {
 		TEXT("Engine"), TEXT("Landscape"), TEXT("HairStrands")
 	};
@@ -98,6 +116,15 @@ UClass* FEpicUnrealMCPMaterialCommands::FindExpressionClass(const FString& TypeN
 		if (UClass* C = FindObject<UClass>(nullptr, *Path))
 		{
 			return C;
+		}
+	}
+
+	// Fallback: iterate all loaded UMaterialExpression subclasses
+	for (TObjectIterator<UClass> It; It; ++It)
+	{
+		if (It->GetName() == ClassName && It->IsChildOf(UMaterialExpression::StaticClass()))
+		{
+			return *It;
 		}
 	}
 
@@ -188,6 +215,30 @@ bool FEpicUnrealMCPMaterialCommands::SetExpressionProperty(
 	{
 		OutError = TEXT("Invalid expression or value");
 		return false;
+	}
+
+	// Special handling for MaterialFunctionCall.function_path
+	if (Value->Type == EJson::String)
+	{
+		FString StrVal = Value->AsString();
+		if ((PropName == TEXT("function_path") || PropName == TEXT("MaterialFunction")) &&
+			StrVal.StartsWith(TEXT("/")))
+		{
+			UMaterialExpressionMaterialFunctionCall* FuncCall =
+				Cast<UMaterialExpressionMaterialFunctionCall>(Expr);
+			if (FuncCall)
+			{
+				UMaterialFunctionInterface* Func = LoadObject<UMaterialFunctionInterface>(
+					nullptr, *StrVal);
+				if (!Func)
+				{
+					OutError = FString::Printf(TEXT("Material function not found: %s"), *StrVal);
+					return false;
+				}
+				FuncCall->SetMaterialFunction(Func);
+				return true;
+			}
+		}
 	}
 
 	// Normalise to PascalCase so users can pass "parameter_name" OR "ParameterName"

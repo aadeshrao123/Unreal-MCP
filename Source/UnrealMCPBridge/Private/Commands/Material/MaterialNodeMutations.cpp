@@ -581,10 +581,47 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleConnectMaterialExp
 		FString ToDesc = bToMaterial
 			? FString::Printf(TEXT("material.%s"), *ToPin)
 			: FString::Printf(TEXT("node[%d].%s"), ToIdx, *ToPin);
-		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
-			FString::Printf(
-				TEXT("Connection failed: node[%d].%s -> %s — check pin names with get_material_expression_info"),
-				FromIdx, *FromPin, *ToDesc));
+
+		// Build actionable error message with available pin lists
+		FString ErrorMsg = FString::Printf(
+			TEXT("Connection failed: node[%d].%s -> %s."), FromIdx, *FromPin, *ToDesc);
+
+		// Available outputs on source node
+		TArray<FExpressionOutput>& SrcOutputs = FromExpr->GetOutputs();
+		TArray<FString> SrcOutNames;
+		for (int32 oi = 0; oi < SrcOutputs.Num(); ++oi)
+		{
+			FString Name = SrcOutputs[oi].OutputName.IsNone()
+				? TEXT("''")
+				: FString::Printf(TEXT("'%s'"), *SrcOutputs[oi].OutputName.ToString());
+			SrcOutNames.Add(Name);
+		}
+		FString SrcType = FromExpr->GetClass()->GetName();
+		SrcType.RemoveFromStart(TEXT("MaterialExpression"));
+		ErrorMsg += FString::Printf(TEXT("\nAvailable outputs on node[%d] (%s): [%s]."),
+			FromIdx, *SrcType, *FString::Join(SrcOutNames, TEXT(", ")));
+
+		// Available inputs on target node (or material properties)
+		if (!bToMaterial)
+		{
+			UMaterialExpression* ToExpr = Collection.Expressions[ToIdx];
+			TArray<FString> InNames = UMaterialEditingLibrary::GetMaterialExpressionInputNames(ToExpr);
+			TArray<FString> QuotedNames;
+			for (const FString& N : InNames)
+			{
+				QuotedNames.Add(FString::Printf(TEXT("'%s'"), *N));
+			}
+			FString ToType = ToExpr->GetClass()->GetName();
+			ToType.RemoveFromStart(TEXT("MaterialExpression"));
+			ErrorMsg += FString::Printf(TEXT("\nAvailable inputs on node[%d] (%s): [%s]."),
+				ToIdx, *ToType, *FString::Join(QuotedNames, TEXT(", ")));
+		}
+		else
+		{
+			ErrorMsg += TEXT("\nValid material properties: BaseColor, Metallic, Roughness, EmissiveColor, Opacity, OpacityMask, Normal, Specular, AmbientOcclusion, WorldPositionOffset, SubsurfaceColor, Refraction, PixelDepthOffset, ShadingModel, Anisotropy, Tangent, CustomData0, CustomData1, Displacement.");
+		}
+
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(ErrorMsg);
 	}
 
 	NotifyMaterialEditorRefresh(OriginalMaterial);
@@ -639,5 +676,351 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleLayoutMaterialExpr
 	R->SetBoolField(TEXT("success"), true);
 	R->SetStringField(TEXT("path"), MaterialPath);
 	R->SetStringField(TEXT("message"), TEXT("Auto-laid out and saved"));
+	return R;
+}
+
+// ---------------------------------------------------------------------------
+// HandleDisconnectMaterialExpression
+// ---------------------------------------------------------------------------
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleDisconnectMaterialExpression(
+	const TSharedPtr<FJsonObject>& Params)
+{
+	FString MaterialPath;
+	if (!Params->TryGetStringField(TEXT("material_path"), MaterialPath))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'material_path'"));
+	}
+
+	int32 NodeIndex = -1;
+	{
+		TSharedPtr<FJsonValue> V = Params->TryGetField(TEXT("node_index"));
+		if (!V.IsValid() || !TryParseIntFromJson(V, NodeIndex))
+		{
+			return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'node_index'"));
+		}
+	}
+
+	FString InputPin;
+	if (!Params->TryGetStringField(TEXT("input_pin"), InputPin))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'input_pin'"));
+	}
+
+	UMaterial* OriginalMaterial = Cast<UMaterial>(UEditorAssetLibrary::LoadAsset(MaterialPath));
+	UMaterial* Material = OriginalMaterial ? ResolveWorkingMaterial(OriginalMaterial) : nullptr;
+	if (!Material)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Material not found: %s"), *MaterialPath));
+	}
+
+	FMaterialExpressionCollection& Collection = Material->GetExpressionCollection();
+	if (NodeIndex < 0 || NodeIndex >= Collection.Expressions.Num() || !Collection.Expressions[NodeIndex])
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Invalid node_index %d"), NodeIndex));
+	}
+
+	UMaterialExpression* Expr = Collection.Expressions[NodeIndex];
+	bool bDisconnected = false;
+
+	// Handle Custom HLSL nodes
+	if (UMaterialExpressionCustom* Custom = Cast<UMaterialExpressionCustom>(Expr))
+	{
+		for (FCustomInput& CInp : Custom->Inputs)
+		{
+			if (CInp.InputName.ToString() == InputPin)
+			{
+				CInp.Input.Expression = nullptr;
+				CInp.Input.OutputIndex = 0;
+				bDisconnected = true;
+				break;
+			}
+		}
+	}
+	else
+	{
+		// Standard nodes: iterate inputs by name
+		for (int32 i = 0; ; ++i)
+		{
+			FExpressionInput* Input = Expr->GetInput(i);
+			if (!Input)
+			{
+				break;
+			}
+
+			FName Name = Expr->GetInputName(i);
+			FString NameStr = Name.IsNone() ? FString::Printf(TEXT("Input_%d"), i) : Name.ToString();
+			if (NameStr == InputPin)
+			{
+				Input->Expression = nullptr;
+				Input->OutputIndex = 0;
+				bDisconnected = true;
+				break;
+			}
+		}
+	}
+
+	if (!bDisconnected)
+	{
+		// Build list of available input names for the error message
+		TArray<FString> AvailNames = UMaterialEditingLibrary::GetMaterialExpressionInputNames(Expr);
+		TArray<FString> QuotedNames;
+		for (const FString& N : AvailNames)
+		{
+			QuotedNames.Add(FString::Printf(TEXT("'%s'"), *N));
+		}
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Input pin '%s' not found. Available inputs: [%s]"),
+				*InputPin, *FString::Join(QuotedNames, TEXT(", "))));
+	}
+
+	NotifyMaterialEditorRefresh(OriginalMaterial);
+	if (Material == OriginalMaterial)
+	{
+		UMaterialEditingLibrary::RecompileMaterial(Material);
+		UEditorAssetLibrary::SaveAsset(MaterialPath);
+	}
+
+	auto R = MakeShared<FJsonObject>();
+	R->SetBoolField(TEXT("success"), true);
+	R->SetStringField(TEXT("path"), MaterialPath);
+	R->SetNumberField(TEXT("node_index"), NodeIndex);
+	R->SetStringField(TEXT("disconnected_pin"), InputPin);
+	return R;
+}
+
+// ---------------------------------------------------------------------------
+// HandleCleanupMaterialGraph
+//
+// Deletes orphaned and optionally dead-end nodes from the material graph.
+// mode: "orphaned" (default) — only truly disconnected nodes
+//       "dead_ends" — also delete nodes whose output goes nowhere
+//       "all" — both orphaned and dead-ends
+// ---------------------------------------------------------------------------
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleCleanupMaterialGraph(
+	const TSharedPtr<FJsonObject>& Params)
+{
+	FString MaterialPath;
+	if (!Params->TryGetStringField(TEXT("material_path"), MaterialPath))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'material_path'"));
+	}
+
+	FString Mode = TEXT("orphaned");
+	Params->TryGetStringField(TEXT("mode"), Mode);
+
+	bool bDryRun = false;
+	Params->TryGetBoolField(TEXT("dry_run"), bDryRun);
+
+	UMaterial* OriginalMaterial = Cast<UMaterial>(UEditorAssetLibrary::LoadAsset(MaterialPath));
+	UMaterial* Material = OriginalMaterial ? ResolveWorkingMaterial(OriginalMaterial) : nullptr;
+	if (!Material)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Material not found: %s"), *MaterialPath));
+	}
+
+	FMaterialExpressionCollection& Collection = Material->GetExpressionCollection();
+	const int32 NumExprs = Collection.Expressions.Num();
+
+	// Build expression-to-index map
+	TMap<UMaterialExpression*, int32> ExprIndexMap;
+	ExprIndexMap.Reserve(NumExprs);
+	for (int32 i = 0; i < NumExprs; ++i)
+	{
+		if (UMaterialExpression* E = Collection.Expressions[i])
+		{
+			ExprIndexMap.Add(E, i);
+		}
+	}
+
+	// Build set of expressions whose output is consumed
+	TSet<int32> OutputUsed;
+
+	// Scan all node inputs
+	for (int32 i = 0; i < NumExprs; ++i)
+	{
+		UMaterialExpression* Expr = Collection.Expressions[i];
+		if (!Expr)
+		{
+			continue;
+		}
+
+		if (UMaterialExpressionCustom* Custom = Cast<UMaterialExpressionCustom>(Expr))
+		{
+			for (const FCustomInput& CInp : Custom->Inputs)
+			{
+				if (CInp.Input.Expression)
+				{
+					const int32* Idx = ExprIndexMap.Find(CInp.Input.Expression);
+					if (Idx)
+					{
+						OutputUsed.Add(*Idx);
+					}
+				}
+			}
+		}
+		else
+		{
+			for (int32 j = 0; ; ++j)
+			{
+				FExpressionInput* Input = Expr->GetInput(j);
+				if (!Input)
+				{
+					break;
+				}
+				if (Input->Expression)
+				{
+					const int32* Idx = ExprIndexMap.Find(Input->Expression);
+					if (Idx)
+					{
+						OutputUsed.Add(*Idx);
+					}
+				}
+			}
+		}
+	}
+
+	// Check material output connections
+	static const EMaterialProperty AllProps[] = {
+		MP_BaseColor, MP_Metallic, MP_Roughness, MP_EmissiveColor,
+		MP_Opacity, MP_OpacityMask, MP_Normal, MP_Specular,
+		MP_AmbientOcclusion, MP_WorldPositionOffset, MP_SubsurfaceColor, MP_Refraction,
+		MP_PixelDepthOffset, MP_ShadingModel, MP_Anisotropy, MP_Tangent,
+		MP_CustomData0, MP_CustomData1, MP_SurfaceThickness, MP_Displacement, MP_FrontMaterial
+	};
+	for (EMaterialProperty Prop : AllProps)
+	{
+		UMaterialExpression* Node = UMaterialEditingLibrary::GetMaterialPropertyInputNode(Material, Prop);
+		if (Node)
+		{
+			const int32* Idx = ExprIndexMap.Find(Node);
+			if (Idx)
+			{
+				OutputUsed.Add(*Idx);
+			}
+		}
+	}
+
+	// Determine which nodes to delete
+	bool bDeleteOrphaned = (Mode == TEXT("orphaned") || Mode == TEXT("all"));
+	bool bDeleteDeadEnds = (Mode == TEXT("dead_ends") || Mode == TEXT("all"));
+
+	TArray<int32> ToDelete;
+	TArray<TSharedPtr<FJsonValue>> DeletedArr;
+
+	for (int32 i = 0; i < NumExprs; ++i)
+	{
+		UMaterialExpression* Expr = Collection.Expressions[i];
+		if (!Expr)
+		{
+			continue;
+		}
+
+		bool bOutputConsumed = OutputUsed.Contains(i);
+
+		// Count connected inputs
+		int32 ConnectedInputs = 0;
+		if (UMaterialExpressionCustom* Custom = Cast<UMaterialExpressionCustom>(Expr))
+		{
+			for (const FCustomInput& CInp : Custom->Inputs)
+			{
+				if (CInp.Input.Expression)
+				{
+					ConnectedInputs++;
+				}
+			}
+		}
+		else
+		{
+			for (int32 j = 0; ; ++j)
+			{
+				FExpressionInput* Input = Expr->GetInput(j);
+				if (!Input)
+				{
+					break;
+				}
+				if (Input->Expression)
+				{
+					ConnectedInputs++;
+				}
+			}
+		}
+
+		bool bIsOrphaned = (ConnectedInputs == 0 && !bOutputConsumed);
+		bool bIsDeadEnd = (ConnectedInputs > 0 && !bOutputConsumed);
+
+		bool bShouldDelete = false;
+		FString Reason;
+
+		if (bIsOrphaned && bDeleteOrphaned)
+		{
+			bShouldDelete = true;
+			Reason = TEXT("orphaned");
+		}
+		else if (bIsDeadEnd && bDeleteDeadEnds)
+		{
+			bShouldDelete = true;
+			Reason = TEXT("dead_end");
+		}
+
+		if (bShouldDelete)
+		{
+			FString ShortType = Expr->GetClass()->GetName();
+			ShortType.RemoveFromStart(TEXT("MaterialExpression"));
+
+			auto Entry = MakeShared<FJsonObject>();
+			Entry->SetNumberField(TEXT("index"), i);
+			Entry->SetStringField(TEXT("type"), ShortType);
+			Entry->SetStringField(TEXT("reason"), Reason);
+			DeletedArr.Add(MakeShared<FJsonValueObject>(Entry));
+			ToDelete.Add(i);
+		}
+	}
+
+	// Actually delete (in reverse order to preserve indices for earlier deletions)
+	int32 DeletedCount = 0;
+	if (!bDryRun)
+	{
+		for (int32 k = ToDelete.Num() - 1; k >= 0; --k)
+		{
+			int32 Idx = ToDelete[k];
+			if (Idx < Collection.Expressions.Num() && Collection.Expressions[Idx])
+			{
+				UMaterialEditingLibrary::DeleteMaterialExpression(Material, Collection.Expressions[Idx]);
+				DeletedCount++;
+			}
+		}
+
+		if (DeletedCount > 0)
+		{
+			RebuildMaterialEditorGraph(OriginalMaterial);
+			if (Material == OriginalMaterial)
+			{
+				UMaterialEditingLibrary::RecompileMaterial(Material);
+				UEditorAssetLibrary::SaveAsset(MaterialPath);
+			}
+		}
+	}
+	else
+	{
+		DeletedCount = ToDelete.Num();
+	}
+
+	auto R = MakeShared<FJsonObject>();
+	R->SetBoolField(TEXT("success"), true);
+	R->SetStringField(TEXT("path"), MaterialPath);
+	R->SetBoolField(TEXT("dry_run"), bDryRun);
+	R->SetStringField(TEXT("mode"), Mode);
+	R->SetNumberField(TEXT("deleted_count"), DeletedCount);
+	R->SetArrayField(TEXT("deleted_nodes"), DeletedArr);
+	if (DeletedCount > 0 && !bDryRun)
+	{
+		R->SetStringField(TEXT("note"),
+			TEXT("Node indices have shifted — re-query with get_material_graph_nodes"));
+	}
 	return R;
 }
