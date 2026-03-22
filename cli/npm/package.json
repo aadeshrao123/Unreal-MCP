@@ -1,0 +1,39 @@
+{
+  "name": "unrealmcp",
+  "version": "1.0.0",
+  "description": "CLI for controlling Unreal Engine 5 Editor — create materials, blueprints, spawn actors, modify assets. No Python, no MCP, no dependencies.",
+  "keywords": [
+    "unreal",
+    "unreal-engine",
+    "ue5",
+    "cli",
+    "mcp",
+    "gamedev",
+    "editor",
+    "ai",
+    "claude",
+    "blueprint",
+    "material"
+  ],
+  "author": "Aadesh Yadav",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aadeshrao123/Unreal-MCP-Pro"
+  },
+  "homepage": "https://github.com/aadeshrao123/Unreal-MCP-Pro#readme",
+  "bugs": {
+    "url": "https://github.com/aadeshrao123/Unreal-MCP-Pro/issues"
+  },
+  "bin": {
+    "ue-cli": "run.js"
+  },
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "files": [
+    "install.js",
+    "run.js",
+    "bin/"
+  ]
+}
