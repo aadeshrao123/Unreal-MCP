@@ -24,6 +24,8 @@ type CommandSpec struct {
 	Name    string      // TCP command name (also the CLI subcommand name)
 	Group   string      // help text grouping (e.g., "assets", "materials")
 	Short   string      // one-line description
+	Long    string      // detailed description (what it does, when to use, what it returns)
+	Example string      // usage example(s)
 	Params  []ParamSpec // parameters
 	LargeOp bool        // use 300s timeout
 }
@@ -31,8 +33,10 @@ type CommandSpec struct {
 // registerCommand creates a cobra command from a CommandSpec and adds it to root.
 func registerCommand(spec CommandSpec) {
 	c := &cobra.Command{
-		Use:   spec.Name,
-		Short: spec.Short,
+		Use:     spec.Name,
+		Short:   spec.Short,
+		Long:    spec.Long,
+		Example: spec.Example,
 		GroupID: spec.Group,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			params, err := buildParams(cmd, spec)

@@ -11,6 +11,9 @@ var blueprintCommands = []CommandSpec{
 		Name:  "search_parent_classes",
 		Group: "blueprints",
 		Short: "Search for classes usable as Blueprint parents",
+		Long:  "Searches the engine and project class hierarchy for classes that can be used as Blueprint parents. Use this before create_blueprint to find the correct parent class name. Returns class names, module, and whether they are C++ or Blueprint-based.",
+		Example: `  ue-cli search_parent_classes --filter "Actor" --max-results 10
+  ue-cli search_parent_classes --filter "MassProcessor" --include-blueprint-classes=false`,
 		Params: []ParamSpec{
 			{Name: "filter", Type: "string", Required: true, Help: "Search filter"},
 			{Name: "max_results", Type: "int", Default: 20, Help: "Maximum results"},
@@ -21,6 +24,9 @@ var blueprintCommands = []CommandSpec{
 		Name:  "create_blueprint",
 		Group: "blueprints",
 		Short: "Create a Blueprint from any parent class",
+		Long:  "Creates a new Blueprint asset at the specified content path with the given parent class. The parent class can be a C++ class short name, a prefixed name, or a full Blueprint asset path. Use search_parent_classes first if you are unsure of the exact parent class name.",
+		Example: `  ue-cli create_blueprint --name "BP_ConveyorSplitter" --path "/Game/Blueprints/Logistics" --parent-class "InteractableActor"
+  ue-cli create_blueprint --name "BP_MinerT2" --parent-class "MinerActor"`,
 		Params: []ParamSpec{
 			{Name: "name", Type: "string", Required: true, Help: "Blueprint name"},
 			{Name: "path", Type: "string", Default: "/Game/Blueprints", Help: "Content path"},
@@ -31,6 +37,9 @@ var blueprintCommands = []CommandSpec{
 		Name:  "add_component_to_blueprint",
 		Group: "blueprints",
 		Short: "Add a component to Blueprint defaults",
+		Long:  "Adds a component of the specified class to a Blueprint's default component hierarchy. Use this to add mesh components, port components, collision, or any UActorComponent subclass. The component appears in the Blueprint's Components panel.",
+		Example: `  ue-cli add_component_to_blueprint --blueprint-path "/Game/Blueprints/BP_Smelter" --component-class "StaticMeshComponent" --component-name "OutputMesh"
+  ue-cli add_component_to_blueprint --blueprint-path "/Game/Blueprints/BP_Miner" --component-class "PortComponent"`,
 		Params: []ParamSpec{
 			{Name: "blueprint_path", Type: "string", Required: true, Help: "Blueprint asset path"},
 			{Name: "component_class", Type: "string", Required: true, Help: "Component class name"},
@@ -41,6 +50,9 @@ var blueprintCommands = []CommandSpec{
 		Name:  "get_blueprint_class_defaults",
 		Group: "blueprints",
 		Short: "Get all CDO property values",
+		Long:  "Reads all Class Default Object (CDO) property values from a Blueprint, including both C++ and Blueprint-defined properties. Use the filter parameter to narrow results when dealing with Blueprints that have many properties. Returns property names, types, and current values.",
+		Example: `  ue-cli get_blueprint_class_defaults --blueprint-path "/Game/Blueprints/BP_Smelter"
+  ue-cli get_blueprint_class_defaults --blueprint-path "/Game/Blueprints/BP_Miner" --filter "Power" --include-inherited=false`,
 		Params: []ParamSpec{
 			{Name: "blueprint_path", Type: "string", Required: true, Help: "Blueprint asset path"},
 			{Name: "filter", Type: "string", Help: "Filter property names"},
@@ -51,6 +63,9 @@ var blueprintCommands = []CommandSpec{
 		Name:  "set_blueprint_class_defaults",
 		Group: "blueprints",
 		Short: "Set CDO property values",
+		Long:  "Sets one or more Class Default Object (CDO) property values on a Blueprint. Supports single property mode (property-name + property-value) or batch mode (properties JSON object). Use get_blueprint_class_defaults first to inspect current values and verify property names.",
+		Example: `  ue-cli set_blueprint_class_defaults --blueprint-path "/Game/Blueprints/BP_Miner" --property-name "MiningRate" --property-value "2.0"
+  ue-cli set_blueprint_class_defaults --blueprint-path "/Game/Blueprints/BP_Smelter" --properties '{"PowerDraw": "50.0", "ProcessingTime": "4.0"}'`,
 		Params: []ParamSpec{
 			{Name: "blueprint_path", Type: "string", Required: true, Help: "Blueprint asset path"},
 			{Name: "property_name", Type: "string", Help: "Property name (single)"},
@@ -62,6 +77,8 @@ var blueprintCommands = []CommandSpec{
 		Name:  "compile_blueprint",
 		Group: "blueprints",
 		Short: "Compile a Blueprint",
+		Long:  "Compiles a Blueprint and reports any errors or warnings. Always compile after making structural changes such as adding nodes, variables, functions, or modifying the graph. Returns compilation status and any diagnostic messages.",
+		Example: `  ue-cli compile_blueprint --blueprint-name "BP_ConveyorSplitter"`,
 		Params: []ParamSpec{
 			{Name: "blueprint_name", Type: "string", Required: true, Help: "Blueprint name"},
 		},
@@ -70,6 +87,9 @@ var blueprintCommands = []CommandSpec{
 		Name:    "read_blueprint_content",
 		Group:   "blueprints",
 		Short:   "Read complete BP: graph, functions, variables, components",
+		Long:    "Reads the complete structure of a Blueprint including its event graph, functions, variables, components, and interfaces. This is a large operation that returns comprehensive data. Use the include flags to limit output to only the sections you need.",
+		Example: `  ue-cli read_blueprint_content --blueprint-path "/Game/Blueprints/BP_Manufacturer"
+  ue-cli read_blueprint_content --blueprint-path "/Game/Blueprints/BP_Miner" --include-functions=false --include-variables=false`,
 		LargeOp: true,
 		Params: []ParamSpec{
 			{Name: "blueprint_path", Type: "string", Required: true, Help: "Blueprint asset path"},
@@ -84,6 +104,9 @@ var blueprintCommands = []CommandSpec{
 		Name:    "analyze_blueprint_graph",
 		Group:   "blueprints",
 		Short:   "Analyze a graph (nodes, connections, execution flow)",
+		Long:    "Performs a detailed analysis of a Blueprint graph, including node inventory, pin connections, and execution flow tracing. Use this to understand how a Blueprint works before modifying it, or to debug execution paths. Defaults to the EventGraph but can target any named graph.",
+		Example: `  ue-cli analyze_blueprint_graph --blueprint-path "/Game/Blueprints/BP_Smelter"
+  ue-cli analyze_blueprint_graph --blueprint-path "/Game/Blueprints/BP_Miner" --graph-name "ProcessOre" --trace-execution-flow=true`,
 		LargeOp: true,
 		Params: []ParamSpec{
 			{Name: "blueprint_path", Type: "string", Required: true, Help: "Blueprint asset path"},
@@ -99,6 +122,9 @@ var blueprintCommands = []CommandSpec{
 		Name:  "create_blueprint_variable",
 		Group: "blueprints",
 		Short: "Create a variable in a Blueprint",
+		Long:  "Creates a new variable in a Blueprint with the specified type, category, and optional default value. Supports all UE types including primitives, structs, objects, and enums. The variable appears in the Blueprint's My Blueprint panel under the specified category.",
+		Example: `  ue-cli create_blueprint_variable --blueprint-name "BP_Smelter" --variable-name "ProcessingSpeed" --variable-type "Float" --category "Production" --is-public=true
+  ue-cli create_blueprint_variable --blueprint-name "BP_StorageContainer" --variable-name "MaxSlots" --variable-type "Integer" --default-value "20"`,
 		Params: []ParamSpec{
 			{Name: "blueprint_name", Type: "string", Required: true, Help: "Blueprint name"},
 			{Name: "variable_name", Type: "string", Required: true, Help: "Variable name"},
@@ -113,6 +139,9 @@ var blueprintCommands = []CommandSpec{
 		Name:  "get_blueprint_variable_details",
 		Group: "blueprints",
 		Short: "Inspect variable(s) in a Blueprint",
+		Long:  "Returns detailed information about one or all variables in a Blueprint, including type, default value, category, replication settings, and tooltip. Omit variable-name to list all variables.",
+		Example: `  ue-cli get_blueprint_variable_details --blueprint-path "/Game/Blueprints/BP_Smelter" --variable-name "ProcessingSpeed"
+  ue-cli get_blueprint_variable_details --blueprint-path "/Game/Blueprints/BP_Manufacturer"`,
 		Params: []ParamSpec{
 			{Name: "blueprint_path", Type: "string", Required: true, Help: "Blueprint asset path"},
 			{Name: "variable_name", Type: "string", Help: "Variable name (empty = all)"},
@@ -122,6 +151,9 @@ var blueprintCommands = []CommandSpec{
 		Name:  "set_blueprint_variable_properties",
 		Group: "blueprints",
 		Short: "Modify variable properties",
+		Long:  "Modifies properties of an existing Blueprint variable such as its name, type, default value, category, replication, and visibility. Use this to rename variables, change types, enable replication, or toggle instance editability. Only specified fields are changed; omitted fields remain unchanged.",
+		Example: `  ue-cli set_blueprint_variable_properties --blueprint-name "BP_Smelter" --variable-name "Speed" --var-name "ProcessingSpeed" --category "Production"
+  ue-cli set_blueprint_variable_properties --blueprint-name "BP_PowerPole" --variable-name "NetworkID" --replication-enabled=true --replication-condition 1`,
 		Params: []ParamSpec{
 			{Name: "blueprint_name", Type: "string", Required: true, Help: "Blueprint name"},
 			{Name: "variable_name", Type: "string", Required: true, Help: "Variable name"},
@@ -143,6 +175,9 @@ var blueprintCommands = []CommandSpec{
 		Name:  "create_blueprint_function",
 		Group: "blueprints",
 		Short: "Create a new function in a Blueprint",
+		Long:  "Creates a new function graph in a Blueprint with the specified name and optional return type. The function starts with an entry node and can be extended with add_function_input, add_function_output, and add_blueprint_node. Defaults to void return type.",
+		Example: `  ue-cli create_blueprint_function --blueprint-name "BP_Manufacturer" --function-name "CalculateEfficiency" --return-type "Float"
+  ue-cli create_blueprint_function --blueprint-name "BP_Smelter" --function-name "ResetProductionCycle"`,
 		Params: []ParamSpec{
 			{Name: "blueprint_name", Type: "string", Required: true, Help: "Blueprint name"},
 			{Name: "function_name", Type: "string", Required: true, Help: "Function name"},
@@ -153,6 +188,9 @@ var blueprintCommands = []CommandSpec{
 		Name:  "get_blueprint_function_details",
 		Group: "blueprints",
 		Short: "Inspect function(s) with graph",
+		Long:  "Returns detailed information about one or all functions in a Blueprint, including parameters, return type, and optionally the full graph with nodes and connections. Omit function-name to list all functions. Useful for understanding a Blueprint's API before modifying it.",
+		Example: `  ue-cli get_blueprint_function_details --blueprint-path "/Game/Blueprints/BP_Manufacturer" --function-name "CalculateEfficiency"
+  ue-cli get_blueprint_function_details --blueprint-path "/Game/Blueprints/BP_Smelter" --include-graph=false`,
 		Params: []ParamSpec{
 			{Name: "blueprint_path", Type: "string", Required: true, Help: "Blueprint asset path"},
 			{Name: "function_name", Type: "string", Help: "Function name (empty = all)"},
@@ -163,6 +201,9 @@ var blueprintCommands = []CommandSpec{
 		Name:  "add_function_input",
 		Group: "blueprints",
 		Short: "Add input parameter to a function",
+		Long:  "Adds an input parameter to an existing Blueprint function. Supports all UE types including primitives, structs, objects, and arrays. The parameter appears as an output pin on the function's entry node.",
+		Example: `  ue-cli add_function_input --blueprint-name "BP_Manufacturer" --function-name "SetRecipe" --param-name "RecipeData" --param-type "FRecipeData"
+  ue-cli add_function_input --blueprint-name "BP_Storage" --function-name "AddItems" --param-name "Items" --param-type "FStorageSlot" --is-array=true`,
 		Params: []ParamSpec{
 			{Name: "blueprint_name", Type: "string", Required: true, Help: "Blueprint name"},
 			{Name: "function_name", Type: "string", Required: true, Help: "Function name"},
@@ -175,6 +216,9 @@ var blueprintCommands = []CommandSpec{
 		Name:  "add_function_output",
 		Group: "blueprints",
 		Short: "Add output parameter to a function",
+		Long:  "Adds an output parameter to an existing Blueprint function. The parameter appears as an input pin on the function's return node. Multiple outputs create a struct-like return with named fields.",
+		Example: `  ue-cli add_function_output --blueprint-name "BP_Manufacturer" --function-name "GetProductionStats" --param-name "ItemsPerMinute" --param-type "Float"
+  ue-cli add_function_output --blueprint-name "BP_Storage" --function-name "GetContents" --param-name "Slots" --param-type "FStorageSlot" --is-array=true`,
 		Params: []ParamSpec{
 			{Name: "blueprint_name", Type: "string", Required: true, Help: "Blueprint name"},
 			{Name: "function_name", Type: "string", Required: true, Help: "Function name"},
@@ -187,6 +231,8 @@ var blueprintCommands = []CommandSpec{
 		Name:  "delete_blueprint_function",
 		Group: "blueprints",
 		Short: "Delete a function from a Blueprint",
+		Long:  "Deletes a function and its entire graph from a Blueprint. This is destructive and cannot be undone. Any calls to this function from other graphs will become broken nodes. Check references before deleting.",
+		Example: `  ue-cli delete_blueprint_function --blueprint-name "BP_Smelter" --function-name "OldCalculation"`,
 		Params: []ParamSpec{
 			{Name: "blueprint_name", Type: "string", Required: true, Help: "Blueprint name"},
 			{Name: "function_name", Type: "string", Required: true, Help: "Function name"},
@@ -196,6 +242,8 @@ var blueprintCommands = []CommandSpec{
 		Name:  "rename_blueprint_function",
 		Group: "blueprints",
 		Short: "Rename a function",
+		Long:  "Renames a function within a Blueprint. This updates the function graph name but does not automatically update call sites in other graphs or Blueprints. Compile the Blueprint afterward to verify all references resolve correctly.",
+		Example: `  ue-cli rename_blueprint_function --blueprint-name "BP_Manufacturer" --old-function-name "CalcSpeed" --new-function-name "CalculateProcessingSpeed"`,
 		Params: []ParamSpec{
 			{Name: "blueprint_name", Type: "string", Required: true, Help: "Blueprint name"},
 			{Name: "old_function_name", Type: "string", Required: true, Help: "Current function name"},
@@ -208,6 +256,9 @@ var blueprintCommands = []CommandSpec{
 		Name:  "add_blueprint_node",
 		Group: "blueprints",
 		Short: "Add a node to a Blueprint graph",
+		Long:  "Adds a node to a Blueprint's event graph or function graph. Supports 23+ node types including Branch, CallFunction, Print, ForEachLoop, MakeArray, Cast, and more. Use the function-name parameter to target a specific function graph instead of the EventGraph. Returns the new node's GUID for use with connect_blueprint_nodes.",
+		Example: `  ue-cli add_blueprint_node --blueprint-name "BP_Smelter" --node-type "Branch" --pos-x 400 --pos-y 200
+  ue-cli add_blueprint_node --blueprint-name "BP_Miner" --node-type "CallFunction" --target-function "StartMining" --pos-x 600 --pos-y 100`,
 		Params: []ParamSpec{
 			{Name: "blueprint_name", Type: "string", Required: true, Help: "Blueprint name"},
 			{Name: "node_type", Type: "string", Required: true, Help: "Node type (Branch, CallFunction, Print, etc.)"},
@@ -225,6 +276,9 @@ var blueprintCommands = []CommandSpec{
 		Name:  "add_event_node",
 		Group: "blueprints",
 		Short: "Add an event node (BeginPlay, Tick, etc.)",
+		Long:  "Adds an event node to a Blueprint's event graph. Common events include BeginPlay, Tick, EndPlay, ActorBeginOverlap, and any custom events. Each event type can only exist once per event graph. Returns the node GUID for wiring to other nodes.",
+		Example: `  ue-cli add_event_node --blueprint-name "BP_ConveyorBelt" --event-name "BeginPlay" --pos-x 0 --pos-y 0
+  ue-cli add_event_node --blueprint-name "BP_Manufacturer" --event-name "Tick"`,
 		Params: []ParamSpec{
 			{Name: "blueprint_name", Type: "string", Required: true, Help: "Blueprint name"},
 			{Name: "event_name", Type: "string", Required: true, Help: "Event name"},
@@ -236,6 +290,9 @@ var blueprintCommands = []CommandSpec{
 		Name:  "connect_blueprint_nodes",
 		Group: "blueprints",
 		Short: "Wire two nodes together",
+		Long:  "Creates a connection between an output pin on one node and an input pin on another. Use node GUIDs from add_blueprint_node or read_blueprint_content. Pin names must match exactly (e.g., \"then\" for execution, \"ReturnValue\" for outputs). Use the function-name parameter when connecting nodes inside a function graph.",
+		Example: `  ue-cli connect_blueprint_nodes --blueprint-name "BP_Smelter" --source-node-id "ABC123" --source-pin-name "then" --target-node-id "DEF456" --target-pin-name "execute"
+  ue-cli connect_blueprint_nodes --blueprint-name "BP_Miner" --source-node-id "ABC123" --source-pin-name "ReturnValue" --target-node-id "DEF456" --target-pin-name "Condition" --function-name "CheckPower"`,
 		Params: []ParamSpec{
 			{Name: "blueprint_name", Type: "string", Required: true, Help: "Blueprint name"},
 			{Name: "source_node_id", Type: "string", Required: true, Help: "Source node GUID"},
@@ -249,6 +306,9 @@ var blueprintCommands = []CommandSpec{
 		Name:  "delete_blueprint_node",
 		Group: "blueprints",
 		Short: "Delete a node by GUID",
+		Long:  "Deletes a single node from a Blueprint graph by its GUID. All connections to and from the node are automatically removed. Use read_blueprint_content or analyze_blueprint_graph to find node GUIDs. Specify function-name to target nodes inside a function graph.",
+		Example: `  ue-cli delete_blueprint_node --blueprint-name "BP_Smelter" --node-id "ABC123DEF456"
+  ue-cli delete_blueprint_node --blueprint-name "BP_Miner" --node-id "ABC123DEF456" --function-name "ProcessOre"`,
 		Params: []ParamSpec{
 			{Name: "blueprint_name", Type: "string", Required: true, Help: "Blueprint name"},
 			{Name: "node_id", Type: "string", Required: true, Help: "Node GUID"},
@@ -259,6 +319,9 @@ var blueprintCommands = []CommandSpec{
 		Name:  "set_blueprint_node_property",
 		Group: "blueprints",
 		Short: "Set node property or perform semantic editing",
+		Long:  "Sets a property on a Blueprint node or performs a semantic editing action. Supports direct property assignment (property-name + property-value) and semantic actions like add_pin, remove_pin, set_enum_type, change_pin_type, and set_function_reference. Use analyze_blueprint_graph to discover available properties on a node.",
+		Example: `  ue-cli set_blueprint_node_property --blueprint-name "BP_Smelter" --node-id "ABC123" --property-name "DefaultValue" --property-value "100.0"
+  ue-cli set_blueprint_node_property --blueprint-name "BP_Miner" --node-id "DEF456" --action "set_enum_type" --enum-type "EResourceType"`,
 		Params: []ParamSpec{
 			{Name: "blueprint_name", Type: "string", Required: true, Help: "Blueprint name"},
 			{Name: "node_id", Type: "string", Required: true, Help: "Node GUID"},
