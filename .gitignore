@@ -8,3 +8,11 @@ Content/
 dist/
 build/
 *.egg-info/
+
+# Go CLI build artifacts
+cli/ue-cli
+cli/ue-cli.exe
+cli/go.sum
+
+# Embedded plugin copy (built from Source/ at build time)
+cli/internal/project/plugin/
