@@ -1,26 +1,252 @@
-# UnrealMCP — Model Context Protocol Bridge for Unreal Engine 5
+# UnrealMCP — AI Bridge for Unreal Engine 5
 
-UnrealMCP exposes the Unreal Engine 5 editor to AI coding assistants (Claude Code, Cursor, Windsurf, etc.) through the [Model Context Protocol](https://modelcontextprotocol.io/). Drop it into any UE5 project's `Plugins/` folder and let your AI assistant create materials, blueprints, spawn actors, manage data tables, profile performance, and more — all without leaving your terminal.
+Control Unreal Engine 5 editor from AI coding assistants (Claude Code, Cursor, Windsurf, etc.). Create materials, blueprints, spawn actors, manage data tables, profile performance, and more — all without leaving your terminal.
 
-## How It Works
+**Two ways to use it:**
 
-UnrealMCP has two halves:
+| | CLI (new) | MCP Server |
+|---|---|---|
+| **Install** | `npm install -g unrealcli` | `pip install unrealmcp` |
+| **Dependencies** | None (single binary) | Python 3.10+ |
+| **Works with** | Claude Code (via Bash) | Claude Code, Cursor, Windsurf, VS Code, Gemini CLI, Rider, Zed, Amazon Q |
+| **Protocol** | Direct TCP | MCP over stdio |
 
-1. **C++ Editor Plugin** (`UnrealMCPBridge` module) — runs inside the UE5 editor as a TCP server. It receives JSON commands and executes them in-editor using Unreal's C++ API.
-2. **Python MCP Server** (`pip install unrealmcp`) — runs as a stdio process spawned by your AI tool. It translates MCP tool calls into TCP commands sent to the C++ bridge.
-
-```
-┌─────────────┐   stdio    ┌──────────────────┐   TCP/JSON    ┌──────────────────┐
-│ Claude Code  │ ────────► │  Python MCP       │ ────────────► │  C++ Bridge      │
-│ / Cursor     │ ◄──────── │  Server           │ ◄──────────── │  (in UE5 Editor) │
-└─────────────┘            └──────────────────┘                └──────────────────┘
-```
-
-The C++ bridge writes its TCP port to `Saved/UnrealMCP/port.txt` on startup. The Python server reads that file automatically — no manual port configuration needed.
+Both talk to the same C++ plugin inside the editor. Use whichever fits your workflow — or both.
 
 ---
 
-## Requirements
+## Quick Start
+
+### Option A: CLI (Recommended for Claude Code)
+
+```bash
+# 1. Install
+npm install -g unrealcli
+
+# 2. Go to any UE5 project and install the plugin
+cd YourProject/
+ue-cli init
+
+# 3. Open the editor, then verify
+ue-cli health_check
+```
+
+That's it. No Python, no config files, no MCP setup.
+
+### Option B: MCP Server (For Cursor, Windsurf, etc.)
+
+```bash
+# 1. Clone the plugin into your project
+git clone https://github.com/aadeshrao123/Unreal-MCP.git Plugins/UnrealMCP
+
+# 2. Install the Python MCP server
+pip install unrealmcp
+
+# 3. Add to your AI tool's config (see MCP Setup section below)
+```
+
+---
+
+## How It Works
+
+```
+                    ┌──────────────────────────────────────────┐
+                    │         Unreal Engine 5 Editor            │
+                    │                                          │
+                    │   C++ Plugin (UnrealMCPBridge)           │
+                    │   TCP server on localhost:55557           │
+                    │   163 commands: materials, blueprints,   │
+                    │   actors, data tables, profiling, etc.   │
+                    └──────────────┬───────────────────────────┘
+                                   │ TCP/JSON
+                    ┌──────────────┴───────────────────────────┐
+                    │                                          │
+          ┌─────────┴─────────┐              ┌─────────┴──────────┐
+          │   CLI (ue-cli)    │              │  MCP Server        │
+          │   Go binary       │              │  Python (unrealmcp)│
+          │   Direct TCP      │              │  stdio → TCP       │
+          │                   │              │                    │
+          │  Claude Code      │              │  Cursor, Windsurf, │
+          │  (via Bash tool)  │              │  VS Code, Rider... │
+          └───────────────────┘              └────────────────────┘
+```
+
+The C++ plugin runs inside the editor and exposes 163 commands over TCP. The CLI and MCP server are two different front doors to the same plugin.
+
+---
+
+## CLI Reference
+
+### Installation
+
+```bash
+# From npm (recommended)
+npm install -g unrealcli
+
+# Or download binary directly from GitHub Releases
+# https://github.com/aadeshrao123/Unreal-MCP/releases
+```
+
+**Platforms:** Windows (x64), macOS (Intel + Apple Silicon), Linux (x64 + ARM64)
+
+### Setup
+
+```bash
+# Navigate to your UE5 project
+cd MyProject/
+
+# Install the C++ plugin (one-time)
+ue-cli init
+# → Creates Plugins/UnrealMCP/ with C++ source
+# → Patches .uproject to enable the plugin
+# → Open editor to compile, then you're ready
+
+# Verify everything works
+ue-cli doctor
+```
+
+### Usage
+
+```bash
+# Every command follows this pattern:
+ue-cli <command> [--flag value]
+
+# Examples:
+ue-cli health_check
+ue-cli find_assets --class-type material --path /Game
+ue-cli spawn_actor --name MyCube --type StaticMeshActor --location "[0,0,100]"
+ue-cli get_data_table_rows --data-table-path /Game/Data/DT_Items
+ue-cli save_all
+
+# For complex params, use --json:
+ue-cli build_material_graph --json '{"material_path":"/Game/M_Test","nodes":[...],"connections":[...]}'
+
+# Or pipe from stdin:
+echo '{"material_path":"/Game/M_Test","nodes":[...]}' | ue-cli build_material_graph --json -
+```
+
+### Help & Discovery
+
+```bash
+# See all commands grouped by category
+ue-cli --help
+
+# See flags for a specific command
+ue-cli find_assets --help
+
+# Dump all commands with descriptions, flags, and examples (for AI assistants)
+ue-cli list_commands
+```
+
+### Global Flags
+
+| Flag | Description |
+|------|-------------|
+| `--port <int>` | TCP port override (default: auto-discover from port file) |
+| `--timeout <int>` | Timeout in seconds (default: 30, large ops: 300) |
+| `--json <string>` | Full params as JSON string (use `-` for stdin) |
+| `--version` | Print version |
+
+### Key Commands
+
+#### Assets
+```bash
+ue-cli find_assets --class-type material --path /Game/Materials
+ue-cli list_assets --path /Game --class-filter blueprint
+ue-cli get_asset_properties --asset-path /Game/Materials/M_Base
+ue-cli import_asset --source-file "C:/Art/texture.png" --destination-path /Game/Textures
+ue-cli save_asset --asset-path /Game/Materials/M_Base
+ue-cli save_all
+```
+
+#### Blueprints
+```bash
+ue-cli create_blueprint --name BP_MyActor --parent-class Actor
+ue-cli add_component_to_blueprint --blueprint-path /Game/BP_MyActor --component-class StaticMeshComponent
+ue-cli add_event_node --blueprint-name BP_MyActor --event-name BeginPlay
+ue-cli compile_blueprint --blueprint-name BP_MyActor
+ue-cli read_blueprint_content --blueprint-path /Game/BP_MyActor
+```
+
+#### Materials
+```bash
+ue-cli create_material --name M_Red --path /Game/Materials
+ue-cli build_material_graph --material-path /Game/Materials/M_Red \
+  --nodes '[{"type":"Constant3Vector","pos_x":-400,"properties":{"Constant":"(R=1,G=0,B=0)"}}]' \
+  --connections '[{"from_node":0,"to_node":"material","to_pin":"BaseColor"}]'
+ue-cli create_material_instance --parent-path /Game/Materials/M_Base --name MI_Red
+```
+
+#### Data Tables
+```bash
+ue-cli get_data_table_schema --data-table-path /Game/Data/DT_Items
+ue-cli get_data_table_rows --data-table-path /Game/Data/DT_Items
+ue-cli add_data_table_row --data-table-path /Game/Data/DT_Items --row-name CopperOre \
+  --data '{"DisplayName":"Copper Ore","StackSize":100}'
+ue-cli update_data_table_row --data-table-path /Game/Data/DT_Items --row-name CopperOre \
+  --data '{"StackSize":200}'
+```
+
+#### Actors & Level
+```bash
+ue-cli get_actors_in_level
+ue-cli spawn_actor --name MyCube --type StaticMeshActor --location "[0,0,100]"
+ue-cli spawn_blueprint_actor --blueprint-path /Game/BP_MyActor --location "[500,0,0]"
+ue-cli find_actors_by_name --pattern "Light"
+ue-cli get_world_info
+ue-cli take_screenshot
+```
+
+#### Performance Profiling
+```bash
+# Record → Stop → Analyze
+ue-cli performance_start_trace --channels "cpu,gpu,frame"
+# ... play the game ...
+ue-cli performance_stop_trace
+ue-cli performance_analyze_insight --query diagnose
+ue-cli performance_analyze_insight --query flame --count 20
+ue-cli performance_analyze_insight --query search --filter "ConveyorProcessor"
+```
+
+#### Enhanced Input
+```bash
+ue-cli create_input_action --asset-path /Game/Input/IA_Jump --value-type Boolean
+ue-cli create_input_mapping_context --asset-path /Game/Input/IMC_Default
+ue-cli add_key_mapping --context-path /Game/Input/IMC_Default --action-path /Game/Input/IA_Jump --key SpaceBar
+```
+
+#### Widgets (UMG)
+```bash
+ue-cli get_widget_tree --widget-blueprint-path /Game/UI/WBP_HUD
+ue-cli add_widget --widget-blueprint-path /Game/UI/WBP_HUD --widget-class TextBlock \
+  --parent-widget-name RootCanvas --widget-name TitleText \
+  --widget-properties '{"Text":"Hello World"}'
+```
+
+### Diagnostics
+
+```bash
+# Check entire setup
+ue-cli doctor
+
+# Output:
+#   [ok] Project            MyProject/MyProject.uproject
+#   [ok] Plugin directory   Plugins/UnrealMCP/ exists
+#   [ok] Plugin source      Source/UnrealMCPBridge/ exists
+#   [ok] UProject entry     UnrealMCP plugin listed and enabled
+#   [ok] Port file          port 55557
+#   [ok] TCP connection     Connected to 127.0.0.1:55557
+#   [ok] Health check       Bridge is responsive
+#   All checks passed. ue-cli is ready to use.
+```
+
+---
+
+## MCP Server Setup
+
+For AI tools that use the Model Context Protocol (Cursor, Windsurf, VS Code, etc.).
+
+### Requirements
 
 - **Unreal Engine 5.7** (tested on 5.7, may work on earlier 5.x versions)
 - **Python 3.10+**
@@ -29,28 +255,15 @@ The C++ bridge writes its TCP port to `Saved/UnrealMCP/port.txt` on startup. The
   - `EditorScriptingUtilities`
   - `EnhancedInput`
 
----
-
-## Setup
-
-There are two parts to UnrealMCP:
-
-1. **C++ Plugin** — lives inside your project or engine `Plugins/` folder. You get this by cloning the repo.
-2. **Python MCP Server** — a global `pip` package. Install once, works everywhere.
-
-### Step 1: Clone the Plugin
+### Install
 
 ```bash
-# Into your project
-git clone https://github.com/aadeshrao123/Unreal-MCP.git Plugins/UnrealMCP
-
-# OR into your engine (shared across all projects using this engine version)
-git clone https://github.com/aadeshrao123/Unreal-MCP.git "C:/Program Files/Epic Games/UE_5.5/Engine/Plugins/Marketplace/UnrealMCP"
+pip install unrealmcp
 ```
 
-### Step 2: Run the Setup Script
+### Setup Script (Alternative to Manual Config)
 
-The setup script installs the `unrealmcp` pip package and creates the MCP config for your AI tool.
+The setup script installs the `unrealmcp` pip package and creates the MCP config for your AI tool automatically.
 
 **Windows:**
 ```cmd
@@ -64,88 +277,14 @@ cd Plugins/UnrealMCP
 bash install.sh
 ```
 
-You can run the script from anywhere inside your project — it automatically detects the project root by searching upward for the `.uproject` file.
-
-### How Scope Works
-
-The setup script asks where to create the MCP config:
+The script asks where to create the MCP config:
 
 | Scope | What it does | When to use |
 |-------|-------------|-------------|
-| **Project** | Creates config in your project root (e.g., `.mcp.json` next to your `.uproject`) | You only want UnrealMCP in this one project |
-| **Global** | Creates config in your user folder (e.g., `~/.claude.json`) | You want UnrealMCP available in all projects |
+| **Project** | Creates config next to your `.uproject` | Only want UnrealMCP in this project |
+| **Global** | Creates config in your user folder | Want UnrealMCP in all projects |
 
-**If you run the script from inside an engine folder** (e.g., `Engine/Plugins/...`), it only offers global scope — because engine-level plugins are shared across projects, so project-scope config doesn't make sense there.
-
-**If you run it from inside a project** (anywhere under a folder with a `.uproject`), you get to choose between project scope and global scope.
-
-### Manual Setup (Without the Script)
-
-If you prefer to set things up yourself:
-
-```bash
-# Install the MCP server globally
-pip install unrealmcp
-
-# Add to your AI tool's config (example for Claude Code .mcp.json):
-# { "mcpServers": { "unreal": { "type": "stdio", "command": "unrealmcp" } } }
-```
-
-See [Step 5: Configure Your AI Tool](#step-5-configure-your-ai-tool) for the exact config format for each AI tool.
-
----
-
-## Manual Installation
-
-### Step 1: Copy the Plugin
-
-Copy the `UnrealMCP/` folder into your project's `Plugins/` directory:
-
-```
-YourProject/
-├── Content/
-├── Source/
-├── Plugins/
-│   └── UnrealMCP/          ← put it here
-│       ├── UnrealMCP.uplugin
-│       ├── unrealmcp/           # Python MCP server (pip package)
-│       └── Source/              # C++ bridge
-└── YourProject.uproject
-```
-
-### Step 2: Install Python Dependencies
-
-```bash
-pip install unrealmcp
-```
-
-### Step 3: Regenerate Project Files
-
-If you use Visual Studio or Rider, regenerate your project files so the new module is picked up:
-
-```bash
-# Windows (adjust path to your engine)
-"<EnginePath>/Engine/Binaries/DotNET/UnrealBuildTool/UnrealBuildTool.exe" \
-    -projectfiles \
-    -project="<YourProject>/YourProject.uproject" \
-    -game -engine
-```
-
-### Step 4: Build and Launch the Editor
-
-Build your project and open the editor. You should see this in the Output Log:
-
-```
-LogUnrealMCPBridge: MCP Bridge initialized on port 55557
-```
-
-This confirms the C++ bridge is running and ready for connections.
-
-### Step 5: Configure Your AI Tool
-
-Each AI tool uses a slightly different config file and format. After installing via `pip install unrealmcp`, pick your tool below.
-
-> **Tip:** Since `unrealmcp` is a global pip command, the same config works on Windows, macOS, and Linux — no platform-specific paths needed.
+### Configure Your AI Tool
 
 <details>
 <summary><b>Claude Code</b> — <code>.mcp.json</code> (project root)</summary>
@@ -155,26 +294,21 @@ Each AI tool uses a slightly different config file and format. After installing 
   "mcpServers": {
     "unreal": {
       "type": "stdio",
-      "command": "unrealmcp",
-      "args": [],
-      "env": {}
+      "command": "unrealmcp"
     }
   }
 }
 ```
-Claude Code is the only tool that requires `"type": "stdio"` explicitly.
 </details>
 
 <details>
-<summary><b>Cursor</b> — <code>.cursor/mcp.json</code> (project root)</summary>
+<summary><b>Cursor</b> — <code>.cursor/mcp.json</code></summary>
 
 ```json
 {
   "mcpServers": {
     "unreal": {
-      "command": "unrealmcp",
-      "args": [],
-      "env": {}
+      "command": "unrealmcp"
     }
   }
 }
@@ -182,32 +316,27 @@ Claude Code is the only tool that requires `"type": "stdio"` explicitly.
 </details>
 
 <details>
-<summary><b>VS Code / Copilot</b> — <code>.vscode/mcp.json</code> (project root)</summary>
+<summary><b>VS Code / Copilot</b> — <code>.vscode/mcp.json</code></summary>
 
 ```json
 {
   "servers": {
     "unreal": {
-      "command": "unrealmcp",
-      "args": [],
-      "env": {}
+      "command": "unrealmcp"
     }
   }
 }
 ```
-Note: VS Code uses `"servers"`, not `"mcpServers"`.
 </details>
 
 <details>
-<summary><b>Windsurf</b> — <code>~/.codeium/windsurf/mcp_config.json</code> (user-level)</summary>
+<summary><b>Windsurf</b> — <code>~/.codeium/windsurf/mcp_config.json</code></summary>
 
 ```json
 {
   "mcpServers": {
     "unreal": {
-      "command": "unrealmcp",
-      "args": [],
-      "env": {}
+      "command": "unrealmcp"
     }
   }
 }
@@ -215,15 +344,13 @@ Note: VS Code uses `"servers"`, not `"mcpServers"`.
 </details>
 
 <details>
-<summary><b>Gemini CLI</b> — <code>.gemini/settings.json</code> (project root)</summary>
+<summary><b>Gemini CLI</b> — <code>.gemini/settings.json</code></summary>
 
 ```json
 {
   "mcpServers": {
     "unreal": {
-      "command": "unrealmcp",
-      "args": [],
-      "env": {}
+      "command": "unrealmcp"
     }
   }
 }
@@ -231,281 +358,217 @@ Note: VS Code uses `"servers"`, not `"mcpServers"`.
 </details>
 
 <details>
-<summary><b>JetBrains / Rider</b> — <code>.junie/mcp/mcp.json</code> (project root)</summary>
+<summary><b>JetBrains / Rider</b> — <code>.junie/mcp/mcp.json</code></summary>
 
 ```json
 {
   "servers": [
     {
       "name": "unreal",
-      "command": "unrealmcp",
-      "args": [],
-      "env": {}
+      "command": "unrealmcp"
     }
   ]
 }
 ```
-Note: JetBrains uses `"servers"` as an **array** with a `"name"` field. Requires IDE 2025.1+ with AI Assistant.
 </details>
 
 <details>
 <summary><b>Zed</b> — <code>~/.config/zed/settings.json</code></summary>
 
-Add to your Zed `settings.json`:
 ```json
 {
   "context_servers": {
     "unreal": {
       "source": "custom",
-      "command": {
-        "path": "unrealmcp",
-        "args": [],
-        "env": {}
-      }
+      "command": { "path": "unrealmcp" }
     }
   }
 }
 ```
-Note: Zed uses `"context_servers"` with a nested `"command"` object.
 </details>
 
 <details>
-<summary><b>Amazon Q</b> — <code>.amazonq/mcp.json</code> (project root)</summary>
+<summary><b>Amazon Q</b> — <code>.amazonq/mcp.json</code></summary>
 
 ```json
 {
   "mcpServers": {
     "unreal": {
-      "command": "unrealmcp",
-      "args": [],
-      "env": {}
+      "command": "unrealmcp"
     }
   }
 }
 ```
 </details>
 
-### Step 6: Verify
-
-Open your AI tool (e.g., Claude Code) in the project directory. The MCP server will auto-connect to the editor. You can verify with:
-
-```
-> Use the health_check tool
-```
-
-If it returns successfully, you're connected.
-
 ---
 
-## Configuration (Optional)
+## All 163 Commands
 
-### Custom Port
+### Core (2)
+| Command | Description |
+|---------|-------------|
+| `health_check` | Verify the bridge is running |
+| `execute_python` | Run arbitrary Python in the editor |
 
-Add to `Config/DefaultEngine.ini`:
+### Asset Management (16)
+| Command | Description |
+|---------|-------------|
+| `find_assets` | Search Asset Registry by class/path/name |
+| `list_assets` | List assets in a directory |
+| `get_asset_info` | Asset metadata |
+| `get_asset_properties` | All editable properties |
+| `set_asset_property` | Set a property |
+| `find_references` | Find dependents/dependencies |
+| `import_asset` | Import external file (PNG, FBX, etc.) |
+| `import_assets_batch` | Batch import |
+| `duplicate_asset` | Copy to new location |
+| `rename_asset` | Rename/move (auto-fix references) |
+| `delete_asset` | Delete (checks references) |
+| `save_asset` / `save_all` | Save dirty assets |
+| `open_asset` | Open in editor |
+| `sync_browser` | Navigate Content Browser |
+| `get_selected_assets` | Currently selected assets |
 
-```ini
-[UnrealMCP]
-Port=55557
-```
+### Blueprints (22)
+| Command | Description |
+|---------|-------------|
+| `search_parent_classes` | Find valid parent classes |
+| `create_blueprint` | Create from any parent class |
+| `compile_blueprint` | Compile |
+| `read_blueprint_content` | Full structure readout |
+| `analyze_blueprint_graph` | Graph analysis |
+| `add_component_to_blueprint` | Add component |
+| `create/get/set_blueprint_variable` | Variable management |
+| `set_blueprint_variable_properties` | Modify variable settings |
+| `create/delete/rename_blueprint_function` | Function management |
+| `add_function_input/output` | Function parameters |
+| `get_blueprint_function_details` | Function inspection |
+| `get/set_blueprint_class_defaults` | CDO properties |
+| `add_blueprint_node` | Add graph node (23+ types) |
+| `add_event_node` | Add event (BeginPlay, Tick, etc.) |
+| `connect_blueprint_nodes` | Wire nodes together |
+| `delete_blueprint_node` | Remove node |
+| `set_blueprint_node_property` | Edit node properties |
 
-The bridge scans up to 100 ports from this base if the default is taken (useful when running multiple editor instances).
+### Materials (34)
+| Command | Description |
+|---------|-------------|
+| `create_material` | Create with blend/shading mode |
+| `create_material_instance` | Create with parameter overrides |
+| `build_material_graph` | Build complete node graph atomically |
+| `get_material_info` | Inspect properties/params/textures |
+| `set_material_properties` | Bulk-set material properties |
+| `add/delete/move/duplicate_material_expression` | Manage nodes |
+| `connect_material_expressions` | Wire nodes |
+| `set_material_expression_property` | Set node property |
+| `disconnect_material_expression` | Break connection |
+| `layout_material_expressions` | Auto-layout |
+| `recompile_material` | Force recompile |
+| `get_material_errors` | Compilation errors |
+| `get/set_material_instance_parameter` | MI parameter overrides |
+| `list_material_expression_types` | Discover node types |
+| `get_expression_type_info` | Node pins & properties |
+| `search_material_functions` | Find Material Functions |
+| `validate_material_graph` | Diagnose issues |
+| `trace_material_connection` | Trace data flow |
+| `cleanup_material_graph` | Remove orphaned nodes |
+| `add_material_comments` | Comment boxes |
+| `create/get_material_function` | Material Function management |
+| `build_material_function_graph` | Build MF graph |
+| `add/set_material_function_input/output` | MF pins |
+| `validate/cleanup_material_function` | MF diagnostics |
+| `apply_material_to_actor/blueprint` | Apply materials |
+| `get_available_materials` | List materials |
+| `get_actor/blueprint_material_info` | Material slot info |
 
-### Environment Variable Override
+### Data Tables (8)
+| Command | Description |
+|---------|-------------|
+| `get_data_table_schema` | Column names and types |
+| `get_data_table_rows` / `get_data_table_row` | Read rows |
+| `add_data_table_row` | Add with initial data |
+| `update_data_table_row` | Partial update |
+| `delete_data_table_row` | Delete row |
+| `duplicate_data_table_row` | Copy row |
+| `rename_data_table_row` | Rename row |
 
-```bash
-set UNREAL_MCP_PORT=55560
-```
+### Data Assets (9)
+| Command | Description |
+|---------|-------------|
+| `create_data_asset` | Create any UDataAsset subclass |
+| `get/set_data_asset_property(ies)` | Read/write properties |
+| `list_data_assets` | Browse by path/class |
+| `list_data_asset_classes` | Discover classes |
+| `get_property_valid_types` | Valid dropdown values |
+| `search_class_paths` | Find class paths |
+| `get_mass_config_traits` | Mass Entity traits |
 
-Forces the Python server to connect to a specific port instead of reading from `port.txt`.
+### Actors & Level (19)
+| Command | Description |
+|---------|-------------|
+| `spawn_actor` | Spawn built-in actor types |
+| `spawn_blueprint_actor` | Spawn BP actor |
+| `spawn_actor_from_class` | Spawn from class name |
+| `get_actors_in_level` | List all actors |
+| `find_actors_by_name` | Search by name pattern |
+| `get_actor_properties` | Read actor properties |
+| `set_actor_transform` | Set location/rotation/scale |
+| `delete_actor` | Remove from level |
+| `get_selected_actors` | Viewport selection |
+| `get_world_info` | Level info |
+| `set_static_mesh_properties` | Mesh assignment |
+| `set_physics_properties` | Physics config |
+| `set_mesh_material_color` | Material color |
+| `apply_material_to_actor/blueprint` | Apply material |
+| `get_actor/blueprint_material_info` | Material slots |
+| `get_available_materials` | List materials |
+| `take_screenshot` | Capture viewport |
 
-### Token Debug Mode
+### Enhanced Input (21)
+| Command | Description |
+|---------|-------------|
+| `create_input_action` | Create UInputAction |
+| `get/set_input_action_properties` | Action properties |
+| `add/remove_input_action_trigger` | Action triggers |
+| `add/remove_input_action_modifier` | Action modifiers |
+| `list_input_actions` | Browse actions |
+| `create_input_mapping_context` | Create UInputMappingContext |
+| `get_input_mapping_context` | Read mappings |
+| `add/remove/set_key_mapping` | Key bindings |
+| `add/remove_mapping_trigger/modifier` | Per-mapping overrides |
+| `list_input_mapping_contexts` | Browse contexts |
+| `list_trigger_types` / `list_modifier_types` | Discover types |
+| `list_input_keys` | Valid key names |
 
-Enable to see estimated token usage per command (useful for optimizing MCP calls):
+### Widgets — UMG (11)
+| Command | Description |
+|---------|-------------|
+| `get_widget_tree` | Widget hierarchy |
+| `add_widget` | Add to parent |
+| `remove/move/rename/duplicate_widget` | Widget operations |
+| `get/set_widget_properties` | Widget properties |
+| `get/set_slot_properties` | Layout slot properties |
+| `list_widget_types` | Available widget classes |
 
-```
-> Use set_mcp_debug with enabled=true
-> Use get_mcp_token_stats to see per-command statistics
-```
+### Performance Profiling (3)
+| Command | Description |
+|---------|-------------|
+| `performance_start_trace` | Start recording .utrace |
+| `performance_stop_trace` | Stop and auto-load |
+| `performance_analyze_insight` | Smart analysis (diagnose, spikes, flame, hotpath, search, histogram, etc.) |
 
----
-
-## Available Tools
-
-UnrealMCP provides **100+ tools** organized by category. Here's a summary of what you can do:
-
-### Core
-
-| Tool | Description |
-|------|-------------|
-| `health_check` | Verify the bridge is running and responsive |
-| `execute_python` | Run arbitrary Python in the editor (set `result` to return data) |
-
-### Asset Management
-
-| Tool | Description |
-|------|-------------|
-| `find_assets` | Search the Asset Registry by class, path, or name pattern |
-| `list_assets` | List assets in a Content Browser directory |
-| `get_asset_info` | Get asset metadata (class, package, disk path) |
-| `get_asset_properties` | Read all editable properties of any asset |
-| `set_asset_property` | Set a single property on any asset |
-| `find_references` | Find dependents or dependencies of an asset |
-| `import_asset` | Import an external file (FBX, PNG, WAV, etc.) |
-| `import_assets_batch` | Batch import from a file list or directory scan |
-| `duplicate_asset` | Copy an asset to a new location |
-| `rename_asset` | Rename/move an asset (auto-fixes references) |
-| `delete_asset` | Delete an asset (checks for references first) |
-| `save_asset` / `save_all` | Save one or all dirty assets |
-| `open_asset` | Open an asset in the editor |
-| `sync_browser` | Navigate Content Browser to an asset |
-| `get_selected_assets` | Get currently selected Content Browser assets |
-
-### Blueprints
-
-| Tool | Description |
-|------|-------------|
-| `search_parent_classes` | Find valid parent classes for Blueprint creation |
-| `create_blueprint` | Create a Blueprint from any C++ or BP parent class |
-| `compile_blueprint` | Compile a Blueprint |
-| `read_blueprint_content` | Read full BP structure: graphs, variables, components |
-| `add_component_to_blueprint` | Add a component (StaticMesh, Box Collision, etc.) |
-| `create_blueprint_variable` | Create a variable in a Blueprint |
-| `get/set_blueprint_class_defaults` | Read/write Class Default Object (CDO) properties |
-| `get/set_blueprint_variable_properties` | Inspect/modify variable settings |
-| `create/delete/rename_blueprint_function` | Manage Blueprint functions |
-| `add_function_input` / `add_function_output` | Add parameters to functions |
-| `get_blueprint_function_details` | Inspect function signatures and graphs |
-
-### Blueprint Graph
-
-| Tool | Description |
-|------|-------------|
-| `add_blueprint_node` | Add a node (Branch, ForLoop, CallFunction, Print, etc.) |
-| `add_event_node` | Add an event (BeginPlay, Tick, ActorBeginOverlap, etc.) |
-| `connect_blueprint_nodes` | Wire two nodes together (execution or data pins) |
-| `delete_blueprint_node` | Remove a node by ID |
-| `set_blueprint_node_property` | Edit node properties (add pins, set enum, etc.) |
-| `analyze_blueprint_graph` | Get structural analysis of a graph |
-
-### Materials
-
-| Tool | Description |
-|------|-------------|
-| `create_material` | Create a new material with blend/shading mode |
-| `create_material_instance` | Create a Material Instance with parameter overrides |
-| `build_material_graph` | Build a complete node graph atomically (nodes + connections) |
-| `get_material_info` | Inspect material properties, parameters, textures |
-| `set_material_properties` | Set blend mode, shading model, two-sided, etc. |
-| `add/delete/move/duplicate_material_expression` | Manage expression nodes |
-| `connect_material_expressions` | Wire expression outputs to inputs |
-| `set_material_expression_property` | Set properties on expression nodes |
-| `layout_material_expressions` | Auto-layout expression nodes |
-| `recompile_material` | Force recompile and save |
-| `get/set_material_instance_parameter` | Read/write MI parameter overrides |
-| `list_material_expression_types` | Discover available expression types |
-| `add_material_comments` | Add comment boxes to the material graph |
-| `apply_material_to_actor` / `apply_material_to_blueprint` | Apply materials |
-| `get_available_materials` | List materials in project or engine |
-
-### Data Tables
-
-| Tool | Description |
-|------|-------------|
-| `get_data_table_schema` | Get column names and types from the row struct |
-| `get_data_table_rows` / `get_data_table_row` | Read all or one row |
-| `add_data_table_row` | Add a row with optional initial data |
-| `update_data_table_row` | Partial update of row fields |
-| `delete_data_table_row` | Delete a row |
-| `duplicate_data_table_row` | Copy a row under a new name |
-| `rename_data_table_row` | Rename a row in-place |
-
-### Data Assets
-
-| Tool | Description |
-|------|-------------|
-| `create_data_asset` | Create any UDataAsset subclass with initial properties |
-| `get_data_asset_properties` | Read all properties (with optional filter) |
-| `set_data_asset_property` / `set_data_asset_properties` | Set one or many properties |
-| `list_data_assets` | Browse by path or class |
-| `list_data_asset_classes` | List all loaded UDataAsset subclasses |
-| `get_property_valid_types` | Query valid dropdown/enum values for a property |
-
-### Actors & Level
-
-| Tool | Description |
-|------|-------------|
-| `spawn_actor` | Spawn an actor (StaticMeshActor, PointLight, etc.) |
-| `spawn_blueprint_actor` | Spawn a Blueprint actor instance in the level |
-| `get_actors_in_level` | List all actors in the current level |
-| `find_actors_by_name` | Find actors by name pattern |
-| `get_actor_properties` | Read all properties from a placed actor |
-| `set_actor_transform` | Set location, rotation, and/or scale |
-| `delete_actor` | Delete an actor from the level |
-| `get_selected_actors` | Get currently selected viewport actors |
-| `get_world_info` | Get level name, actor count, etc. |
-| `set_static_mesh_properties` | Set mesh on a component |
-| `set_physics_properties` | Configure physics simulation |
-| `set_mesh_material_color` | Set material color on a mesh component |
-| `take_screenshot` | Capture viewport or editor window to PNG |
-
-### Enhanced Input
-
-| Tool | Description |
-|------|-------------|
-| `create_input_action` | Create a UInputAction (Boolean/Axis1D/2D/3D) |
-| `get/set_input_action_properties` | Read/write action properties |
-| `add/remove_input_action_trigger` | Manage triggers (Hold, Pressed, Tap, etc.) |
-| `add/remove_input_action_modifier` | Manage modifiers (DeadZone, Negate, Scalar, etc.) |
-| `create_input_mapping_context` | Create a UInputMappingContext |
-| `get_input_mapping_context` | Read all key mappings |
-| `add/remove/set_key_mapping` | Manage key-to-action mappings |
-| `add/remove_mapping_trigger` / `add/remove_mapping_modifier` | Per-mapping overrides |
-| `list_input_actions` / `list_input_mapping_contexts` | Browse input assets |
-| `list_trigger_types` / `list_modifier_types` / `list_input_keys` | Discover available types |
-
-### Widgets (UMG)
-
-| Tool | Description |
-|------|-------------|
-| `get_widget_tree` | Read full widget hierarchy as JSON |
-| `add_widget` | Add a widget to a parent slot |
-| `remove_widget` / `move_widget` / `rename_widget` / `duplicate_widget` | Manage widgets |
-| `get/set_widget_properties` | Read/write widget properties |
-| `get/set_slot_properties` | Read/write layout slot properties |
-| `list_widget_types` | Discover available UWidget classes |
-
-### Performance Profiling
-
-| Tool | Description |
-|------|-------------|
-| `performance_start_trace` | Start recording a live `.utrace` (CPU, GPU, frame, etc.) |
-| `performance_stop_trace` | Stop recording and auto-load for analysis |
-| `performance_analyze_insight` | Query loaded traces with smart analysis |
-
-**Smart analysis queries:**
-- `diagnose` — full automated report with severity findings
-- `spikes` — worst frames with category breakdown
-- `flame` — top timers by exclusive (self) time
-- `bottlenecks` — auto-categorize frame into Animation/Slate/Network/etc.
-- `hotpath` — drill into a category's children by time
-- `compare` — compare a frame vs trace median
-- `search` — find a timer across all frames (min/avg/max/p95/p99)
-- `histogram` — frame time distribution
-
-**Standard queries:** `summary`, `worst_frames`, `frame_details`, `timer_stats`, `butterfly`, `threads`, `counters`
-
-**Provider queries** (require specific trace channels): `net_stats`, `loading`, `logs`, `memory`, `regions`, `bookmarks`, `session`, `modules`, `file_io`, `tasks`, `allocations`, `context_switches`, `screenshots`, `stack_samples`
-
-### Debug
-
-| Tool | Description |
-|------|-------------|
-| `set_mcp_debug` | Enable/disable token estimation debug headers |
-| `get_mcp_token_stats` | Per-command token usage statistics |
+### Debug (2)
+| Command | Description |
+|---------|-------------|
+| `set_mcp_debug` | Enable token tracking |
+| `get_mcp_token_stats` | Token usage stats |
 
 ---
 
 ## Usage Examples
+
+These work with both the CLI and MCP server. With the CLI, the AI calls `ue-cli` via Bash. With MCP, the AI calls tools directly.
 
 ### Create a Material
 
@@ -554,86 +617,82 @@ The AI will call `get_data_table_schema`, then `add_data_table_row` with the app
 
 ---
 
+## Configuration
+
+### Custom Port
+
+Add to `Config/DefaultEngine.ini`:
+```ini
+[UnrealMCP]
+Port=55557
+```
+
+### Environment Variable
+
+```bash
+# Force a specific port (overrides port file)
+set UNREAL_MCP_PORT=55560
+```
+
+### Multiple Editor Instances
+
+Each editor picks a unique port automatically. The CLI and MCP server read the port from `Saved/UnrealMCP/port.txt`. Use `--port` flag or `UNREAL_MCP_PORT` env var to target a specific instance.
+
+---
+
 ## Architecture
 
 ### Plugin Structure
 
 ```
 Plugins/UnrealMCP/
-├── UnrealMCP.uplugin                  # Plugin manifest
-├── pyproject.toml                     # pip package config
-├── unrealmcp/                         # Python MCP server (pip install unrealmcp)
-│   ├── __init__.py                    # Entry point (unrealmcp command)
-│   ├── _bridge.py                     # Shared FastMCP instance
-│   ├── _tcp_bridge.py                 # TCP communication layer
-│   └── tools/                         # Tool modules (one per category)
-│       ├── __init__.py
-│       ├── core.py                    # health_check, execute_python
-│       ├── assets.py                  # Asset management
-│       ├── blueprints.py              # Blueprint creation & components
-│       ├── blueprint_graph.py         # Graph node manipulation
-│       ├── materials.py               # Material creation & graphs
-│       ├── editor_commands.py         # Actors, physics, screenshots
-│       ├── data_tables.py             # Data Table CRUD
-│       ├── data_assets.py             # Data Asset CRUD
-│       ├── widgets.py                 # Widget tree manipulation
-│       ├── enhanced_input.py          # Input Actions & Mapping Contexts
-│       ├── level.py                   # Level info & actor selection
-│       ├── profiling.py               # Performance tracing & analysis
-│       └── debug.py                   # Token stats & debug mode
-└── Source/UnrealMCPBridge/
-    ├── Public/
-    │   ├── EpicUnrealMCPBridge.h      # Main subsystem (UEditorSubsystem)
-    │   ├── MCPServerRunnable.h        # TCP server thread
-    │   └── Commands/                  # Command handler headers
-    └── Private/
-        ├── EpicUnrealMCPBridge.cpp    # Subsystem implementation
-        ├── EpicUnrealMCPModule.cpp    # Module startup
-        ├── MCPServerRunnable.cpp      # Server thread implementation
-        └── Commands/                  # Command handler implementations
+├── UnrealMCP.uplugin              # Plugin manifest
+├── cli/                            # Go CLI source (ue-cli)
+│   ├── cmd/                        # Command definitions (163 commands)
+│   ├── internal/bridge/            # TCP client
+│   ├── internal/project/           # Plugin embedding & project detection
+│   └── npm/                        # npm package wrapper
+├── unrealmcp/                      # Python MCP server
+│   ├── _tcp_bridge.py              # TCP communication
+│   └── tools/                      # Tool modules (one per category)
+├── Source/UnrealMCPBridge/         # C++ editor plugin
+│   ├── Public/                     # Headers
+│   └── Private/                    # Implementation + command handlers
+└── .github/workflows/release.yml   # CI: builds + GitHub Release + npm publish
 ```
 
 ### Communication Protocol
 
-The C++ bridge and Python server communicate over TCP using **length-prefix framing**:
-
+TCP with length-prefix framing:
 ```
 [4 bytes: big-endian payload length] [N bytes: UTF-8 JSON]
 ```
 
-**Request format:**
-```json
-{
-  "type": "create_material",
-  "params": {
-    "name": "M_Example",
-    "path": "/Game/Materials"
-  }
-}
-```
-
-**Response format:**
-```json
-{
-  "status": "success",
-  "result": { ... }
-}
-```
-
-### Port Discovery
-
-1. C++ bridge starts TCP listener on configured port (default `55557`)
-2. Writes the actual port number to `<ProjectDir>/Saved/UnrealMCP/port.txt`
-3. Python server reads that file on connection
-4. If the default port is taken, the bridge scans up to 100 ports
-
-This means multiple editor instances can run simultaneously without conflicts.
+Request: `{"type": "command_name", "params": {...}}`
+Response: `{"status": "success", "result": {...}}`
 
 ---
 
-## Adding Custom Tools
+## Adding Custom Commands
 
-### Python Side
+### CLI Side (Go)
+
+Add a `CommandSpec` to the appropriate `cmd/*.go` file:
+
+```go
+{
+    Name:    "my_command",
+    Group:   "mygroup",
+    Short:   "What it does",
+    Long:    "Detailed description.",
+    Example: "ue-cli my_command --param value",
+    Params: []ParamSpec{
+        {Name: "param", Type: "string", Required: true, Help: "Description"},
+    },
+},
+```
+
+### MCP Side (Python)
 
 Create a new file in `unrealmcp/tools/`:
 
@@ -643,12 +702,9 @@ from unrealmcp._bridge import mcp
 from unrealmcp._tcp_bridge import _call
 
 @mcp.tool()
-def my_custom_tool(param1: str, param2: int = 10) -> str:
+def my_command(param: str) -> str:
     """Description shown to the AI assistant."""
-    return _call("my_custom_command", {
-        "param1": param1,
-        "param2": param2,
-    })
+    return _call("my_command", {"param": param})
 ```
 
 Register it in `unrealmcp/tools/__init__.py`:
@@ -659,78 +715,67 @@ from unrealmcp.tools import my_tools  # noqa: F401
 
 ### C++ Side
 
-1. Create a command handler class in `Source/UnrealMCPBridge/Private/Commands/`
-2. Implement the command routing logic
-3. Register the handler in `UEpicUnrealMCPBridge::ExecuteCommand()`
-
-The C++ handler receives the `params` JSON object and returns a JSON result. All editor operations should be executed on the game thread (use `AsyncTask(ENamedThreads::GameThread, ...)` if called from the TCP thread).
-
----
-
-## Troubleshooting
-
-### "Connection refused" or tools not working
-
-1. Make sure the UE5 editor is running
-2. Check the Output Log for `LogUnrealMCPBridge: MCP Bridge initialized on port XXXXX`
-3. Verify `Saved/UnrealMCP/port.txt` exists and contains a port number
-4. Check that `PythonScriptPlugin` is enabled in your `.uproject`
-
-### Python import errors
-
-```bash
-pip install fastmcp requests
-```
-
-Make sure the Python on your PATH is the same one your AI tool will invoke.
-
-### Multiple editor instances
-
-Each editor instance picks a unique port automatically. The `.mcp.json` config connects to whichever editor wrote `port.txt` most recently. If you need to target a specific instance, set the `UNREAL_MCP_PORT` environment variable.
-
-### Plugin not loading
-
-- Verify `UnrealMCP.uplugin` has `"Type": "Editor"` in its module definition
-- Check that `PythonScriptPlugin` and `EditorScriptingUtilities` are available in your engine build
-- Look for errors in the Output Log at editor startup
-
-### Commands timing out
-
-Large operations (profiling analysis, complex Blueprint graphs) have a 300-second timeout. If you hit it, break the operation into smaller steps.
+Add a command handler in `Source/UnrealMCPBridge/Private/Commands/` and register it in `ExecuteCommand()`.
 
 ---
 
 ## Supported AI Tools
 
-UnrealMCP works with any tool that supports the [Model Context Protocol](https://modelcontextprotocol.io/):
+| Tool | Interface | Config File | Status |
+|------|-----------|------------|--------|
+| **Claude Code** | CLI or MCP | Bash (CLI) / `.mcp.json` (MCP) | Tested |
+| **Cursor** | MCP | `.cursor/mcp.json` | Tested |
+| **VS Code / Copilot** | MCP | `.vscode/mcp.json` | Supported |
+| **Windsurf** | MCP | `~/.codeium/windsurf/mcp_config.json` | Supported |
+| **Gemini CLI** | MCP | `.gemini/settings.json` | Supported |
+| **JetBrains / Rider** | MCP | `.junie/mcp/mcp.json` | Supported |
+| **Zed** | MCP | `~/.config/zed/settings.json` | Supported |
+| **Amazon Q** | MCP | `.amazonq/mcp.json` | Supported |
 
-| Tool | Config File | Status |
-|------|------------|--------|
-| **Claude Code** | `.mcp.json` | Tested |
-| **Cursor** | `.cursor/mcp.json` | Tested |
-| **VS Code / Copilot** | `.vscode/mcp.json` | Supported |
-| **Windsurf** | `~/.codeium/windsurf/mcp_config.json` | Supported |
-| **Gemini CLI** | `.gemini/settings.json` | Supported |
-| **JetBrains / Rider** | `.junie/mcp/mcp.json` | Supported |
-| **Zed** | `~/.config/zed/settings.json` | Supported |
-| **Amazon Q** | `.amazonq/mcp.json` | Supported |
+---
 
-See [Step 5: Configure Your AI Tool](#step-5-configure-your-ai-tool) for the exact config format for each tool.
+## Troubleshooting
+
+| Problem | Solution |
+|---------|----------|
+| "Connection refused" | Is the UE5 editor running? Check Output Log for `MCP Bridge initialized on port XXXXX` |
+| `ue-cli doctor` shows port file missing | Editor hasn't started yet, or check `Saved/UnrealMCP/port.txt` |
+| Commands timeout | Large operations (profiling, complex graphs) have 300s timeout. Use `--timeout 600` to increase |
+| Multiple editors | Use `--port <num>` or `UNREAL_MCP_PORT` env var to target a specific instance |
+| Plugin not compiling | Ensure `PythonScriptPlugin`, `EditorScriptingUtilities`, `EnhancedInput` are enabled |
+| Python import errors | Run `pip install fastmcp requests` — make sure the Python on your PATH matches your AI tool's |
+| Plugin not loading | Verify `UnrealMCP.uplugin` has `"Type": "Editor"` and required plugins are available in your engine build |
+
+---
+
+## Releases & Distribution
+
+| Channel | Command |
+|---------|---------|
+| **npm** | `npm install -g unrealcli` |
+| **GitHub Releases** | [Download binaries](https://github.com/aadeshrao123/Unreal-MCP/releases) |
+| **pip** (MCP only) | `pip install unrealmcp` |
+
+Releases are automated via GitHub Actions. Push a tag to trigger:
+```bash
+git tag v1.1.0 && git push origin v1.1.0
+# → Builds 5 platform binaries
+# → Creates GitHub Release
+# → Publishes to npm
+```
 
 ---
 
 ## Contributing
 
-Contributions are welcome! Whether it's bug fixes, new tools, documentation, or feature ideas — feel free to get involved.
+- **Bug?** [Open an issue](https://github.com/aadeshrao123/Unreal-MCP/issues/new)
+- **Feature idea?** [Open an issue](https://github.com/aadeshrao123/Unreal-MCP/issues/new)
+- **Code?** [Fork](https://github.com/aadeshrao123/Unreal-MCP/fork), make changes, open a PR
 
-- **Found a bug?** [Open an issue](https://github.com/aadeshrao123/Unreal-MCP/issues/new)
-- **Have a feature idea?** [Open an issue](https://github.com/aadeshrao123/Unreal-MCP/issues/new) and describe what you'd like
-- **Want to contribute code?** [Fork the repo](https://github.com/aadeshrao123/Unreal-MCP/fork), make your changes, and open a Pull Request
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines on submitting PRs and adding new tools.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ---
 
 ## License
 
-MIT — see [LICENSE](LICENSE) for details.
+MPL-2.0 — see [LICENSE](LICENSE) for details.
