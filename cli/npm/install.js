@@ -15,7 +15,7 @@ const os = require("os");
 const { execSync } = require("child_process");
 
 const VERSION = require("./package.json").version;
-const REPO = "aadeshrao123/Unreal-MCP-Pro";
+const REPO = "aadeshrao123/Unreal-MCP";
 
 const PLATFORM_MAP = {
   "win32-x64": "ue-cli-windows-amd64.exe",
