@@ -58,6 +58,10 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPDataAssetCommands::HandleCommand(
 	{
 		return HandleGetMassConfigTraits(Params);
 	}
+	if (CommandType == TEXT("add_mass_config_trait"))
+	{
+		return HandleAddMassConfigTrait(Params);
+	}
 
 	return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
 		FString::Printf(TEXT("Unknown data asset command: %s"), *CommandType));
@@ -1045,5 +1049,158 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPDataAssetCommands::HandleGetMassConfigTrai
 	Result->SetStringField(TEXT("asset_path"), AssetPath);
 	Result->SetNumberField(TEXT("trait_count"), TraitsArray.Num());
 	Result->SetArrayField(TEXT("traits"), TraitsArray);
+	return Result;
+}
+
+// ============================================================================
+// add_mass_config_trait — Add a SINGLE trait to a Mass Entity Config without
+// replacing existing traits. Safe for configs with complex replicator settings.
+// ============================================================================
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPDataAssetCommands::HandleAddMassConfigTrait(
+	const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath;
+	if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path'"));
+	}
+
+	FString TraitClassName;
+	if (!Params->TryGetStringField(TEXT("trait_class"), TraitClassName))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'trait_class' (e.g. '/Script/Jiggify.MassBuildingHealthTrait')"));
+	}
+
+	UObject* Asset = StaticLoadObject(UObject::StaticClass(), nullptr, *AssetPath);
+	if (!Asset)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Asset not found: %s"), *AssetPath));
+	}
+
+	// Resolve trait class
+	UClass* TraitClass = StaticLoadClass(UObject::StaticClass(), nullptr, *TraitClassName);
+	if (!TraitClass)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Trait class not found: %s"), *TraitClassName));
+	}
+
+	// Find Config struct property
+	FStructProperty* ConfigProp = nullptr;
+	for (TFieldIterator<FStructProperty> It(Asset->GetClass()); It; ++It)
+	{
+		if (It->GetName() == TEXT("Config"))
+		{
+			ConfigProp = *It;
+			break;
+		}
+	}
+
+	if (!ConfigProp)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Asset has no 'Config' struct property"));
+	}
+
+	void* ConfigPtr = ConfigProp->ContainerPtrToValuePtr<void>(Asset);
+
+	// Find Traits array
+	FArrayProperty* TraitsArrayProp = nullptr;
+	for (TFieldIterator<FArrayProperty> It(ConfigProp->Struct); It; ++It)
+	{
+		if (It->GetName() == TEXT("Traits"))
+		{
+			TraitsArrayProp = *It;
+			break;
+		}
+	}
+
+	if (!TraitsArrayProp)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Config has no 'Traits' array"));
+	}
+
+	FObjectProperty* InnerObjProp = CastField<FObjectProperty>(TraitsArrayProp->Inner);
+	if (!InnerObjProp)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Traits array inner type is not an object"));
+	}
+
+	// Check if trait already exists
+	FScriptArrayHelper ArrayHelper(TraitsArrayProp, TraitsArrayProp->ContainerPtrToValuePtr<void>(ConfigPtr));
+	for (int32 i = 0; i < ArrayHelper.Num(); ++i)
+	{
+		UObject* Existing = InnerObjProp->GetObjectPropertyValue(ArrayHelper.GetRawPtr(i));
+		if (Existing && Existing->GetClass() == TraitClass)
+		{
+			return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+				FString::Printf(TEXT("Trait '%s' already exists at index %d"), *TraitClass->GetName(), i));
+		}
+	}
+
+	// Create new trait instance
+	UObject* NewTrait = NewObject<UObject>(Asset, TraitClass);
+	if (!NewTrait)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create trait instance"));
+	}
+
+	// Set properties if provided
+	const TSharedPtr<FJsonObject>* PropertiesObj = nullptr;
+	if (Params->TryGetObjectField(TEXT("properties"), PropertiesObj) && PropertiesObj)
+	{
+		for (auto& Pair : (*PropertiesObj)->Values)
+		{
+			FProperty* Prop = NewTrait->GetClass()->FindPropertyByName(*Pair.Key);
+			if (Prop)
+			{
+				void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(NewTrait);
+				FString ValueStr;
+				if (Pair.Value->TryGetString(ValueStr))
+				{
+					Prop->ImportText_Direct(*ValueStr, ValuePtr, nullptr, PPF_None);
+				}
+				else if (Pair.Value->Type == EJson::Number)
+				{
+					// Handle numeric values
+					double NumVal = Pair.Value->AsNumber();
+					if (FFloatProperty* FloatProp = CastField<FFloatProperty>(Prop))
+					{
+						FloatProp->SetPropertyValue(ValuePtr, static_cast<float>(NumVal));
+					}
+					else if (FDoubleProperty* DoubleProp = CastField<FDoubleProperty>(Prop))
+					{
+						DoubleProp->SetPropertyValue(ValuePtr, NumVal);
+					}
+					else if (FIntProperty* IntProp = CastField<FIntProperty>(Prop))
+					{
+						IntProp->SetPropertyValue(ValuePtr, static_cast<int32>(NumVal));
+					}
+				}
+				else if (Pair.Value->Type == EJson::Boolean)
+				{
+					if (FBoolProperty* BoolProp = CastField<FBoolProperty>(Prop))
+					{
+						BoolProp->SetPropertyValue(ValuePtr, Pair.Value->AsBool());
+					}
+				}
+			}
+		}
+	}
+
+	// Add to array
+	int32 NewIndex = ArrayHelper.AddValue();
+	InnerObjProp->SetObjectPropertyValue(ArrayHelper.GetRawPtr(NewIndex), NewTrait);
+
+	// Mark dirty
+	Asset->MarkPackageDirty();
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetBoolField(TEXT("success"), true);
+	Result->SetStringField(TEXT("asset_path"), AssetPath);
+	Result->SetStringField(TEXT("trait_class"), TraitClass->GetName());
+	Result->SetNumberField(TEXT("trait_index"), NewIndex);
+	Result->SetNumberField(TEXT("total_traits"), ArrayHelper.Num());
 	return Result;
 }

@@ -1,6 +1,6 @@
 {
   "name": "unrealcli",
-  "version": "1.0.0",
+  "version": "1.2.1",
   "description": "CLI for controlling Unreal Engine 5 Editor — create materials, blueprints, spawn actors, modify assets. No Python, no MCP, no dependencies.",
   "keywords": [
     "unreal",

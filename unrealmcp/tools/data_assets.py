@@ -203,6 +203,33 @@ def get_mass_config_traits(asset_path: str) -> str:
 
 
 @mcp.tool()
+def add_mass_config_trait(
+    asset_path: str,
+    trait_class: str,
+    properties: dict | None = None,
+) -> str:
+    """Add a SINGLE trait to a Mass Entity Config without replacing existing traits.
+
+    Safe for configs with complex replicator settings — only appends, never replaces.
+    Returns error if the trait already exists on the config.
+
+    Args:
+        asset_path: Path to MassEntityConfigAsset (e.g. "/Game/.../DA_MinerMassEntityConfig_Mk1")
+        trait_class: Full class path (e.g. "/Script/Jiggify.MassBuildingHealthTrait")
+        properties: Optional dict of property values to set on the new trait.
+            Supports floats, ints, bools, strings.
+            Example: {"MaxHealth": 150, "Resistance_Fire": 0.2}
+    """
+    params = {
+        "asset_path": asset_path,
+        "trait_class": trait_class,
+    }
+    if properties is not None:
+        params["properties"] = properties
+    return _call("add_mass_config_trait", params)
+
+
+@mcp.tool()
 def list_data_assets(
     path: str = "/Game",
     class_filter: str = "",

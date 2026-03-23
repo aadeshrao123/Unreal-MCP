@@ -102,6 +102,18 @@ ue-cli get_data_asset_properties --asset-path /Game/Data/DA_MyRecipe --filter "P
 		},
 	},
 	{
+		Name:  "add_mass_config_trait",
+		Group: "dataassets",
+		Short: "Add a single trait to a Mass Entity config",
+		Long:  "Safely appends a single trait to a MassEntityConfigAsset without replacing existing traits. Returns error if the trait already exists. Use for adding health, combat, or any trait to building configs without risking replicator or other complex trait data.",
+		Example: `ue-cli add_mass_config_trait --asset-path /Game/Mass/DA_MinerConfig --trait-class /Script/Jiggify.MassBuildingHealthTrait --properties '{"MaxHealth":100}'`,
+		Params: []ParamSpec{
+			{Name: "asset_path", Type: "string", Required: true, Help: "Content path to the Mass Entity config asset"},
+			{Name: "trait_class", Type: "string", Required: true, Help: "Full class path (e.g. /Script/Jiggify.MassBuildingHealthTrait)"},
+			{Name: "properties", Type: "json", Help: "JSON object of property values to set on the new trait"},
+		},
+	},
+	{
 		Name:  "list_data_assets",
 		Group: "dataassets",
 		Short: "List data assets by path/class",
