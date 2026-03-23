@@ -18,8 +18,12 @@ def create_material(
     shading_model: str = "default_lit",
     two_sided: bool = False,
     opacity_mask_clip_value: Optional[float] = None,
+    force: bool = False,
 ) -> str:
     """Create a new Material asset.
+
+    Returns error if the asset already exists (avoids editor overwrite popup).
+    Pass force=true to delete and recreate.
 
     Args:
         name: Material name (e.g. "M_MyMaterial")
@@ -29,6 +33,7 @@ def create_material(
             two_sided_foliage | cloth | eye | thin_translucent
         two_sided: Render on both sides
         opacity_mask_clip_value: Clip value for masked blend mode (0.0-1.0)
+        force: If true, delete existing asset and recreate (default false)
     """
     params = {
         "name": name,
@@ -39,6 +44,8 @@ def create_material(
     }
     if opacity_mask_clip_value is not None:
         params["opacity_mask_clip_value"] = opacity_mask_clip_value
+    if force:
+        params["force"] = True
     return _call("create_material", params)
 
 
@@ -50,8 +57,11 @@ def create_material_instance(
     scalar_params: Optional[str] = None,
     vector_params: Optional[str] = None,
     texture_params: Optional[str] = None,
+    force: bool = False,
 ) -> str:
     """Create a Material Instance from a parent material.
+
+    Returns error if asset already exists. Pass force=true to delete and recreate.
 
     Args:
         parent_path: Full path to parent (e.g. "/Game/Materials/M_Base")
@@ -59,6 +69,7 @@ def create_material_instance(
         scalar_params: JSON dict of scalar overrides — {"Opacity": 0.5, "Metallic": 1.0}
         vector_params: JSON dict of vector overrides — {"BaseColor": [1.0, 0.0, 0.0, 1.0]}
         texture_params: JSON dict of texture overrides — {"Texture": "/Game/Textures/T_Wood"}
+        force: If true, delete existing asset and recreate (default false)
     """
     params = {
         "parent_path": parent_path,
@@ -71,6 +82,8 @@ def create_material_instance(
         params["vector_params"] = json.loads(vector_params)
     if texture_params is not None:
         params["texture_params"] = json.loads(texture_params)
+    if force:
+        params["force"] = True
     return _call("create_material_instance", params)
 
 
@@ -112,10 +125,13 @@ def build_material_graph(
             - from_node: Source node index (int, 0-based into nodes array)
             - from_pin: Output pin name ("" for default output)
             - to_node: Target node index (int) or "material" for material output
-            - to_pin: Input pin name, or material property when to_node="material"
-                (BaseColor, Metallic, Roughness, EmissiveColor, Opacity, OpacityMask,
-                Normal, Specular, AmbientOcclusion, WorldPositionOffset, SubsurfaceColor,
-                Refraction)
+            - to_pin: Input pin name, or material property when to_node="material":
+                BaseColor, Metallic, Specular, Roughness, Anisotropy, EmissiveColor,
+                Opacity, OpacityMask, Normal, Tangent, WorldPositionOffset, Displacement,
+                SubsurfaceColor, CustomData0, CustomData1, AmbientOcclusion, Refraction,
+                PixelDepthOffset, ShadingModel, SurfaceThickness, FrontMaterial
+                (FrontMaterial is for Substrate BSDF nodes — use get_available_material_pins
+                to see which pins are active for a specific material)
         clear_existing: Remove existing expressions before building (default True)
     """
     return _call("build_material_graph", {
@@ -257,8 +273,11 @@ def connect_material_expressions(
     Args:
         from_node: Source node index
         to_node: Target node index (e.g. "5") or "material" for material output
-        to_pin: Input pin name, or material property when to_node="material"
-            (BaseColor, Metallic, Roughness, EmissiveColor, Opacity, etc.)
+        to_pin: Input pin name, or material property when to_node="material":
+            BaseColor, Metallic, Specular, Roughness, Anisotropy, EmissiveColor,
+            Opacity, OpacityMask, Normal, Tangent, WorldPositionOffset, Displacement,
+            SubsurfaceColor, CustomData0, CustomData1, AmbientOcclusion, Refraction,
+            PixelDepthOffset, ShadingModel, SurfaceThickness, FrontMaterial
         from_pin: Output pin name ("" = primary output)
     """
     return _call("connect_material_expressions", {
@@ -425,16 +444,50 @@ def list_material_expression_types(
 
 
 @mcp.tool()
-def get_expression_type_info(type_name: str) -> str:
+def get_expression_type_info(
+    type_name: str,
+    function_path: Optional[str] = None,
+) -> str:
     """Look up pin names and editable properties for a node type WITHOUT creating one.
 
     Returns input pins, output pins, and all editable properties with types and defaults.
     Use this BEFORE creating nodes to know exact pin names and avoid connection errors.
 
+    Special node types:
+    - Custom: Returns additional custom_hlsl_schema with code/inputs/outputs documentation.
+    - MaterialFunctionCall: Pass function_path to see the actual inputs/outputs of
+        that function. Without it, pins will be empty since they depend on which
+        function is loaded. Use search_material_functions to find functions first.
+    - Substrate nodes (SubstrateSlabBSDF, SubstrateShadingModels, etc.): Returns
+        substrate_note explaining how to connect to FrontMaterial pin.
+
     Args:
-        type_name: Short type name (e.g. "Multiply", "TextureSample", "Noise", "Custom")
+        type_name: Short type name (e.g. "Multiply", "TextureSample", "Custom",
+            "MaterialFunctionCall", "SubstrateSlabBSDF", "SubstrateShadingModels")
+        function_path: For MaterialFunctionCall only — path to the material function
+            to load (e.g. "/Engine/Functions/Engine_MaterialFunctions03/Blends/Blend_Overlay").
+            Populates the node with the function's actual input/output pins.
     """
-    return _call("get_expression_type_info", {"type_name": type_name})
+    params: dict = {"type_name": type_name}
+    if function_path is not None:
+        params["function_path"] = function_path
+    return _call("get_expression_type_info", params)
+
+
+@mcp.tool()
+def get_available_material_pins(material_path: str) -> str:
+    """Query all available material output pins for a specific material.
+
+    Returns every pin that is currently visible (based on material settings),
+    whether it's connected, what type it expects, and which node feeds it.
+
+    Use this to discover valid to_pin values for connect_material_expressions
+    with to_node="material". The available pins change based on blend mode,
+    shading model, and whether Substrate is enabled.
+
+    Also reports substrate_enabled and has_front_material_connected status.
+    """
+    return _call("get_available_material_pins", {"material_path": material_path})
 
 
 @mcp.tool()
@@ -563,14 +616,18 @@ def create_material_function(
     path: str = "/Game/Materials/Functions",
     description: str = "",
     expose_to_library: bool = True,
+    force: bool = False,
 ) -> str:
     """Create a new Material Function asset.
+
+    Returns error if asset already exists. Pass force=true to delete and recreate.
 
     Args:
         name: Function name (e.g. "MF_CustomBlend")
         path: Content Browser path
         description: Function description shown in tooltips
         expose_to_library: Whether the function appears in the material editor's function library
+        force: If true, delete existing asset and recreate (default false)
     """
     params: dict = {
         "name": name,
@@ -579,6 +636,8 @@ def create_material_function(
     }
     if description:
         params["description"] = description
+    if force:
+        params["force"] = True
     return _call("create_material_function", params)
 
 

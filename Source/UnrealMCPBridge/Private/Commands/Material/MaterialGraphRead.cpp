@@ -6,12 +6,178 @@
 #include "Materials/Material.h"
 #include "Materials/MaterialExpression.h"
 #include "Materials/MaterialExpressionCustom.h"
+#include "Materials/MaterialExpressionMaterialFunctionCall.h"
+#include "Materials/MaterialExpressionFunctionInput.h"
+#include "Materials/MaterialExpressionFunctionOutput.h"
+#include "Materials/MaterialExpressionSubstrate.h"
 #include "Materials/MaterialFunction.h"
 #include "MaterialEditingLibrary.h"
 #include "MaterialShared.h"
 #include "RHIShaderPlatform.h"
+#include "RenderUtils.h"
 #include "EditorAssetLibrary.h"
 #include "AssetRegistry/AssetRegistryModule.h"
+
+// ---------------------------------------------------------------------------
+// Shared helper: serialize editable properties for an expression via reflection
+// Used by HandleGetExpressionTypeInfo and the serializer.
+// ---------------------------------------------------------------------------
+static void SerializeExpressionReflectionProperties(
+	UMaterialExpression* Expr, UClass* ExprClass,
+	TArray<TSharedPtr<FJsonValue>>& OutPropsArr)
+{
+	UClass* BaseClass = UMaterialExpression::StaticClass();
+	UClass* ObjectClass = UObject::StaticClass();
+
+	static const TSet<FName> InputStructNames = {
+		FName(TEXT("ExpressionInput")),
+		FName(TEXT("ExpressionOutput")),
+		FName(TEXT("ColorMaterialInput")),
+		FName(TEXT("ScalarMaterialInput")),
+		FName(TEXT("VectorMaterialInput")),
+		FName(TEXT("Vector2MaterialInput")),
+		FName(TEXT("MaterialAttributesInput")),
+		FName(TEXT("ShadingModelMaterialInput")),
+		FName(TEXT("SubstrateMaterialInput")),
+	};
+
+	for (TFieldIterator<FProperty> PropIt(ExprClass); PropIt; ++PropIt)
+	{
+		FProperty* Prop = *PropIt;
+
+		UClass* OwnerClass = Prop->GetOwnerClass();
+		if (OwnerClass == BaseClass || OwnerClass == ObjectClass)
+		{
+			continue;
+		}
+
+		if (FStructProperty* SP = CastField<FStructProperty>(Prop))
+		{
+			if (InputStructNames.Contains(SP->Struct->GetFName()))
+			{
+				continue;
+			}
+		}
+
+		if (Prop->HasAnyPropertyFlags(CPF_Transient | CPF_Deprecated))
+		{
+			continue;
+		}
+		if (CastField<FDelegateProperty>(Prop) || CastField<FMulticastDelegateProperty>(Prop))
+		{
+			continue;
+		}
+		if (CastField<FWeakObjectProperty>(Prop))
+		{
+			continue;
+		}
+
+		auto PropObj = MakeShared<FJsonObject>();
+		PropObj->SetStringField(TEXT("name"), Prop->GetName());
+		PropObj->SetStringField(TEXT("type"), Prop->GetCPPType());
+
+		const void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(Expr);
+		TSharedPtr<FJsonValue> DefaultVal = FEpicUnrealMCPPropertyUtils::SafePropertyToJsonValue(Prop, ValuePtr);
+		if (DefaultVal.IsValid() && DefaultVal->Type != EJson::Null)
+		{
+			PropObj->SetField(TEXT("default_value"), DefaultVal);
+		}
+
+		OutPropsArr.Add(MakeShared<FJsonValueObject>(PropObj));
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Shared helper: serialize input/output pin info for an expression
+// ---------------------------------------------------------------------------
+static void SerializeExpressionPinInfo(
+	UMaterialExpression* Expr,
+	TArray<TSharedPtr<FJsonValue>>& OutInputsArr,
+	TArray<TSharedPtr<FJsonValue>>& OutOutputsArr)
+{
+	// Inputs
+	TArray<FString> InputNames = UMaterialEditingLibrary::GetMaterialExpressionInputNames(Expr);
+	for (const FString& Name : InputNames)
+	{
+		auto InObj = MakeShared<FJsonObject>();
+		InObj->SetStringField(TEXT("name"), Name);
+		OutInputsArr.Add(MakeShared<FJsonValueObject>(InObj));
+	}
+
+	// Outputs
+	TArray<FExpressionOutput>& Outputs = Expr->GetOutputs();
+	for (int32 i = 0; i < Outputs.Num(); ++i)
+	{
+		auto OutObj = MakeShared<FJsonObject>();
+		OutObj->SetNumberField(TEXT("index"), i);
+		FString OutName = Outputs[i].OutputName.IsNone()
+			? (i == 0 ? TEXT("") : FString::Printf(TEXT("Output_%d"), i))
+			: Outputs[i].OutputName.ToString();
+		OutObj->SetStringField(TEXT("name"), OutName);
+		OutOutputsArr.Add(MakeShared<FJsonValueObject>(OutObj));
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Shared helper: build material property pin info for a given material
+// ---------------------------------------------------------------------------
+struct FMaterialPinInfo
+{
+	EMaterialProperty Property;
+	FString Name;
+	FString ExpectedType;
+	bool bConnected;
+};
+
+static void GetMaterialPropertyPins(UMaterial* Material, TArray<FMaterialPinInfo>& OutPins)
+{
+	struct FPinDef
+	{
+		EMaterialProperty Property;
+		const TCHAR* Name;
+		const TCHAR* ExpectedType;
+	};
+
+	static const FPinDef AllPins[] = {
+		{ MP_BaseColor,           TEXT("BaseColor"),           TEXT("float3") },
+		{ MP_Metallic,            TEXT("Metallic"),            TEXT("float")  },
+		{ MP_Specular,            TEXT("Specular"),            TEXT("float")  },
+		{ MP_Roughness,           TEXT("Roughness"),           TEXT("float")  },
+		{ MP_Anisotropy,          TEXT("Anisotropy"),          TEXT("float")  },
+		{ MP_EmissiveColor,       TEXT("EmissiveColor"),       TEXT("float3") },
+		{ MP_Opacity,             TEXT("Opacity"),             TEXT("float")  },
+		{ MP_OpacityMask,         TEXT("OpacityMask"),         TEXT("float")  },
+		{ MP_Normal,              TEXT("Normal"),              TEXT("float3") },
+		{ MP_Tangent,             TEXT("Tangent"),             TEXT("float3") },
+		{ MP_WorldPositionOffset, TEXT("WorldPositionOffset"), TEXT("float3") },
+		{ MP_Displacement,        TEXT("Displacement"),        TEXT("float")  },
+		{ MP_SubsurfaceColor,     TEXT("SubsurfaceColor"),     TEXT("float3") },
+		{ MP_CustomData0,         TEXT("CustomData0"),         TEXT("float")  },
+		{ MP_CustomData1,         TEXT("CustomData1"),         TEXT("float")  },
+		{ MP_AmbientOcclusion,    TEXT("AmbientOcclusion"),    TEXT("float")  },
+		{ MP_Refraction,          TEXT("Refraction"),          TEXT("float")  },
+		{ MP_PixelDepthOffset,    TEXT("PixelDepthOffset"),    TEXT("float")  },
+		{ MP_ShadingModel,        TEXT("ShadingModel"),        TEXT("float")  },
+		{ MP_SurfaceThickness,    TEXT("SurfaceThickness"),    TEXT("float")  },
+		{ MP_FrontMaterial,       TEXT("FrontMaterial"),        TEXT("Substrate") },
+	};
+
+	for (const FPinDef& Def : AllPins)
+	{
+		FExpressionInput* Input = Material->GetExpressionInputForProperty(Def.Property);
+		if (!Input)
+		{
+			continue; // Pin is hidden for this material configuration
+		}
+
+		FMaterialPinInfo Info;
+		Info.Property = Def.Property;
+		Info.Name = Def.Name;
+		Info.ExpectedType = Def.ExpectedType;
+		Info.bConnected = Input->IsConnected();
+		OutPins.Add(Info);
+	}
+}
 
 // ---------------------------------------------------------------------------
 // HandleGetMaterialInfo
@@ -130,6 +296,10 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleGetMaterialInfo(
 		StatsObj->SetNumberField(TEXT("samplers"), Stats.NumSamplers);
 		Info->SetObjectField(TEXT("statistics"), StatsObj);
 	}
+
+	// Substrate status — always report (low cost, high value for AI decision-making)
+	Info->SetBoolField(TEXT("substrate_enabled"), Substrate::IsSubstrateEnabled());
+	Info->SetBoolField(TEXT("has_front_material_connected"), Material->HasSubstrateFrontMaterialConnected());
 
 	auto R = MakeShared<FJsonObject>();
 	R->SetBoolField(TEXT("success"), true);
@@ -475,94 +645,157 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleGetExpressionTypeI
 	ShortType.RemoveFromStart(TEXT("MaterialExpression"));
 	Result->SetStringField(TEXT("type"), ShortType);
 
-	// Input pins
-	TArray<FString> InputNames = UMaterialEditingLibrary::GetMaterialExpressionInputNames(Temp);
-	TArray<TSharedPtr<FJsonValue>> InputsArr;
-	for (const FString& Name : InputNames)
+	// ---- Special handling: MaterialFunctionCall with function_path ----
+	const bool bIsFunctionCall = ExprClass->IsChildOf(UMaterialExpressionMaterialFunctionCall::StaticClass());
+	if (bIsFunctionCall)
 	{
-		auto InObj = MakeShared<FJsonObject>();
-		InObj->SetStringField(TEXT("name"), Name);
-		InputsArr.Add(MakeShared<FJsonValueObject>(InObj));
-	}
-	Result->SetArrayField(TEXT("inputs"), InputsArr);
+		FString FunctionPath;
+		Params->TryGetStringField(TEXT("function_path"), FunctionPath);
 
-	// Output pins
-	TArray<FExpressionOutput>& Outputs = Temp->GetOutputs();
-	TArray<TSharedPtr<FJsonValue>> OutputsArr;
-	for (int32 i = 0; i < Outputs.Num(); ++i)
-	{
-		auto OutObj = MakeShared<FJsonObject>();
-		OutObj->SetNumberField(TEXT("index"), i);
-		FString OutName = Outputs[i].OutputName.IsNone()
-			? (i == 0 ? TEXT("") : FString::Printf(TEXT("Output_%d"), i))
-			: Outputs[i].OutputName.ToString();
-		OutObj->SetStringField(TEXT("name"), OutName);
-		OutputsArr.Add(MakeShared<FJsonValueObject>(OutObj));
-	}
-	Result->SetArrayField(TEXT("outputs"), OutputsArr);
-
-	// Editable properties via reflection
-	UClass* BaseClass = UMaterialExpression::StaticClass();
-	UClass* ObjectClass = UObject::StaticClass();
-
-	TArray<TSharedPtr<FJsonValue>> PropsArr;
-	for (TFieldIterator<FProperty> PropIt(ExprClass); PropIt; ++PropIt)
-	{
-		FProperty* Prop = *PropIt;
-
-		UClass* OwnerClass = Prop->GetOwnerClass();
-		if (OwnerClass == BaseClass || OwnerClass == ObjectClass)
+		if (!FunctionPath.IsEmpty())
 		{
-			continue;
-		}
-
-		// Skip FExpressionInput/Output struct properties
-		if (FStructProperty* SP = CastField<FStructProperty>(Prop))
-		{
-			FName StructName = SP->Struct->GetFName();
-			static const TSet<FName> InputStructNames = {
-				FName(TEXT("ExpressionInput")),
-				FName(TEXT("ExpressionOutput")),
-				FName(TEXT("ColorMaterialInput")),
-				FName(TEXT("ScalarMaterialInput")),
-				FName(TEXT("VectorMaterialInput")),
-				FName(TEXT("Vector2MaterialInput")),
-				FName(TEXT("MaterialAttributesInput")),
-			};
-			if (InputStructNames.Contains(StructName))
+			// Load the function and populate the call node with real inputs/outputs
+			UMaterialFunctionInterface* Func = LoadObject<UMaterialFunctionInterface>(nullptr, *FunctionPath);
+			if (Func)
 			{
-				continue;
+				UMaterialExpressionMaterialFunctionCall* FuncCall =
+					Cast<UMaterialExpressionMaterialFunctionCall>(Temp);
+				if (FuncCall)
+				{
+					FuncCall->SetMaterialFunction(Func);
+				}
+				Result->SetStringField(TEXT("function_path"), FunctionPath);
+
+				// Also include the function's own info for convenience
+				UMaterialFunction* MF = Cast<UMaterialFunction>(Func);
+				if (MF)
+				{
+					Result->SetStringField(TEXT("function_description"), MF->Description);
+				}
+			}
+			else
+			{
+				Result->SetStringField(TEXT("function_error"),
+					FString::Printf(TEXT("Function not found: %s"), *FunctionPath));
 			}
 		}
-
-		if (Prop->HasAnyPropertyFlags(CPF_Transient | CPF_Deprecated))
+		else
 		{
-			continue;
+			// No function_path provided — inputs/outputs will be empty.
+			// Tell the AI how to use this properly.
+			Result->SetStringField(TEXT("note"),
+				TEXT("MaterialFunctionCall inputs/outputs depend on which function is loaded. ")
+				TEXT("Pass function_path to see actual pins. ")
+				TEXT("Use search_material_functions to discover functions, then ")
+				TEXT("get_material_function_info to inspect a function's pins. ")
+				TEXT("In build_material_graph, set properties.function_path to the function asset path."));
 		}
-		if (CastField<FDelegateProperty>(Prop) || CastField<FMulticastDelegateProperty>(Prop))
-		{
-			continue;
-		}
-		if (CastField<FWeakObjectProperty>(Prop))
-		{
-			continue;
-		}
-
-		auto PropObj = MakeShared<FJsonObject>();
-		PropObj->SetStringField(TEXT("name"), Prop->GetName());
-		PropObj->SetStringField(TEXT("type"), Prop->GetCPPType());
-
-		// Get default value
-		const void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(Temp);
-		TSharedPtr<FJsonValue> DefaultVal = FEpicUnrealMCPPropertyUtils::SafePropertyToJsonValue(Prop, ValuePtr);
-		if (DefaultVal.IsValid() && DefaultVal->Type != EJson::Null)
-		{
-			PropObj->SetField(TEXT("default_value"), DefaultVal);
-		}
-
-		PropsArr.Add(MakeShared<FJsonValueObject>(PropObj));
 	}
+
+	// ---- Collect pins (populated by SetMaterialFunction for function calls) ----
+	TArray<TSharedPtr<FJsonValue>> InputsArr;
+	TArray<TSharedPtr<FJsonValue>> OutputsArr;
+	SerializeExpressionPinInfo(Temp, InputsArr, OutputsArr);
+	Result->SetArrayField(TEXT("inputs"), InputsArr);
+	Result->SetArrayField(TEXT("outputs"), OutputsArr);
+
+	// ---- Editable properties via reflection ----
+	TArray<TSharedPtr<FJsonValue>> PropsArr;
+	SerializeExpressionReflectionProperties(Temp, ExprClass, PropsArr);
 	Result->SetArrayField(TEXT("properties"), PropsArr);
+
+	// ---- Special handling: Custom HLSL node schema ----
+	const bool bIsCustom = ExprClass->IsChildOf(UMaterialExpressionCustom::StaticClass());
+	if (bIsCustom)
+	{
+		auto Schema = MakeShared<FJsonObject>();
+		Schema->SetStringField(TEXT("description"),
+			TEXT("Custom HLSL nodes support additional top-level fields in build_material_graph "
+			     "and add_material_expression (NOT inside 'properties'):"));
+
+		// code field
+		auto CodeField = MakeShared<FJsonObject>();
+		CodeField->SetStringField(TEXT("type"), TEXT("string"));
+		CodeField->SetStringField(TEXT("description"), TEXT("HLSL source code string"));
+		CodeField->SetStringField(TEXT("example"), TEXT("return UV.x * Speed;"));
+		Schema->SetObjectField(TEXT("code"), CodeField);
+
+		// description field
+		auto DescField = MakeShared<FJsonObject>();
+		DescField->SetStringField(TEXT("type"), TEXT("string"));
+		DescField->SetStringField(TEXT("description"), TEXT("Node title shown in the graph"));
+		Schema->SetObjectField(TEXT("description"), DescField);
+
+		// output_type field
+		auto OutputTypeField = MakeShared<FJsonObject>();
+		OutputTypeField->SetStringField(TEXT("type"), TEXT("string"));
+		OutputTypeField->SetStringField(TEXT("description"), TEXT("Primary output type"));
+		TArray<TSharedPtr<FJsonValue>> OutputTypeValues;
+		OutputTypeValues.Add(MakeShared<FJsonValueString>(TEXT("float")));
+		OutputTypeValues.Add(MakeShared<FJsonValueString>(TEXT("float2")));
+		OutputTypeValues.Add(MakeShared<FJsonValueString>(TEXT("float3")));
+		OutputTypeValues.Add(MakeShared<FJsonValueString>(TEXT("float4")));
+		OutputTypeValues.Add(MakeShared<FJsonValueString>(TEXT("material_attributes")));
+		OutputTypeField->SetArrayField(TEXT("valid_values"), OutputTypeValues);
+		Schema->SetObjectField(TEXT("output_type"), OutputTypeField);
+
+		// inputs field
+		auto InputsField = MakeShared<FJsonObject>();
+		InputsField->SetStringField(TEXT("type"), TEXT("array of string"));
+		InputsField->SetStringField(TEXT("description"),
+			TEXT("Input pin names. Replaces all existing inputs. Use add_inputs to append instead."));
+		InputsField->SetStringField(TEXT("example"), TEXT("[\"UV\", \"Speed\", \"Color\"]"));
+		Schema->SetObjectField(TEXT("inputs"), InputsField);
+
+		// add_inputs field
+		auto AddInputsField = MakeShared<FJsonObject>();
+		AddInputsField->SetStringField(TEXT("type"), TEXT("array of string"));
+		AddInputsField->SetStringField(TEXT("description"),
+			TEXT("Append new input pins without disturbing existing ones or their connections."));
+		Schema->SetObjectField(TEXT("add_inputs"), AddInputsField);
+
+		// outputs field
+		auto OutputsField = MakeShared<FJsonObject>();
+		OutputsField->SetStringField(TEXT("type"), TEXT("array of {name: string, type: string}"));
+		OutputsField->SetStringField(TEXT("description"),
+			TEXT("Additional output pins beyond the primary output. Same type values as output_type."));
+		OutputsField->SetStringField(TEXT("example"),
+			TEXT("[{\"name\": \"Mask\", \"type\": \"float\"}, {\"name\": \"UV\", \"type\": \"float2\"}]"));
+		Schema->SetObjectField(TEXT("outputs"), OutputsField);
+
+		// Full node example
+		Schema->SetStringField(TEXT("full_example"),
+			TEXT("{\"type\": \"Custom\", \"code\": \"return UV.x * Speed;\", ")
+			TEXT("\"description\": \"UV Scroller\", \"output_type\": \"float2\", ")
+			TEXT("\"inputs\": [\"UV\", \"Speed\"], \"pos_x\": -400, \"pos_y\": 0}"));
+
+		Result->SetObjectField(TEXT("custom_hlsl_schema"), Schema);
+	}
+
+	// ---- Special handling: Substrate BSDF nodes ----
+	const bool bIsSubstrate = ExprClass->IsChildOf(UMaterialExpressionSubstrateBSDF::StaticClass());
+	if (bIsSubstrate)
+	{
+		Result->SetStringField(TEXT("substrate_note"),
+			TEXT("This is a Substrate BSDF node. Its output type is 'Substrate' (not float). ")
+			TEXT("Connect it to the material's FrontMaterial pin: ")
+			TEXT("{\"from_node\": N, \"to_node\": \"material\", \"to_pin\": \"FrontMaterial\"}. ")
+			TEXT("Substrate must be enabled in Project Settings > Rendering > Substrate."));
+	}
+
+	// ---- MaterialFunctionCall usage note ----
+	if (bIsFunctionCall)
+	{
+		auto UsageObj = MakeShared<FJsonObject>();
+		UsageObj->SetStringField(TEXT("description"),
+			TEXT("To use a Material Function in build_material_graph, set the function_path property:"));
+		UsageObj->SetStringField(TEXT("example"),
+			TEXT("{\"type\": \"MaterialFunctionCall\", \"properties\": {\"function_path\": \"/Engine/Functions/...\"}}"));
+		UsageObj->SetStringField(TEXT("discover_functions"),
+			TEXT("Use search_material_functions(filter, include_engine=true) to find functions, ")
+			TEXT("then get_material_function_info(function_path) to see inputs/outputs."));
+		Result->SetObjectField(TEXT("usage"), UsageObj);
+	}
 
 	// Clean up temp object
 	Temp->MarkAsGarbage();
@@ -570,6 +803,90 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleGetExpressionTypeI
 	auto R = MakeShared<FJsonObject>();
 	R->SetBoolField(TEXT("success"), true);
 	R->SetObjectField(TEXT("info"), Result);
+	return R;
+}
+
+// ---------------------------------------------------------------------------
+// HandleGetAvailableMaterialPins
+// ---------------------------------------------------------------------------
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleGetAvailableMaterialPins(
+	const TSharedPtr<FJsonObject>& Params)
+{
+	FString MaterialPath;
+	if (!Params->TryGetStringField(TEXT("material_path"), MaterialPath))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'material_path'"));
+	}
+
+	UMaterial* OriginalMaterial = Cast<UMaterial>(UEditorAssetLibrary::LoadAsset(MaterialPath));
+	UMaterial* Material = OriginalMaterial ? ResolveWorkingMaterial(OriginalMaterial) : nullptr;
+	if (!Material)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Material not found: %s"), *MaterialPath));
+	}
+
+	// Gather all visible pins
+	TArray<FMaterialPinInfo> Pins;
+	GetMaterialPropertyPins(Material, Pins);
+
+	// Also build a map of what's connected (reuse existing helper)
+	FMaterialExpressionCollection& Collection = Material->GetExpressionCollection();
+	TMap<UMaterialExpression*, int32> ExprIndexMap;
+	for (int32 i = 0; i < Collection.Expressions.Num(); ++i)
+	{
+		if (UMaterialExpression* E = Collection.Expressions[i])
+		{
+			ExprIndexMap.Add(E, i);
+		}
+	}
+
+	TArray<TSharedPtr<FJsonValue>> PinsArr;
+	for (const FMaterialPinInfo& Pin : Pins)
+	{
+		auto PinObj = MakeShared<FJsonObject>();
+		PinObj->SetStringField(TEXT("name"), Pin.Name);
+		PinObj->SetStringField(TEXT("expected_type"), Pin.ExpectedType);
+		PinObj->SetBoolField(TEXT("connected"), Pin.bConnected);
+
+		// If connected, report which node feeds it
+		if (Pin.bConnected)
+		{
+			UMaterialExpression* InputNode = UMaterialEditingLibrary::GetMaterialPropertyInputNode(Material, Pin.Property);
+			if (InputNode)
+			{
+				const int32* IdxPtr = ExprIndexMap.Find(InputNode);
+				PinObj->SetNumberField(TEXT("connected_node_index"), IdxPtr ? *IdxPtr : -1);
+				FString NodeType = InputNode->GetClass()->GetName();
+				NodeType.RemoveFromStart(TEXT("MaterialExpression"));
+				PinObj->SetStringField(TEXT("connected_node_type"), NodeType);
+			}
+		}
+
+		PinsArr.Add(MakeShared<FJsonValueObject>(PinObj));
+	}
+
+	// Report Substrate status
+	bool bSubstrateEnabled = Substrate::IsSubstrateEnabled();
+	bool bHasFrontMaterial = Material->HasSubstrateFrontMaterialConnected();
+
+	auto R = MakeShared<FJsonObject>();
+	R->SetBoolField(TEXT("success"), true);
+	R->SetStringField(TEXT("path"), MaterialPath);
+	R->SetNumberField(TEXT("pin_count"), PinsArr.Num());
+	R->SetArrayField(TEXT("pins"), PinsArr);
+	R->SetBoolField(TEXT("substrate_enabled"), bSubstrateEnabled);
+	R->SetBoolField(TEXT("has_front_material_connected"), bHasFrontMaterial);
+
+	if (bSubstrateEnabled)
+	{
+		R->SetStringField(TEXT("substrate_note"),
+			TEXT("Substrate is enabled. Use FrontMaterial pin with Substrate BSDF nodes "
+			     "(SubstrateSlabBSDF, SubstrateShadingModels, SubstrateSimpleClearCoatBSDF, etc.). "
+			     "Traditional pins (BaseColor, Metallic, etc.) are auto-converted when Substrate is active."));
+	}
+
 	return R;
 }
 

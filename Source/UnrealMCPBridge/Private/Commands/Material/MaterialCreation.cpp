@@ -35,13 +35,39 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleCreateMaterial(
 	bool bTwoSided = false;
 	Params->TryGetBoolField(TEXT("two_sided"), bTwoSided);
 
-	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
-	UObject* NewAsset = AssetTools.CreateAsset(Name, Path, UMaterial::StaticClass(),
-	                                           NewObject<UMaterialFactoryNew>());
-	UMaterial* Mat = Cast<UMaterial>(NewAsset);
+	// Check if asset already exists to avoid editor overwrite popup that blocks automation
+	FString FullAssetPath = Path / Name;
+	UMaterial* Mat = nullptr;
+
+	if (UEditorAssetLibrary::DoesAssetExist(FullAssetPath))
+	{
+		bool bForce = false;
+		Params->TryGetBoolField(TEXT("force"), bForce);
+		if (!bForce)
+		{
+			return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+				FString::Printf(TEXT("Material already exists: %s. Pass force=true to overwrite."), *FullAssetPath));
+		}
+
+		// Force mode: reuse existing asset (avoids GC crash from DeleteAsset during tick)
+		Mat = Cast<UMaterial>(UEditorAssetLibrary::LoadAsset(FullAssetPath));
+		if (Mat)
+		{
+			UMaterialEditingLibrary::DeleteAllMaterialExpressions(Mat);
+		}
+	}
+
 	if (!Mat)
 	{
-		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create material (may already exist)"));
+		IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
+		UObject* NewAsset = AssetTools.CreateAsset(Name, Path, UMaterial::StaticClass(),
+		                                           NewObject<UMaterialFactoryNew>());
+		Mat = Cast<UMaterial>(NewAsset);
+	}
+
+	if (!Mat)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create material"));
 	}
 
 	Mat->BlendMode = ResolveBlendMode(BlendModeStr);
@@ -54,12 +80,11 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleCreateMaterial(
 		Mat->OpacityMaskClipValue = (float)OpacityClip;
 	}
 
-	FString FullPath = Path / Name;
-	UEditorAssetLibrary::SaveAsset(FullPath);
+	UEditorAssetLibrary::SaveAsset(FullAssetPath);
 
 	auto R = MakeShared<FJsonObject>();
 	R->SetBoolField(TEXT("success"), true);
-	R->SetStringField(TEXT("path"), FullPath);
+	R->SetStringField(TEXT("path"), FullAssetPath);
 	return R;
 }
 
@@ -83,10 +108,32 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleCreateMaterialInst
 	FString Path = TEXT("/Game/Materials");
 	Params->TryGetStringField(TEXT("path"), Path);
 
-	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
-	UObject* NewAsset = AssetTools.CreateAsset(Name, Path, UMaterialInstanceConstant::StaticClass(),
-	                                           NewObject<UMaterialInstanceConstantFactoryNew>());
-	UMaterialInstanceConstant* MI = Cast<UMaterialInstanceConstant>(NewAsset);
+	// Check if asset already exists to avoid editor overwrite popup
+	FString FullAssetPath = Path / Name;
+	UMaterialInstanceConstant* MI = nullptr;
+
+	if (UEditorAssetLibrary::DoesAssetExist(FullAssetPath))
+	{
+		bool bForce = false;
+		Params->TryGetBoolField(TEXT("force"), bForce);
+		if (!bForce)
+		{
+			return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+				FString::Printf(TEXT("Material instance already exists: %s. Pass force=true to overwrite."), *FullAssetPath));
+		}
+
+		// Force mode: reuse existing asset (avoids GC crash from DeleteAsset during tick)
+		MI = Cast<UMaterialInstanceConstant>(UEditorAssetLibrary::LoadAsset(FullAssetPath));
+	}
+
+	if (!MI)
+	{
+		IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
+		UObject* NewAsset = AssetTools.CreateAsset(Name, Path, UMaterialInstanceConstant::StaticClass(),
+		                                           NewObject<UMaterialInstanceConstantFactoryNew>());
+		MI = Cast<UMaterialInstanceConstant>(NewAsset);
+	}
+
 	if (!MI)
 	{
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create material instance"));
@@ -141,12 +188,11 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleCreateMaterialInst
 	}
 
 	UMaterialEditingLibrary::UpdateMaterialInstance(MI);
-	FString FullPath = Path / Name;
-	UEditorAssetLibrary::SaveAsset(FullPath);
+	UEditorAssetLibrary::SaveAsset(FullAssetPath);
 
 	auto R = MakeShared<FJsonObject>();
 	R->SetBoolField(TEXT("success"), true);
-	R->SetStringField(TEXT("path"), FullPath);
+	R->SetStringField(TEXT("path"), FullAssetPath);
 	return R;
 }
 

@@ -63,6 +63,7 @@ public class UnrealMCPBridge : ModuleRules
 				"Projects",
 				"AssetRegistry",
 				"PythonScriptPlugin",
+				"RenderCore",
 				"MaterialEditor",
 				"AssetTools",
 				"DataTableEditor",

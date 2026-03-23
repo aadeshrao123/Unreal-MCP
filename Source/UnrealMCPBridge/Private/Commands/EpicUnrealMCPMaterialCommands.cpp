@@ -47,6 +47,7 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleCommand(
 	else if (CommandType == TEXT("get_material_property_connections")) return HandleGetMaterialPropertyConnections(Params);
 	else if (CommandType == TEXT("get_material_errors"))              return HandleGetMaterialErrors(Params);
 	else if (CommandType == TEXT("get_expression_type_info"))       return HandleGetExpressionTypeInfo(Params);
+	else if (CommandType == TEXT("get_available_material_pins"))   return HandleGetAvailableMaterialPins(Params);
 	else if (CommandType == TEXT("validate_material_graph"))        return HandleValidateMaterialGraph(Params);
 	else if (CommandType == TEXT("trace_material_connection"))      return HandleTraceMaterialConnection(Params);
 

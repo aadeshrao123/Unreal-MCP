@@ -20,13 +20,14 @@ var materialCommands = []CommandSpec{
 			{Name: "shading_model", Type: "string", Default: "default_lit", Help: "Shading model"},
 			{Name: "two_sided", Type: "bool", Default: false, Help: "Two-sided rendering"},
 			{Name: "opacity_mask_clip_value", Type: "float", Help: "Opacity mask clip value"},
+			{Name: "force", Type: "bool", Default: false, Help: "Delete and recreate if exists"},
 		},
 	},
 	{
 		Name:  "create_material_instance",
 		Group: "materials",
 		Short: "Create a Material Instance",
-		Long:  "Creates a Material Instance from a parent material, optionally setting scalar, vector, and texture parameter overrides. Use this for variations of a base material without duplicating the graph. Call save_asset after.",
+		Long:  "Creates a Material Instance from a parent material, optionally setting scalar, vector, and texture parameter overrides. Returns error if asset already exists (pass force=true to overwrite). Call save_asset after.",
 		Example: `  ue-cli create_material_instance --parent-path /Game/Materials/M_Base --name MI_Red --path /Game/Materials
   ue-cli create_material_instance --parent-path /Game/Materials/M_Base --name MI_Custom --scalar-params '{"Roughness": 0.8}' --vector-params '{"BaseColor": {"R":1,"G":0,"B":0,"A":1}}'`,
 		Params: []ParamSpec{
@@ -36,6 +37,7 @@ var materialCommands = []CommandSpec{
 			{Name: "scalar_params", Type: "json", Help: "JSON string of scalar parameters"},
 			{Name: "vector_params", Type: "json", Help: "JSON string of vector parameters"},
 			{Name: "texture_params", Type: "json", Help: "JSON string of texture parameters"},
+			{Name: "force", Type: "bool", Default: false, Help: "Delete and recreate if exists"},
 		},
 	},
 	{
@@ -259,11 +261,24 @@ var materialCommands = []CommandSpec{
 		Name:    "get_expression_type_info",
 		Group:   "materials",
 		Short:   "Look up pins & properties for a node type",
-		Long:    "Returns the input/output pins and configurable properties for a material expression type without creating a node. Use this to discover available pins before connecting nodes.",
+		Long:    "Returns the input/output pins and configurable properties for a material expression type without creating a node. For Custom HLSL nodes, returns the custom_hlsl_schema with code/inputs/outputs documentation. For MaterialFunctionCall, pass function_path to see the function's actual pins.",
 		Example: `  ue-cli get_expression_type_info --type-name Multiply
-  ue-cli get_expression_type_info --type-name TextureSample`,
+  ue-cli get_expression_type_info --type-name Custom
+  ue-cli get_expression_type_info --type-name MaterialFunctionCall --function-path /Engine/Functions/Engine_MaterialFunctions03/Blends/Blend_Overlay
+  ue-cli get_expression_type_info --type-name SubstrateSlabBSDF`,
 		Params: []ParamSpec{
-			{Name: "type_name", Type: "string", Required: true, Help: "Expression type (e.g. Multiply, TextureSample)"},
+			{Name: "type_name", Type: "string", Required: true, Help: "Expression type (e.g. Multiply, Custom, SubstrateSlabBSDF)"},
+			{Name: "function_path", Type: "string", Help: "For MaterialFunctionCall: path to function asset to inspect"},
+		},
+	},
+	{
+		Name:    "get_available_material_pins",
+		Group:   "materials",
+		Short:   "Query available material output pins",
+		Long:    "Returns all available material output pins for a specific material, based on its current settings (blend mode, shading model, Substrate). Reports each pin's name, expected type, connection status, and Substrate state. Use this to discover valid to_pin values for connect_material_expressions with to_node=material.",
+		Example: `  ue-cli get_available_material_pins --material-path /Game/Materials/M_Test`,
+		Params: []ParamSpec{
+			{Name: "material_path", Type: "string", Required: true, Help: "Material asset path"},
 		},
 	},
 	{
@@ -343,6 +358,7 @@ var materialCommands = []CommandSpec{
 			{Name: "path", Type: "string", Default: "/Game/Materials/Functions", Help: "Content path"},
 			{Name: "description", Type: "string", Help: "Description"},
 			{Name: "expose_to_library", Type: "bool", Default: true, Help: "Expose to material library"},
+			{Name: "force", Type: "bool", Default: false, Help: "Delete and recreate if exists"},
 		},
 	},
 	{

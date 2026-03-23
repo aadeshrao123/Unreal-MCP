@@ -636,6 +636,7 @@ FString UEpicUnrealMCPBridge::ExecuteCommand(
 				CommandType == TEXT("get_material_errors") ||
 				CommandType == TEXT("list_material_expression_types") ||
 				CommandType == TEXT("get_expression_type_info") ||
+				CommandType == TEXT("get_available_material_pins") ||
 				CommandType == TEXT("disconnect_material_expression") ||
 				CommandType == TEXT("search_material_functions") ||
 				CommandType == TEXT("validate_material_graph") ||

@@ -230,11 +230,37 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleCreateMaterialFunc
 	bool bExposeToLibrary = true;
 	Params->TryGetBoolField(TEXT("expose_to_library"), bExposeToLibrary);
 
-	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
-	UMaterialFunctionFactoryNew* Factory = NewObject<UMaterialFunctionFactoryNew>();
-	UObject* NewAsset = AssetTools.CreateAsset(Name, Path, UMaterialFunction::StaticClass(), Factory);
+	// Check if asset already exists to avoid editor overwrite popup
+	FString FullAssetPath = Path / Name;
+	UMaterialFunction* MF = nullptr;
 
-	UMaterialFunction* MF = Cast<UMaterialFunction>(NewAsset);
+	if (UEditorAssetLibrary::DoesAssetExist(FullAssetPath))
+	{
+		bool bForce = false;
+		Params->TryGetBoolField(TEXT("force"), bForce);
+		if (!bForce)
+		{
+			return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+				FString::Printf(TEXT("Material function already exists: %s. Pass force=true to overwrite."), *FullAssetPath));
+		}
+
+		// Force mode: reuse existing asset (avoids GC crash from DeleteAsset during tick)
+		MF = Cast<UMaterialFunction>(UEditorAssetLibrary::LoadAsset(FullAssetPath));
+		if (MF)
+		{
+			FMaterialExpressionCollection& Collection = MF->GetExpressionCollection();
+			Collection.Empty();
+		}
+	}
+
+	if (!MF)
+	{
+		IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
+		UMaterialFunctionFactoryNew* Factory = NewObject<UMaterialFunctionFactoryNew>();
+		UObject* NewAsset = AssetTools.CreateAsset(Name, Path, UMaterialFunction::StaticClass(), Factory);
+		MF = Cast<UMaterialFunction>(NewAsset);
+	}
+
 	if (!MF)
 	{
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
@@ -247,19 +273,11 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPMaterialCommands::HandleCreateMaterialFunc
 	}
 	MF->bExposeToLibrary = bExposeToLibrary;
 
-	FString FullPath = MF->GetPathName();
-	// Strip the object name suffix (e.g. "/Game/Path/Name.Name" -> "/Game/Path/Name")
-	int32 DotIdx = INDEX_NONE;
-	if (FullPath.FindChar(TEXT('.'), DotIdx))
-	{
-		FullPath.LeftInline(DotIdx);
-	}
-
-	UEditorAssetLibrary::SaveAsset(FullPath);
+	UEditorAssetLibrary::SaveAsset(FullAssetPath);
 
 	auto R = MakeShared<FJsonObject>();
 	R->SetBoolField(TEXT("success"), true);
-	R->SetStringField(TEXT("path"), FullPath);
+	R->SetStringField(TEXT("path"), FullAssetPath);
 	R->SetStringField(TEXT("name"), Name);
 	return R;
 }

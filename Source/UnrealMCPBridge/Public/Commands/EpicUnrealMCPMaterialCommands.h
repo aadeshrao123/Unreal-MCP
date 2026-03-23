@@ -44,6 +44,7 @@ private:
 	TSharedPtr<FJsonObject> HandleGetMaterialPropertyConnections(const TSharedPtr<FJsonObject>& Params);
 	TSharedPtr<FJsonObject> HandleGetMaterialErrors(const TSharedPtr<FJsonObject>& Params);
 	TSharedPtr<FJsonObject> HandleGetExpressionTypeInfo(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleGetAvailableMaterialPins(const TSharedPtr<FJsonObject>& Params);
 	TSharedPtr<FJsonObject> HandleValidateMaterialGraph(const TSharedPtr<FJsonObject>& Params);
 	TSharedPtr<FJsonObject> HandleTraceMaterialConnection(const TSharedPtr<FJsonObject>& Params);
 
