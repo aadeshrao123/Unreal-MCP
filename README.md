@@ -796,20 +796,9 @@ Need Unreal MCP integrated into your studio's production pipeline? I work direct
 
 ---
 
-## Custom Unreal Development & Tooling
+## Custom Development & Support
 
-I'm an Unreal Engine 5 developer available for contract work. This project is one example — but I work across the full UE5 stack: gameplay systems, multiplayer, editor tooling, ECS (Mass Entity), and production automation.
-
-**What I work on:**
-
-- **Gameplay Systems** — Combat, inventory, progression, abilities (GAS), AI, and any C++ gameplay feature your project needs
-- **Multiplayer & Replication** — Dedicated servers, client-side prediction, efficient replication, and networking architecture
-- **Custom Editor Tools** — Purpose-built C++ editor utilities, batch processing, workflow automation, and pipeline tools that save your team hours of manual work
-- **ECS / Mass Entity** — High-performance entity systems for large-scale simulations (100k+ entities) — logistics, factories, crowds, AI
-- **Production Pipeline Integration** — Connect Unreal with your build systems, version control, CI/CD, and internal tools
-- **AI-Assisted Workflows** — Set up AI assistants to work directly with your Unreal project for accelerated development
-
-**Contact:**
+Need help with your Unreal project? I'm available for contract work across the full UE5 C++ stack, from gameplay and multiplayer to editor tooling and Mass Entity systems. See [SUPPORT.md](SUPPORT.md) for details.
 
 [aadeshrao80@gmail.com](mailto:aadeshrao80@gmail.com) · [LinkedIn](https://www.linkedin.com/in/aadeshyadav/) · [Portfolio](https://aadeshyadav.vercel.app/) · Discord: `destroyerpal`
 
