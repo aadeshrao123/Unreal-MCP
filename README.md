@@ -776,6 +776,45 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ---
 
+## Enterprise & Studio Integration
+
+Need Unreal MCP integrated into your studio's production pipeline? I work directly with game studios to build custom AI-assisted workflows on top of this tool.
+
+**What I offer:**
+
+- **Pipeline Integration** — Set up Unreal MCP within your existing build system, CI/CD, and team workflow so every artist and developer can use AI assistants with your Unreal project out of the box
+- **Custom Tool Development** — Build MCP commands tailored to your studio's proprietary formats, internal tools, and specific production needs that the open-source version doesn't cover
+- **AI Workflow Design** — Design and implement how your team uses AI assistants (Claude, Cursor, Copilot) with Unreal Engine — from material creation to level design to asset pipelines
+- **Advanced Material & Substrate Systems** — Procedural material generation, Substrate workflows, complex shader pipelines — fully automated through MCP
+
+**Get in touch:**
+
+- Email: [aadeshrao80@gmail.com](mailto:aadeshrao80@gmail.com)
+- LinkedIn: [linkedin.com/in/aadeshyadav](https://www.linkedin.com/in/aadeshyadav/)
+- Discord: `destroyerpal`
+- Portfolio: [aadeshyadav.vercel.app](https://aadeshyadav.vercel.app/)
+
+---
+
+## Custom Unreal Development & Tooling
+
+I'm an Unreal Engine 5 developer available for contract work. This project is one example — but I work across the full UE5 stack: gameplay systems, multiplayer, editor tooling, ECS (Mass Entity), and production automation.
+
+**What I work on:**
+
+- **Gameplay Systems** — Combat, inventory, progression, abilities (GAS), AI, and any C++ gameplay feature your project needs
+- **Multiplayer & Replication** — Dedicated servers, client-side prediction, efficient replication, and networking architecture
+- **Custom Editor Tools** — Purpose-built C++ editor utilities, batch processing, workflow automation, and pipeline tools that save your team hours of manual work
+- **ECS / Mass Entity** — High-performance entity systems for large-scale simulations (100k+ entities) — logistics, factories, crowds, AI
+- **Production Pipeline Integration** — Connect Unreal with your build systems, version control, CI/CD, and internal tools
+- **AI-Assisted Workflows** — Set up AI assistants to work directly with your Unreal project for accelerated development
+
+**Contact:**
+
+[aadeshrao80@gmail.com](mailto:aadeshrao80@gmail.com) · [LinkedIn](https://www.linkedin.com/in/aadeshyadav/) · [Portfolio](https://aadeshyadav.vercel.app/) · Discord: `destroyerpal`
+
+---
+
 ## License
 
 MPL-2.0 — see [LICENSE](LICENSE) for details.
