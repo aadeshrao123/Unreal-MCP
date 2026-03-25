@@ -15,3 +15,4 @@ from unrealmcp.tools import widgets          # noqa: F401 — C++ bridge: widget
 from unrealmcp.tools import enhanced_input   # noqa: F401 — C++ bridge: Enhanced Input IA/IMC
 from unrealmcp.tools import profiling        # noqa: F401 — C++ bridge: .utrace profiling analysis
 from unrealmcp.tools import debug            # noqa: F401 — C++ bridge: token debug & response analysis
+from unrealmcp.tools import niagara          # noqa: F401 — C++ bridge: Niagara particle system tools

@@ -18,6 +18,7 @@
 #include "Commands/EpicUnrealMCPWidgetCommands.h"
 #include "Commands/EpicUnrealMCPEnhancedInputCommands.h"
 #include "Commands/Profiling/EpicUnrealMCPProfilingCommands.h"
+#include "Commands/EpicUnrealMCPNiagaraCommands.h"
 #include "EpicUnrealMCPBridge.generated.h"
 
 class FMCPServerRunnable;
@@ -105,4 +106,5 @@ private:
 	TSharedPtr<FEpicUnrealMCPWidgetCommands> WidgetCommands;
 	TSharedPtr<FEpicUnrealMCPEnhancedInputCommands> EnhancedInputCommands;
 	TSharedPtr<FEpicUnrealMCPProfilingCommands> ProfilingCommands;
+	TSharedPtr<FEpicUnrealMCPNiagaraCommands> NiagaraCommands;
 };

@@ -1,0 +1,1521 @@
+#include "Commands/EpicUnrealMCPNiagaraCommands.h"
+#include "Commands/EpicUnrealMCPCommonUtils.h"
+#include "NiagaraHelpers.h"
+
+#include "NiagaraSystem.h"
+#include "NiagaraEmitter.h"
+#include "NiagaraEmitterHandle.h"
+#include "NiagaraScript.h"
+#include "NiagaraScriptSource.h"
+#include "NiagaraGraph.h"
+#include "NiagaraNodeOutput.h"
+#include "NiagaraNodeFunctionCall.h"
+#include "NiagaraNodeInput.h"
+#include "NiagaraNodeCustomHlsl.h"
+#include "NiagaraCommon.h"
+#include "NiagaraTypes.h"
+#include "NiagaraScriptVariable.h"
+
+#include "EdGraph/EdGraphPin.h"
+#include "ScopedTransaction.h"
+
+#if WITH_EDITORONLY_DATA
+#include "NiagaraSystemEditorData.h"
+#include "ViewModels/Stack/NiagaraStackGraphUtilities.h"
+#include "ViewModels/Stack/NiagaraParameterHandle.h"
+#endif
+
+// ---------------------------------------------------------------------------
+// Local helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Remove nodes wired to an override pin and break the links.
+ * Replacement for the unexported RemoveNodesForStackFunctionInputOverridePin.
+ */
+static void RemoveOverridePinConnections(UEdGraphPin& OverridePin, UNiagaraGraph* Graph)
+{
+	if (OverridePin.LinkedTo.Num() == 0)
+	{
+		return;
+	}
+
+	TArray<UEdGraphNode*> NodesToRemove;
+	for (UEdGraphPin* LinkedPin : OverridePin.LinkedTo)
+	{
+		if (LinkedPin && LinkedPin->GetOwningNode())
+		{
+			NodesToRemove.AddUnique(LinkedPin->GetOwningNode());
+		}
+	}
+
+	OverridePin.BreakAllPinLinks();
+
+	for (UEdGraphNode* NodeToRemove : NodesToRemove)
+	{
+		if (!NodeToRemove || !Graph)
+		{
+			continue;
+		}
+
+		for (UEdGraphPin* Pin : NodeToRemove->Pins)
+		{
+			if (Pin)
+			{
+				Pin->BreakAllPinLinks();
+			}
+		}
+		Graph->RemoveNode(NodeToRemove);
+	}
+}
+
+/**
+ * Walk the module chain connected to an output node and collect
+ * UNiagaraNodeFunctionCall nodes in execution order.
+ * Index 0 = first module in execution order (furthest from output node).
+ * Last index = closest to output node (executes last).
+ */
+static void CollectModuleChain(
+	UNiagaraNodeOutput* OutputNode,
+	TArray<UNiagaraNodeFunctionCall*>& OutChain)
+{
+	if (!OutputNode)
+	{
+		return;
+	}
+
+	// The output node has one input pin wired to the module chain
+	UEdGraphPin* CurrentInput = nullptr;
+	for (UEdGraphPin* Pin : OutputNode->Pins)
+	{
+		if (Pin->Direction == EGPD_Input)
+		{
+			CurrentInput = Pin;
+			break;
+		}
+	}
+
+	// Walk upstream through the chain
+	while (CurrentInput && CurrentInput->LinkedTo.Num() > 0)
+	{
+		UEdGraphPin* UpstreamPin = CurrentInput->LinkedTo[0];
+		if (!UpstreamPin)
+		{
+			break;
+		}
+
+		UEdGraphNode* UpstreamNode = UpstreamPin->GetOwningNode();
+		UNiagaraNodeFunctionCall* FuncNode = Cast<UNiagaraNodeFunctionCall>(UpstreamNode);
+		if (FuncNode)
+		{
+			OutChain.Add(FuncNode);
+		}
+
+		// Walk further upstream via the function node's input pin
+		CurrentInput = nullptr;
+		if (UpstreamNode)
+		{
+			for (UEdGraphPin* Pin : UpstreamNode->Pins)
+			{
+				if (Pin->Direction == EGPD_Input)
+				{
+					CurrentInput = Pin;
+					break;
+				}
+			}
+		}
+	}
+
+	// Reverse so index 0 = first in execution order
+	Algo::Reverse(OutChain);
+}
+
+/**
+ * Find the first pin on a node with the given direction.
+ */
+static UEdGraphPin* FindFirstPin(UEdGraphNode* Node, EEdGraphPinDirection Direction)
+{
+	if (!Node)
+	{
+		return nullptr;
+	}
+	for (UEdGraphPin* Pin : Node->Pins)
+	{
+		if (Pin->Direction == Direction)
+		{
+			return Pin;
+		}
+	}
+	return nullptr;
+}
+
+// ---------------------------------------------------------------------------
+// HandleGetNiagaraModules
+// ---------------------------------------------------------------------------
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleGetNiagaraModules(
+	const TSharedPtr<FJsonObject>& Params)
+{
+#if WITH_EDITORONLY_DATA
+	FString SystemPath;
+	if (!Params->TryGetStringField(TEXT("system_path"), SystemPath))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'system_path' parameter"));
+	}
+
+	FString EmitterName;
+	if (!Params->TryGetStringField(TEXT("emitter_name"), EmitterName))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'emitter_name' parameter"));
+	}
+
+	FString ScriptUsageFilter = TEXT("all");
+	Params->TryGetStringField(TEXT("script_usage"), ScriptUsageFilter);
+
+	bool bIncludeInputs = true;
+	Params->TryGetBoolField(TEXT("include_inputs"), bIncludeInputs);
+
+	// Load system
+	FString LoadError;
+	UNiagaraSystem* System = NiagaraHelpers::LoadNiagaraSystem(SystemPath, LoadError);
+	if (!System)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(LoadError);
+	}
+
+	// Find emitter
+	int32 EmitterIdx = INDEX_NONE;
+	FString EmitterError;
+	FNiagaraEmitterHandle* Handle = NiagaraHelpers::FindEmitterHandle(
+		System, EmitterName, EmitterIdx, EmitterError);
+	if (!Handle)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(EmitterError);
+	}
+
+	FVersionedNiagaraEmitterData* EmitterData = NiagaraHelpers::GetEmitterData(Handle);
+	if (!EmitterData)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Emitter has no data"));
+	}
+
+	// Determine which script usages to query
+	TArray<ENiagaraScriptUsage> Usages;
+	if (ScriptUsageFilter.Equals(TEXT("all"), ESearchCase::IgnoreCase))
+	{
+		Usages.Add(ENiagaraScriptUsage::EmitterSpawnScript);
+		Usages.Add(ENiagaraScriptUsage::EmitterUpdateScript);
+		Usages.Add(ENiagaraScriptUsage::ParticleSpawnScript);
+		Usages.Add(ENiagaraScriptUsage::ParticleUpdateScript);
+	}
+	else
+	{
+		bool bOk = false;
+		ENiagaraScriptUsage Usage = NiagaraHelpers::ParseScriptUsage(ScriptUsageFilter, bOk);
+		if (!bOk)
+		{
+			return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+				FString::Printf(TEXT("Invalid script_usage: '%s'"), *ScriptUsageFilter));
+		}
+		Usages.Add(Usage);
+	}
+
+	TArray<TSharedPtr<FJsonValue>> ModulesArray;
+
+	for (ENiagaraScriptUsage Usage : Usages)
+	{
+		UNiagaraGraph* Graph = NiagaraHelpers::GetGraphForUsage(EmitterData, Usage);
+		if (!Graph)
+		{
+			continue;
+		}
+
+		UNiagaraNodeOutput* OutputNode = NiagaraHelpers::GetOutputNodeForUsage(Graph, Usage);
+		if (!OutputNode)
+		{
+			continue;
+		}
+
+		// Walk the chain to get modules in execution order
+		TArray<UNiagaraNodeFunctionCall*> Chain;
+		CollectModuleChain(OutputNode, Chain);
+
+		for (int32 i = 0; i < Chain.Num(); ++i)
+		{
+			TSharedPtr<FJsonObject> ModuleJson = NiagaraHelpers::ModuleNodeToJson(
+				Chain[i], i, Usage, bIncludeInputs);
+			ModulesArray.Add(MakeShared<FJsonValueObject>(ModuleJson));
+		}
+	}
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("system_path"), SystemPath);
+	Data->SetStringField(TEXT("emitter_name"), EmitterName);
+	Data->SetArrayField(TEXT("modules"), ModulesArray);
+	Data->SetNumberField(TEXT("count"), ModulesArray.Num());
+
+	return FEpicUnrealMCPCommonUtils::CreateSuccessResponse(Data);
+#else
+	return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Editor-only operation"));
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// HandleAddNiagaraModule
+// ---------------------------------------------------------------------------
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleAddNiagaraModule(
+	const TSharedPtr<FJsonObject>& Params)
+{
+#if WITH_EDITORONLY_DATA
+	FString SystemPath;
+	if (!Params->TryGetStringField(TEXT("system_path"), SystemPath))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'system_path' parameter"));
+	}
+
+	FString EmitterName;
+	if (!Params->TryGetStringField(TEXT("emitter_name"), EmitterName))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'emitter_name' parameter"));
+	}
+
+	FString ModulePath;
+	if (!Params->TryGetStringField(TEXT("module_path"), ModulePath))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'module_path' parameter"));
+	}
+
+	FString ScriptUsageStr;
+	if (!Params->TryGetStringField(TEXT("script_usage"), ScriptUsageStr))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'script_usage' parameter"));
+	}
+
+	int32 TargetIndex = INDEX_NONE;
+	{
+		double IndexD = -1;
+		if (Params->TryGetNumberField(TEXT("index"), IndexD))
+		{
+			TargetIndex = static_cast<int32>(IndexD);
+		}
+	}
+
+	// Parse usage
+	bool bUsageOk = false;
+	ENiagaraScriptUsage Usage = NiagaraHelpers::ParseScriptUsage(ScriptUsageStr, bUsageOk);
+	if (!bUsageOk)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Invalid script_usage: '%s'"), *ScriptUsageStr));
+	}
+
+	// Load system
+	FString LoadError;
+	UNiagaraSystem* System = NiagaraHelpers::LoadNiagaraSystem(SystemPath, LoadError);
+	if (!System)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(LoadError);
+	}
+
+	// Find emitter
+	int32 EmitterIdx = INDEX_NONE;
+	FString EmitterError;
+	FNiagaraEmitterHandle* Handle = NiagaraHelpers::FindEmitterHandle(
+		System, EmitterName, EmitterIdx, EmitterError);
+	if (!Handle)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(EmitterError);
+	}
+
+	FVersionedNiagaraEmitterData* EmitterData = NiagaraHelpers::GetEmitterData(Handle);
+	if (!EmitterData)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Emitter has no data"));
+	}
+
+	// Load module script
+	UNiagaraScript* ModuleScript = LoadObject<UNiagaraScript>(nullptr, *ModulePath);
+	if (!ModuleScript)
+	{
+		// Try appending the asset name
+		FString FullPath = ModulePath;
+		if (!FullPath.Contains(TEXT(".")))
+		{
+			FString AssetName = FPaths::GetBaseFilename(FullPath);
+			FullPath = FullPath + TEXT(".") + AssetName;
+		}
+		ModuleScript = LoadObject<UNiagaraScript>(nullptr, *FullPath);
+	}
+	if (!ModuleScript)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Failed to load module script: %s"), *ModulePath));
+	}
+
+	// Get graph and output node
+	UNiagaraGraph* Graph = NiagaraHelpers::GetGraphForUsage(EmitterData, Usage);
+	if (!Graph)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No graph for the given script usage"));
+	}
+
+	UNiagaraNodeOutput* OutputNode = NiagaraHelpers::GetOutputNodeForUsage(Graph, Usage);
+	if (!OutputNode)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("No output node for usage: %s"), *ScriptUsageStr));
+	}
+
+	FScopedTransaction Transaction(
+		NSLOCTEXT("UnrealMCPBridge", "AddNiagaraModule", "Add Niagara Module"));
+
+	// Create function call node for the module
+	UNiagaraNodeFunctionCall* NewNode = NewObject<UNiagaraNodeFunctionCall>(Graph);
+	NewNode->FunctionScript = ModuleScript;
+	NewNode->CreateNewGuid();
+	NewNode->PostPlacedNewNode();
+	NewNode->AllocateDefaultPins();
+	Graph->AddNode(NewNode, false, false);
+
+	// Locate the parameter map pins on the new node
+	UEdGraphPin* ModuleOutputPin = FindFirstPin(NewNode, EGPD_Output);
+	UEdGraphPin* ModuleInputPin = FindFirstPin(NewNode, EGPD_Input);
+
+	if (!ModuleOutputPin)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			TEXT("New module node has no output pin"));
+	}
+
+	// Find the output node's input pin
+	UEdGraphPin* OutputNodeInputPin = FindFirstPin(OutputNode, EGPD_Input);
+	if (!OutputNodeInputPin)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			TEXT("Output node has no input pin to wire modules into"));
+	}
+
+	// Collect the existing chain for index-based insertion
+	TArray<UNiagaraNodeFunctionCall*> ExistingChain;
+	CollectModuleChain(OutputNode, ExistingChain);
+
+	if (TargetIndex >= 0 && TargetIndex < ExistingChain.Num())
+	{
+		// Insert at a specific position by splicing in between nodes.
+		UNiagaraNodeFunctionCall* NodeAtTarget = ExistingChain[TargetIndex];
+
+		UEdGraphPin* TargetNodeInput = FindFirstPin(NodeAtTarget, EGPD_Input);
+		if (TargetNodeInput && TargetNodeInput->LinkedTo.Num() > 0)
+		{
+			UEdGraphPin* PreviousOutput = TargetNodeInput->LinkedTo[0];
+			TargetNodeInput->BreakAllPinLinks();
+
+			// Previous -> NewModule -> NodeAtTarget
+			if (ModuleInputPin && PreviousOutput)
+			{
+				ModuleInputPin->MakeLinkTo(PreviousOutput);
+			}
+			ModuleOutputPin->MakeLinkTo(TargetNodeInput);
+		}
+		else
+		{
+			// Target is the first node in the chain -- wire new module before it
+			if (TargetNodeInput)
+			{
+				ModuleOutputPin->MakeLinkTo(TargetNodeInput);
+			}
+		}
+	}
+	else
+	{
+		// Append to end (closest to output node)
+		if (OutputNodeInputPin->LinkedTo.Num() > 0)
+		{
+			UEdGraphPin* PreviousOutput = OutputNodeInputPin->LinkedTo[0];
+			OutputNodeInputPin->BreakAllPinLinks();
+
+			if (ModuleInputPin && PreviousOutput)
+			{
+				ModuleInputPin->MakeLinkTo(PreviousOutput);
+			}
+		}
+
+		ModuleOutputPin->MakeLinkTo(OutputNodeInputPin);
+	}
+
+	Graph->NotifyGraphChanged();
+	NiagaraHelpers::CompileAndSync(System);
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("system_path"), SystemPath);
+	Data->SetStringField(TEXT("emitter_name"), EmitterName);
+	Data->SetStringField(TEXT("module_name"), NewNode->GetFunctionName());
+	Data->SetStringField(TEXT("module_path"), ModulePath);
+	Data->SetStringField(TEXT("script_usage"), ScriptUsageStr);
+
+	return FEpicUnrealMCPCommonUtils::CreateSuccessResponse(Data);
+#else
+	return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Editor-only operation"));
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// HandleRemoveNiagaraModule
+// ---------------------------------------------------------------------------
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleRemoveNiagaraModule(
+	const TSharedPtr<FJsonObject>& Params)
+{
+#if WITH_EDITORONLY_DATA
+	FString SystemPath;
+	if (!Params->TryGetStringField(TEXT("system_path"), SystemPath))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'system_path' parameter"));
+	}
+
+	FString EmitterName;
+	if (!Params->TryGetStringField(TEXT("emitter_name"), EmitterName))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'emitter_name' parameter"));
+	}
+
+	FString ModuleName;
+	if (!Params->TryGetStringField(TEXT("module_name"), ModuleName))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'module_name' parameter"));
+	}
+
+	FString ScriptUsageStr;
+	if (!Params->TryGetStringField(TEXT("script_usage"), ScriptUsageStr))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'script_usage' parameter"));
+	}
+
+	bool bUsageOk = false;
+	ENiagaraScriptUsage Usage = NiagaraHelpers::ParseScriptUsage(ScriptUsageStr, bUsageOk);
+	if (!bUsageOk)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Invalid script_usage: '%s'"), *ScriptUsageStr));
+	}
+
+	// Load system
+	FString LoadError;
+	UNiagaraSystem* System = NiagaraHelpers::LoadNiagaraSystem(SystemPath, LoadError);
+	if (!System)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(LoadError);
+	}
+
+	// Find emitter
+	int32 EmitterIdx = INDEX_NONE;
+	FString EmitterError;
+	FNiagaraEmitterHandle* Handle = NiagaraHelpers::FindEmitterHandle(
+		System, EmitterName, EmitterIdx, EmitterError);
+	if (!Handle)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(EmitterError);
+	}
+
+	FVersionedNiagaraEmitterData* EmitterData = NiagaraHelpers::GetEmitterData(Handle);
+	if (!EmitterData)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Emitter has no data"));
+	}
+
+	UNiagaraGraph* Graph = NiagaraHelpers::GetGraphForUsage(EmitterData, Usage);
+	if (!Graph)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No graph for the given script usage"));
+	}
+
+	// Find the module node
+	FString FindError;
+	UNiagaraNodeFunctionCall* ModuleNode = NiagaraHelpers::FindModuleNode(
+		Graph, Usage, ModuleName, FindError);
+	if (!ModuleNode)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FindError);
+	}
+
+	FScopedTransaction Transaction(
+		NSLOCTEXT("UnrealMCPBridge", "RemoveNiagaraModule", "Remove Niagara Module"));
+
+	// Splice the chain around the removed node to keep the pipeline intact
+	UEdGraphPin* NodeInput = FindFirstPin(ModuleNode, EGPD_Input);
+	UEdGraphPin* NodeOutput = FindFirstPin(ModuleNode, EGPD_Output);
+
+	UEdGraphPin* UpstreamOutput =
+		(NodeInput && NodeInput->LinkedTo.Num() > 0) ? NodeInput->LinkedTo[0] : nullptr;
+	UEdGraphPin* DownstreamInput =
+		(NodeOutput && NodeOutput->LinkedTo.Num() > 0) ? NodeOutput->LinkedTo[0] : nullptr;
+
+	// Break all links on the node
+	for (UEdGraphPin* Pin : ModuleNode->Pins)
+	{
+		if (Pin)
+		{
+			Pin->BreakAllPinLinks();
+		}
+	}
+
+	// Reconnect the chain around the removed node
+	if (UpstreamOutput && DownstreamInput)
+	{
+		UpstreamOutput->MakeLinkTo(DownstreamInput);
+	}
+
+	Graph->RemoveNode(ModuleNode);
+	Graph->NotifyGraphChanged();
+	NiagaraHelpers::CompileAndSync(System);
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("removed_module"), ModuleName);
+	Data->SetStringField(TEXT("emitter_name"), EmitterName);
+	Data->SetStringField(TEXT("script_usage"), ScriptUsageStr);
+
+	return FEpicUnrealMCPCommonUtils::CreateSuccessResponse(Data);
+#else
+	return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Editor-only operation"));
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// HandleSetNiagaraModuleEnabled
+// ---------------------------------------------------------------------------
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleSetNiagaraModuleEnabled(
+	const TSharedPtr<FJsonObject>& Params)
+{
+#if WITH_EDITORONLY_DATA
+	FString SystemPath;
+	if (!Params->TryGetStringField(TEXT("system_path"), SystemPath))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'system_path' parameter"));
+	}
+
+	FString EmitterName;
+	if (!Params->TryGetStringField(TEXT("emitter_name"), EmitterName))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'emitter_name' parameter"));
+	}
+
+	FString ModuleName;
+	if (!Params->TryGetStringField(TEXT("module_name"), ModuleName))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'module_name' parameter"));
+	}
+
+	FString ScriptUsageStr;
+	if (!Params->TryGetStringField(TEXT("script_usage"), ScriptUsageStr))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'script_usage' parameter"));
+	}
+
+	bool bEnabled = true;
+	Params->TryGetBoolField(TEXT("enabled"), bEnabled);
+
+	bool bUsageOk = false;
+	ENiagaraScriptUsage Usage = NiagaraHelpers::ParseScriptUsage(ScriptUsageStr, bUsageOk);
+	if (!bUsageOk)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Invalid script_usage: '%s'"), *ScriptUsageStr));
+	}
+
+	// Load system
+	FString LoadError;
+	UNiagaraSystem* System = NiagaraHelpers::LoadNiagaraSystem(SystemPath, LoadError);
+	if (!System)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(LoadError);
+	}
+
+	// Find emitter
+	int32 EmitterIdx = INDEX_NONE;
+	FString EmitterError;
+	FNiagaraEmitterHandle* Handle = NiagaraHelpers::FindEmitterHandle(
+		System, EmitterName, EmitterIdx, EmitterError);
+	if (!Handle)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(EmitterError);
+	}
+
+	FVersionedNiagaraEmitterData* EmitterData = NiagaraHelpers::GetEmitterData(Handle);
+	if (!EmitterData)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Emitter has no data"));
+	}
+
+	UNiagaraGraph* Graph = NiagaraHelpers::GetGraphForUsage(EmitterData, Usage);
+	if (!Graph)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No graph for the given script usage"));
+	}
+
+	FString FindError;
+	UNiagaraNodeFunctionCall* ModuleNode = NiagaraHelpers::FindModuleNode(
+		Graph, Usage, ModuleName, FindError);
+	if (!ModuleNode)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FindError);
+	}
+
+	FScopedTransaction Transaction(
+		NSLOCTEXT("UnrealMCPBridge", "SetNiagaraModuleEnabled", "Set Module Enabled"));
+
+	ModuleNode->SetEnabledState(
+		bEnabled ? ENodeEnabledState::Enabled : ENodeEnabledState::Disabled,
+		false);
+	ModuleNode->MarkNodeRequiresSynchronization(TEXT("Module enabled state changed"), true);
+
+	Graph->NotifyGraphChanged();
+	NiagaraHelpers::CompileAndSync(System);
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("module_name"), ModuleName);
+	Data->SetBoolField(TEXT("enabled"), bEnabled);
+
+	return FEpicUnrealMCPCommonUtils::CreateSuccessResponse(Data);
+#else
+	return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Editor-only operation"));
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// HandleReorderNiagaraModule
+// ---------------------------------------------------------------------------
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleReorderNiagaraModule(
+	const TSharedPtr<FJsonObject>& Params)
+{
+#if WITH_EDITORONLY_DATA
+	FString SystemPath;
+	if (!Params->TryGetStringField(TEXT("system_path"), SystemPath))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'system_path' parameter"));
+	}
+
+	FString EmitterName;
+	if (!Params->TryGetStringField(TEXT("emitter_name"), EmitterName))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'emitter_name' parameter"));
+	}
+
+	FString ModuleName;
+	if (!Params->TryGetStringField(TEXT("module_name"), ModuleName))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'module_name' parameter"));
+	}
+
+	FString ScriptUsageStr;
+	if (!Params->TryGetStringField(TEXT("script_usage"), ScriptUsageStr))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'script_usage' parameter"));
+	}
+
+	double NewIndexD = 0;
+	if (!Params->TryGetNumberField(TEXT("new_index"), NewIndexD))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'new_index' parameter"));
+	}
+	int32 NewIndex = static_cast<int32>(NewIndexD);
+
+	bool bUsageOk = false;
+	ENiagaraScriptUsage Usage = NiagaraHelpers::ParseScriptUsage(ScriptUsageStr, bUsageOk);
+	if (!bUsageOk)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Invalid script_usage: '%s'"), *ScriptUsageStr));
+	}
+
+	// Load system
+	FString LoadError;
+	UNiagaraSystem* System = NiagaraHelpers::LoadNiagaraSystem(SystemPath, LoadError);
+	if (!System)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(LoadError);
+	}
+
+	// Find emitter
+	int32 EmitterIdx = INDEX_NONE;
+	FString EmitterError;
+	FNiagaraEmitterHandle* Handle = NiagaraHelpers::FindEmitterHandle(
+		System, EmitterName, EmitterIdx, EmitterError);
+	if (!Handle)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(EmitterError);
+	}
+
+	FVersionedNiagaraEmitterData* EmitterData = NiagaraHelpers::GetEmitterData(Handle);
+	if (!EmitterData)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Emitter has no data"));
+	}
+
+	UNiagaraGraph* Graph = NiagaraHelpers::GetGraphForUsage(EmitterData, Usage);
+	if (!Graph)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No graph for the given script usage"));
+	}
+
+	UNiagaraNodeOutput* OutputNode = NiagaraHelpers::GetOutputNodeForUsage(Graph, Usage);
+	if (!OutputNode)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No output node found"));
+	}
+
+	// Get the current chain
+	TArray<UNiagaraNodeFunctionCall*> Chain;
+	CollectModuleChain(OutputNode, Chain);
+
+	if (Chain.Num() < 2)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			TEXT("Not enough modules in chain to reorder"));
+	}
+
+	// Find the node to move
+	int32 OldIndex = INDEX_NONE;
+	UNiagaraNodeFunctionCall* TargetNode = nullptr;
+	for (int32 i = 0; i < Chain.Num(); ++i)
+	{
+		FString NodeName = Chain[i]->GetFunctionName();
+		FText DisplayName = Chain[i]->GetNodeTitle(ENodeTitleType::ListView);
+
+		if (NodeName.Equals(ModuleName, ESearchCase::IgnoreCase) ||
+			DisplayName.ToString().Equals(ModuleName, ESearchCase::IgnoreCase))
+		{
+			OldIndex = i;
+			TargetNode = Chain[i];
+			break;
+		}
+	}
+
+	if (!TargetNode)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Module '%s' not found in chain"), *ModuleName));
+	}
+
+	int32 ClampedIndex = FMath::Clamp(NewIndex, 0, Chain.Num() - 1);
+	if (ClampedIndex == OldIndex)
+	{
+		TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+		Data->SetStringField(TEXT("module_name"), ModuleName);
+		Data->SetNumberField(TEXT("index"), OldIndex);
+		Data->SetStringField(TEXT("note"), TEXT("Module already at requested index"));
+		return FEpicUnrealMCPCommonUtils::CreateSuccessResponse(Data);
+	}
+
+	FScopedTransaction Transaction(
+		NSLOCTEXT("UnrealMCPBridge", "ReorderNiagaraModule", "Reorder Niagara Module"));
+
+	// Disconnect ALL chain links -- we rebuild the whole chain
+	for (UNiagaraNodeFunctionCall* Node : Chain)
+	{
+		for (UEdGraphPin* Pin : Node->Pins)
+		{
+			if (Pin->Direction == EGPD_Input || Pin->Direction == EGPD_Output)
+			{
+				Pin->BreakAllPinLinks();
+			}
+		}
+	}
+
+	// Disconnect output node input pin
+	UEdGraphPin* OutputNodeInputPin = FindFirstPin(OutputNode, EGPD_Input);
+	if (OutputNodeInputPin)
+	{
+		OutputNodeInputPin->BreakAllPinLinks();
+	}
+
+	// Rearrange array
+	Chain.RemoveAt(OldIndex);
+	Chain.Insert(TargetNode, ClampedIndex);
+
+	// Rebuild the chain: Chain[0] -> Chain[1] -> ... -> OutputNode
+	for (int32 i = 1; i < Chain.Num(); ++i)
+	{
+		UEdGraphPin* PrevOutput = FindFirstPin(Chain[i - 1], EGPD_Output);
+		UEdGraphPin* CurrInput = FindFirstPin(Chain[i], EGPD_Input);
+		if (PrevOutput && CurrInput)
+		{
+			PrevOutput->MakeLinkTo(CurrInput);
+		}
+	}
+
+	// Connect last node to the output node
+	if (Chain.Num() > 0 && OutputNodeInputPin)
+	{
+		UEdGraphPin* LastOutput = FindFirstPin(Chain.Last(), EGPD_Output);
+		if (LastOutput)
+		{
+			LastOutput->MakeLinkTo(OutputNodeInputPin);
+		}
+	}
+
+	Graph->NotifyGraphChanged();
+	NiagaraHelpers::CompileAndSync(System);
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("module_name"), ModuleName);
+	Data->SetNumberField(TEXT("old_index"), OldIndex);
+	Data->SetNumberField(TEXT("new_index"), ClampedIndex);
+
+	return FEpicUnrealMCPCommonUtils::CreateSuccessResponse(Data);
+#else
+	return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Editor-only operation"));
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// HandleGetNiagaraModuleInputs
+// ---------------------------------------------------------------------------
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleGetNiagaraModuleInputs(
+	const TSharedPtr<FJsonObject>& Params)
+{
+#if WITH_EDITORONLY_DATA
+	FString SystemPath;
+	if (!Params->TryGetStringField(TEXT("system_path"), SystemPath))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'system_path' parameter"));
+	}
+
+	FString EmitterName;
+	if (!Params->TryGetStringField(TEXT("emitter_name"), EmitterName))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'emitter_name' parameter"));
+	}
+
+	FString ModuleName;
+	if (!Params->TryGetStringField(TEXT("module_name"), ModuleName))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'module_name' parameter"));
+	}
+
+	FString ScriptUsageStr;
+	if (!Params->TryGetStringField(TEXT("script_usage"), ScriptUsageStr))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'script_usage' parameter"));
+	}
+
+	FString InputFilter;
+	Params->TryGetStringField(TEXT("input_filter"), InputFilter);
+
+	bool bUsageOk = false;
+	ENiagaraScriptUsage Usage = NiagaraHelpers::ParseScriptUsage(ScriptUsageStr, bUsageOk);
+	if (!bUsageOk)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Invalid script_usage: '%s'"), *ScriptUsageStr));
+	}
+
+	// Load system
+	FString LoadError;
+	UNiagaraSystem* System = NiagaraHelpers::LoadNiagaraSystem(SystemPath, LoadError);
+	if (!System)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(LoadError);
+	}
+
+	// Find emitter
+	int32 EmitterIdx = INDEX_NONE;
+	FString EmitterError;
+	FNiagaraEmitterHandle* Handle = NiagaraHelpers::FindEmitterHandle(
+		System, EmitterName, EmitterIdx, EmitterError);
+	if (!Handle)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(EmitterError);
+	}
+
+	FVersionedNiagaraEmitterData* EmitterData = NiagaraHelpers::GetEmitterData(Handle);
+	if (!EmitterData)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Emitter has no data"));
+	}
+
+	UNiagaraGraph* Graph = NiagaraHelpers::GetGraphForUsage(EmitterData, Usage);
+	if (!Graph)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No graph for the given script usage"));
+	}
+
+	FString FindError;
+	UNiagaraNodeFunctionCall* ModuleNode = NiagaraHelpers::FindModuleNode(
+		Graph, Usage, ModuleName, FindError);
+	if (!ModuleNode)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FindError);
+	}
+
+	TArray<TSharedPtr<FJsonValue>> InputsArray;
+
+	for (UEdGraphPin* Pin : ModuleNode->Pins)
+	{
+		if (Pin->Direction != EGPD_Input)
+		{
+			continue;
+		}
+
+		// Skip internal parameter map pins
+		FString PinCategory = Pin->PinType.PinCategory.ToString();
+		if (PinCategory.Equals(TEXT("Misc"), ESearchCase::IgnoreCase))
+		{
+			continue;
+		}
+
+		FString PinName = Pin->PinName.ToString();
+
+		// Apply name filter
+		if (!InputFilter.IsEmpty() &&
+			!PinName.Contains(InputFilter, ESearchCase::IgnoreCase))
+		{
+			continue;
+		}
+
+		auto InputObj = MakeShared<FJsonObject>();
+		InputObj->SetStringField(TEXT("name"), PinName);
+		InputObj->SetStringField(TEXT("type"), PinCategory);
+		InputObj->SetStringField(TEXT("default_value"), Pin->DefaultValue);
+		InputObj->SetBoolField(TEXT("is_connected"), Pin->LinkedTo.Num() > 0);
+
+		if (Pin->PinType.PinSubCategoryObject.IsValid())
+		{
+			InputObj->SetStringField(TEXT("sub_type"),
+				Pin->PinType.PinSubCategoryObject->GetName());
+		}
+
+		InputsArray.Add(MakeShared<FJsonValueObject>(InputObj));
+	}
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("module_name"), ModuleName);
+	Data->SetStringField(TEXT("script_usage"), ScriptUsageStr);
+	Data->SetArrayField(TEXT("inputs"), InputsArray);
+	Data->SetNumberField(TEXT("count"), InputsArray.Num());
+
+	return FEpicUnrealMCPCommonUtils::CreateSuccessResponse(Data);
+#else
+	return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Editor-only operation"));
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// HandleSetNiagaraModuleInput
+// ---------------------------------------------------------------------------
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleSetNiagaraModuleInput(
+	const TSharedPtr<FJsonObject>& Params)
+{
+#if WITH_EDITORONLY_DATA
+	FString SystemPath;
+	if (!Params->TryGetStringField(TEXT("system_path"), SystemPath))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'system_path' parameter"));
+	}
+
+	FString EmitterName;
+	if (!Params->TryGetStringField(TEXT("emitter_name"), EmitterName))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'emitter_name' parameter"));
+	}
+
+	FString ModuleName;
+	if (!Params->TryGetStringField(TEXT("module_name"), ModuleName))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'module_name' parameter"));
+	}
+
+	FString InputName;
+	if (!Params->TryGetStringField(TEXT("input_name"), InputName))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'input_name' parameter"));
+	}
+
+	FString ScriptUsageStr;
+	if (!Params->TryGetStringField(TEXT("script_usage"), ScriptUsageStr))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'script_usage' parameter"));
+	}
+
+	if (!Params->HasField(TEXT("value")))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'value' parameter"));
+	}
+
+	bool bUsageOk = false;
+	ENiagaraScriptUsage Usage = NiagaraHelpers::ParseScriptUsage(ScriptUsageStr, bUsageOk);
+	if (!bUsageOk)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Invalid script_usage: '%s'"), *ScriptUsageStr));
+	}
+
+	// Load system
+	FString LoadError;
+	UNiagaraSystem* System = NiagaraHelpers::LoadNiagaraSystem(SystemPath, LoadError);
+	if (!System)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(LoadError);
+	}
+
+	// Find emitter
+	int32 EmitterIdx = INDEX_NONE;
+	FString EmitterError;
+	FNiagaraEmitterHandle* Handle = NiagaraHelpers::FindEmitterHandle(
+		System, EmitterName, EmitterIdx, EmitterError);
+	if (!Handle)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(EmitterError);
+	}
+
+	FVersionedNiagaraEmitterData* EmitterData = NiagaraHelpers::GetEmitterData(Handle);
+	if (!EmitterData)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Emitter has no data"));
+	}
+
+	UNiagaraGraph* Graph = NiagaraHelpers::GetGraphForUsage(EmitterData, Usage);
+	if (!Graph)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No graph for the given script usage"));
+	}
+
+	FString FindError;
+	UNiagaraNodeFunctionCall* ModuleNode = NiagaraHelpers::FindModuleNode(
+		Graph, Usage, ModuleName, FindError);
+	if (!ModuleNode)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FindError);
+	}
+
+	// Find the input pin
+	UEdGraphPin* InputPin = nullptr;
+	for (UEdGraphPin* Pin : ModuleNode->Pins)
+	{
+		if (Pin->Direction == EGPD_Input &&
+			Pin->PinName.ToString().Equals(InputName, ESearchCase::IgnoreCase))
+		{
+			InputPin = Pin;
+			break;
+		}
+	}
+
+	if (!InputPin)
+	{
+		// Build list of available inputs for error message
+		FString AvailableInputs;
+		for (UEdGraphPin* Pin : ModuleNode->Pins)
+		{
+			if (Pin->Direction != EGPD_Input)
+			{
+				continue;
+			}
+
+			FString Category = Pin->PinType.PinCategory.ToString();
+			if (Category.Equals(TEXT("Misc"), ESearchCase::IgnoreCase))
+			{
+				continue;
+			}
+
+			if (!AvailableInputs.IsEmpty())
+			{
+				AvailableInputs += TEXT(", ");
+			}
+			AvailableInputs += Pin->PinName.ToString();
+		}
+
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Input '%s' not found on module '%s'. Available: %s"),
+				*InputName, *ModuleName, *AvailableInputs));
+	}
+
+	FScopedTransaction Transaction(
+		NSLOCTEXT("UnrealMCPBridge", "SetNiagaraModuleInput", "Set Module Input"));
+
+	// Convert the JSON value to a string for the pin's DefaultValue
+	TSharedPtr<FJsonValue> JsonValue = Params->TryGetField(TEXT("value"));
+	FString ValueStr;
+
+	if (JsonValue->Type == EJson::Number)
+	{
+		double NumVal = JsonValue->AsNumber();
+		ValueStr = FString::SanitizeFloat(NumVal);
+	}
+	else if (JsonValue->Type == EJson::Boolean)
+	{
+		ValueStr = JsonValue->AsBool() ? TEXT("true") : TEXT("false");
+	}
+	else if (JsonValue->Type == EJson::String)
+	{
+		ValueStr = JsonValue->AsString();
+	}
+	else if (JsonValue->Type == EJson::Object)
+	{
+		TSharedPtr<FJsonObject> ValueObj = JsonValue->AsObject();
+
+		// Vector: {x,y,z}
+		if (ValueObj->HasField(TEXT("x")))
+		{
+			double X = ValueObj->GetNumberField(TEXT("x"));
+			double Y = ValueObj->GetNumberField(TEXT("y"));
+			double Z = ValueObj->GetNumberField(TEXT("z"));
+			ValueStr = FString::Printf(TEXT("%f,%f,%f"), X, Y, Z);
+		}
+		// Color: {r,g,b,a}
+		else if (ValueObj->HasField(TEXT("r")))
+		{
+			double R = ValueObj->GetNumberField(TEXT("r"));
+			double G = ValueObj->GetNumberField(TEXT("g"));
+			double B = ValueObj->GetNumberField(TEXT("b"));
+			double A = 1.0;
+			ValueObj->TryGetNumberField(TEXT("a"), A);
+			ValueStr = FString::Printf(TEXT("%f,%f,%f,%f"), R, G, B, A);
+		}
+		else
+		{
+			return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+				TEXT("Value object must have {x,y,z} or {r,g,b,a} fields"));
+		}
+	}
+	else if (JsonValue->Type == EJson::Array)
+	{
+		// Array of numbers for vector/color
+		const TArray<TSharedPtr<FJsonValue>>& Arr = JsonValue->AsArray();
+		TArray<FString> Parts;
+		for (const TSharedPtr<FJsonValue>& V : Arr)
+		{
+			Parts.Add(FString::SanitizeFloat(V->AsNumber()));
+		}
+		ValueStr = FString::Join(Parts, TEXT(","));
+	}
+	else
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			TEXT("Unsupported value type. Expected: number, boolean, string, object, or array"));
+	}
+
+	InputPin->DefaultValue = ValueStr;
+	ModuleNode->MarkNodeRequiresSynchronization(TEXT("Module input changed"), true);
+
+	Graph->NotifyGraphChanged();
+	NiagaraHelpers::CompileAndSync(System);
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("module_name"), ModuleName);
+	Data->SetStringField(TEXT("input_name"), InputName);
+	Data->SetStringField(TEXT("value"), ValueStr);
+
+	return FEpicUnrealMCPCommonUtils::CreateSuccessResponse(Data);
+#else
+	return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Editor-only operation"));
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// HandleSetNiagaraDynamicInput
+// ---------------------------------------------------------------------------
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleSetNiagaraDynamicInput(
+	const TSharedPtr<FJsonObject>& Params)
+{
+#if WITH_EDITORONLY_DATA
+	FString SystemPath;
+	if (!Params->TryGetStringField(TEXT("system_path"), SystemPath))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'system_path' parameter"));
+	}
+
+	FString EmitterName;
+	if (!Params->TryGetStringField(TEXT("emitter_name"), EmitterName))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'emitter_name' parameter"));
+	}
+
+	FString ModuleName;
+	if (!Params->TryGetStringField(TEXT("module_name"), ModuleName))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'module_name' parameter"));
+	}
+
+	FString InputName;
+	if (!Params->TryGetStringField(TEXT("input_name"), InputName))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'input_name' parameter"));
+	}
+
+	FString ScriptUsageStr;
+	if (!Params->TryGetStringField(TEXT("script_usage"), ScriptUsageStr))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'script_usage' parameter"));
+	}
+
+	FString DynamicInputType;
+	if (!Params->TryGetStringField(TEXT("dynamic_input_type"), DynamicInputType))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'dynamic_input_type' parameter"));
+	}
+
+	bool bUsageOk = false;
+	ENiagaraScriptUsage Usage = NiagaraHelpers::ParseScriptUsage(ScriptUsageStr, bUsageOk);
+	if (!bUsageOk)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Invalid script_usage: '%s'"), *ScriptUsageStr));
+	}
+
+	// Load system
+	FString LoadError;
+	UNiagaraSystem* System = NiagaraHelpers::LoadNiagaraSystem(SystemPath, LoadError);
+	if (!System)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(LoadError);
+	}
+
+	// Find emitter
+	int32 EmitterIdx = INDEX_NONE;
+	FString EmitterError;
+	FNiagaraEmitterHandle* Handle = NiagaraHelpers::FindEmitterHandle(
+		System, EmitterName, EmitterIdx, EmitterError);
+	if (!Handle)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(EmitterError);
+	}
+
+	FVersionedNiagaraEmitterData* EmitterData = NiagaraHelpers::GetEmitterData(Handle);
+	if (!EmitterData)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Emitter has no data"));
+	}
+
+	UNiagaraGraph* Graph = NiagaraHelpers::GetGraphForUsage(EmitterData, Usage);
+	if (!Graph)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No graph for the given script usage"));
+	}
+
+	FString FindError;
+	UNiagaraNodeFunctionCall* ModuleNode = NiagaraHelpers::FindModuleNode(
+		Graph, Usage, ModuleName, FindError);
+	if (!ModuleNode)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FindError);
+	}
+
+	// Create the parameter handle for the input
+	FNiagaraParameterHandle InputHandle =
+		FNiagaraParameterHandle::CreateModuleParameterHandle(FName(*InputName));
+	FNiagaraParameterHandle AliasedHandle =
+		FNiagaraParameterHandle::CreateAliasedModuleParameterHandle(InputHandle, ModuleNode);
+
+	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
+	Data->SetStringField(TEXT("module_name"), ModuleName);
+	Data->SetStringField(TEXT("input_name"), InputName);
+	Data->SetStringField(TEXT("dynamic_input_type"), DynamicInputType);
+
+	FScopedTransaction Transaction(
+		NSLOCTEXT("UnrealMCPBridge", "SetNiagaraDynamicInput", "Set Dynamic Input"));
+
+	FString LowerType = DynamicInputType.ToLower();
+
+	// ---- Random Range / Uniform Random ----
+	if (LowerType == TEXT("random_range") || LowerType == TEXT("uniform_random"))
+	{
+		// Determine if float or vector based on value parameters
+		bool bIsVector = false;
+		FVector MinVec = FVector::ZeroVector;
+		FVector MaxVec = FVector::OneVector;
+		double MinFloat = 0.0;
+		double MaxFloat = 1.0;
+
+		TSharedPtr<FJsonValue> MinVal = Params->TryGetField(TEXT("min_value"));
+		TSharedPtr<FJsonValue> MaxVal = Params->TryGetField(TEXT("max_value"));
+
+		if (MinVal.IsValid() && MinVal->Type == EJson::Object)
+		{
+			bIsVector = true;
+			TSharedPtr<FJsonObject> MinObj = MinVal->AsObject();
+			MinVec.X = MinObj->GetNumberField(TEXT("x"));
+			MinVec.Y = MinObj->GetNumberField(TEXT("y"));
+			MinVec.Z = MinObj->GetNumberField(TEXT("z"));
+
+			if (MaxVal.IsValid() && MaxVal->Type == EJson::Object)
+			{
+				TSharedPtr<FJsonObject> MaxObj = MaxVal->AsObject();
+				MaxVec.X = MaxObj->GetNumberField(TEXT("x"));
+				MaxVec.Y = MaxObj->GetNumberField(TEXT("y"));
+				MaxVec.Z = MaxObj->GetNumberField(TEXT("z"));
+			}
+		}
+		else
+		{
+			if (MinVal.IsValid())
+			{
+				MinFloat = MinVal->AsNumber();
+			}
+			if (MaxVal.IsValid())
+			{
+				MaxFloat = MaxVal->AsNumber();
+			}
+		}
+
+		FString RandomScriptPath = bIsVector
+			? TEXT("/Niagara/Modules/DynamicInputs/UniformRangedVector.UniformRangedVector")
+			: TEXT("/Niagara/Modules/DynamicInputs/UniformRangedFloat.UniformRangedFloat");
+
+		UNiagaraScript* DynamicInputScript = LoadObject<UNiagaraScript>(nullptr, *RandomScriptPath);
+		if (!DynamicInputScript)
+		{
+			return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+				FString::Printf(TEXT("Failed to load dynamic input script: %s"), *RandomScriptPath));
+		}
+
+		FNiagaraTypeDefinition InputType = bIsVector
+			? FNiagaraTypeDefinition::GetVec3Def()
+			: FNiagaraTypeDefinition::GetFloatDef();
+
+		UEdGraphPin& OverridePin = FNiagaraStackGraphUtilities::GetOrCreateStackFunctionInputOverridePin(
+			*ModuleNode, AliasedHandle, InputType, FGuid(), FGuid());
+
+		// Remove existing override connections
+		if (OverridePin.LinkedTo.Num() > 0)
+		{
+			RemoveOverridePinConnections(OverridePin, Graph);
+		}
+
+		UNiagaraNodeFunctionCall* DynamicInputNode = nullptr;
+		FNiagaraStackGraphUtilities::SetDynamicInputForFunctionInput(
+			OverridePin, DynamicInputScript, DynamicInputNode, FGuid(), TEXT("Random"), FGuid());
+
+		if (DynamicInputNode)
+		{
+			// Set min/max values on the dynamic input's own pins
+			for (UEdGraphPin* DIPin : DynamicInputNode->Pins)
+			{
+				if (DIPin->Direction != EGPD_Input)
+				{
+					continue;
+				}
+
+				FString PinNameLower = DIPin->PinName.ToString().ToLower();
+				if (PinNameLower.Contains(TEXT("min")))
+				{
+					if (bIsVector)
+					{
+						DIPin->DefaultValue = FString::Printf(
+							TEXT("%f,%f,%f"), MinVec.X, MinVec.Y, MinVec.Z);
+					}
+					else
+					{
+						DIPin->DefaultValue = FString::SanitizeFloat(MinFloat);
+					}
+				}
+				else if (PinNameLower.Contains(TEXT("max")))
+				{
+					if (bIsVector)
+					{
+						DIPin->DefaultValue = FString::Printf(
+							TEXT("%f,%f,%f"), MaxVec.X, MaxVec.Y, MaxVec.Z);
+					}
+					else
+					{
+						DIPin->DefaultValue = FString::SanitizeFloat(MaxFloat);
+					}
+				}
+			}
+		}
+
+		Data->SetStringField(TEXT("script_path"), RandomScriptPath);
+		Data->SetBoolField(TEXT("dynamic_input_created"), DynamicInputNode != nullptr);
+	}
+	// ---- Parameter Link ----
+	else if (LowerType == TEXT("parameter_link"))
+	{
+		FString ParameterName;
+		if (!Params->TryGetStringField(TEXT("parameter_name"), ParameterName))
+		{
+			return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+				TEXT("Missing 'parameter_name' for parameter_link dynamic input"));
+		}
+
+		FNiagaraTypeDefinition InputType = FNiagaraTypeDefinition::GetFloatDef();
+		UEdGraphPin& OverridePin = FNiagaraStackGraphUtilities::GetOrCreateStackFunctionInputOverridePin(
+			*ModuleNode, AliasedHandle, InputType, FGuid(), FGuid());
+
+		if (OverridePin.LinkedTo.Num() > 0)
+		{
+			RemoveOverridePinConnections(OverridePin, Graph);
+		}
+
+		// Link by setting the override pin's default value to the parameter name
+		// This creates a parameter-linked input in the Niagara stack
+		OverridePin.DefaultValue = ParameterName;
+
+		Data->SetStringField(TEXT("linked_parameter"), ParameterName);
+		Data->SetBoolField(TEXT("dynamic_input_created"), true);
+	}
+	// ---- Custom Expression ----
+	else if (LowerType == TEXT("custom_expression"))
+	{
+		FString Expression;
+		if (!Params->TryGetStringField(TEXT("expression"), Expression))
+		{
+			return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+				TEXT("Missing 'expression' for custom_expression dynamic input"));
+		}
+
+		// Create a custom HLSL node and wire it as a dynamic input
+		UNiagaraNodeCustomHlsl* CustomNode = NewObject<UNiagaraNodeCustomHlsl>(Graph);
+		CustomNode->CreateNewGuid();
+		CustomNode->PostPlacedNewNode();
+		CustomNode->AllocateDefaultPins();
+		// SetCustomHlsl not exported from NiagaraEditor — set via reflection
+		FStrProperty* HlslProp = CastField<FStrProperty>(
+			UNiagaraNodeCustomHlsl::StaticClass()->FindPropertyByName(TEXT("CustomHlsl")));
+		if (HlslProp)
+		{
+			HlslProp->SetPropertyValue_InContainer(CustomNode, Expression);
+		}
+		CustomNode->MarkNodeRequiresSynchronization(TEXT("HLSL set via MCP"), true);
+		Graph->AddNode(CustomNode, false, false);
+
+		// Wire the custom node output to the module's override pin
+		FNiagaraTypeDefinition InputType = FNiagaraTypeDefinition::GetFloatDef();
+		UEdGraphPin& OverridePin = FNiagaraStackGraphUtilities::GetOrCreateStackFunctionInputOverridePin(
+			*ModuleNode, AliasedHandle, InputType, FGuid(), FGuid());
+
+		if (OverridePin.LinkedTo.Num() > 0)
+		{
+			RemoveOverridePinConnections(OverridePin, Graph);
+		}
+
+		UEdGraphPin* CustomOutputPin = FindFirstPin(CustomNode, EGPD_Output);
+		if (CustomOutputPin)
+		{
+			CustomOutputPin->MakeLinkTo(&OverridePin);
+		}
+
+		Data->SetStringField(TEXT("expression"), Expression);
+		Data->SetBoolField(TEXT("dynamic_input_created"), true);
+	}
+	else
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(
+				TEXT("Unknown dynamic_input_type: '%s'. Supported: random_range, uniform_random, parameter_link, custom_expression"),
+				*DynamicInputType));
+	}
+
+	Graph->NotifyGraphChanged();
+	NiagaraHelpers::CompileAndSync(System);
+
+	return FEpicUnrealMCPCommonUtils::CreateSuccessResponse(Data);
+#else
+	return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Editor-only operation"));
+#endif
+}
+
+// Rapid iteration parameter tools are in NiagaraRapidIterationOps.cpp

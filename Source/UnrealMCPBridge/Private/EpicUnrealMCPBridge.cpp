@@ -37,6 +37,7 @@ UEpicUnrealMCPBridge::UEpicUnrealMCPBridge()
 	WidgetCommands = MakeShared<FEpicUnrealMCPWidgetCommands>();
 	EnhancedInputCommands = MakeShared<FEpicUnrealMCPEnhancedInputCommands>();
 	ProfilingCommands = MakeShared<FEpicUnrealMCPProfilingCommands>();
+	NiagaraCommands = MakeShared<FEpicUnrealMCPNiagaraCommands>();
 }
 
 UEpicUnrealMCPBridge::~UEpicUnrealMCPBridge()
@@ -736,6 +737,22 @@ FString UEpicUnrealMCPBridge::ExecuteCommand(
 				CommandType == TEXT("performance_analyze_insight"))
 			{
 				ResultJson = ProfilingCommands->HandleCommand(CommandType, Params);
+			}
+			else if (CommandType.StartsWith(TEXT("create_niagara")) ||
+				CommandType.StartsWith(TEXT("get_niagara")) ||
+				CommandType.StartsWith(TEXT("list_niagara")) ||
+				CommandType.StartsWith(TEXT("delete_niagara")) ||
+				CommandType.StartsWith(TEXT("compile_niagara")) ||
+				CommandType.StartsWith(TEXT("add_niagara")) ||
+				CommandType.StartsWith(TEXT("remove_niagara")) ||
+				CommandType.StartsWith(TEXT("set_niagara")) ||
+				CommandType.StartsWith(TEXT("spawn_niagara")) ||
+				CommandType.StartsWith(TEXT("control_niagara")) ||
+				CommandType.StartsWith(TEXT("link_niagara")) ||
+				CommandType.StartsWith(TEXT("duplicate_niagara")) ||
+				CommandType.StartsWith(TEXT("reorder_niagara")))
+			{
+				ResultJson = NiagaraCommands->HandleCommand(CommandType, Params);
 			}
 			else
 			{
