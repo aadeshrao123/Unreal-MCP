@@ -425,6 +425,9 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleGetNiagaraEmitterAt
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(Error);
 	}
 
+	FString Filter;
+	Params->TryGetStringField(TEXT("filter"), Filter);
+
 	FVersionedNiagaraEmitterData* EmitterData = NiagaraHelpers::GetEmitterData(Handle);
 	if (!EmitterData)
 	{
@@ -480,8 +483,13 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleGetNiagaraEmitterAt
 		TArrayView<const FNiagaraVariableWithOffset> RapidIterParams = Script->RapidIterationParameters.ReadParameterVariables();
 		for (const FNiagaraVariableWithOffset& Var : RapidIterParams)
 		{
+			FString AttrName = Var.GetName().ToString();
+			if (!Filter.IsEmpty() && !AttrName.Contains(Filter, ESearchCase::IgnoreCase))
+			{
+				continue;
+			}
 			auto AttrObj = MakeShared<FJsonObject>();
-			AttrObj->SetStringField(TEXT("name"), Var.GetName().ToString());
+			AttrObj->SetStringField(TEXT("name"), AttrName);
 			AttrObj->SetStringField(TEXT("type"), Var.GetType().GetName());
 			AttrObj->SetStringField(TEXT("scope"), ScopeInfo.ScopeName);
 			AttrObj->SetStringField(TEXT("source"), TEXT("rapid_iteration"));
@@ -527,6 +535,10 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleGetNiagaraEmitterAt
 
 	for (const FWellKnownAttr& Attr : WellKnown)
 	{
+		if (!Filter.IsEmpty() && !FString(Attr.Name).Contains(Filter, ESearchCase::IgnoreCase))
+		{
+			continue;
+		}
 		auto AttrObj = MakeShared<FJsonObject>();
 		AttrObj->SetStringField(TEXT("name"), Attr.Name);
 		AttrObj->SetStringField(TEXT("type"), Attr.Type);

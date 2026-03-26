@@ -134,6 +134,9 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleGetNiagaraUserParam
 		SourceName = SystemPath;
 	}
 
+	FString Filter;
+	Params->TryGetStringField(TEXT("filter"), Filter);
+
 	const FNiagaraUserRedirectionParameterStore& ExposedParams = System->GetExposedParameters();
 	TArrayView<const FNiagaraVariableWithOffset> UserParameters = ExposedParams.ReadParameterVariables();
 
@@ -141,8 +144,13 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleGetNiagaraUserParam
 	for (const FNiagaraVariableWithOffset& VarWithOffset : UserParameters)
 	{
 		const FNiagaraVariableBase& Var = VarWithOffset;
+		FString ParamName = Var.GetName().ToString();
+		if (!Filter.IsEmpty() && !ParamName.Contains(Filter, ESearchCase::IgnoreCase))
+		{
+			continue;
+		}
 		auto ParamObj = MakeShared<FJsonObject>();
-		ParamObj->SetStringField(TEXT("name"), Var.GetName().ToString());
+		ParamObj->SetStringField(TEXT("name"), ParamName);
 		ParamObj->SetStringField(TEXT("type"), Var.GetType().GetName());
 
 		// Classify value type for callers

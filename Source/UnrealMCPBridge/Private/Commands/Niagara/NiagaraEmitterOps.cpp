@@ -33,10 +33,18 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleGetNiagaraEmitters(
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(Error);
 	}
 
+	FString Filter;
+	Params->TryGetStringField(TEXT("filter"), Filter);
+
 	const TArray<FNiagaraEmitterHandle>& Handles = System->GetEmitterHandles();
 	TArray<TSharedPtr<FJsonValue>> EmitterArr;
 	for (int32 i = 0; i < Handles.Num(); ++i)
 	{
+		if (!Filter.IsEmpty() &&
+			!Handles[i].GetName().ToString().Contains(Filter, ESearchCase::IgnoreCase))
+		{
+			continue;
+		}
 		EmitterArr.Add(MakeShared<FJsonValueObject>(
 			NiagaraHelpers::EmitterHandleToJson(Handles[i], i)));
 	}

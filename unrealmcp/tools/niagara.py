@@ -29,17 +29,26 @@ def create_niagara_system(
 def get_niagara_system_info(
     system_path: str,
     include: str = "all",
+    filter: str | None = None,
 ) -> str:
     """Get detailed information about a Niagara System.
 
+    Returns system name, emitter list, user parameters, and compilation status.
+    Use filter to narrow emitters and parameters by name substring.
+
     Args:
         system_path: Path to the Niagara System asset
-        include: Comma-separated sections — emitters, user_parameters, performance, all
+        include: Comma-separated sections — emitters, parameters, compilation, all
+        filter: Optional name substring filter on emitters and parameters
+            (e.g. "Spark", "Color", "Flame")
     """
-    return _call("get_niagara_system_info", {
+    params: dict = {
         "system_path": system_path,
         "include": include,
-    })
+    }
+    if filter is not None:
+        params["filter"] = filter
+    return _call("get_niagara_system_info", params)
 
 
 @mcp.tool()
@@ -103,9 +112,24 @@ def compile_niagara_system(
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
-def get_niagara_emitters(system_path: str) -> str:
-    """Get all emitters in a Niagara System with their names, indices, and summary info."""
-    return _call("get_niagara_emitters", {"system_path": system_path})
+def get_niagara_emitters(
+    system_path: str,
+    filter: str | None = None,
+) -> str:
+    """Get emitters in a Niagara System.
+
+    Returns name, unique_name, index, enabled state, sim_target, local_space,
+    determinism, and renderer_count per emitter.
+    Use filter to get specific emitters by name substring.
+
+    Args:
+        system_path: Path to the Niagara System asset
+        filter: Optional name filter (e.g. "Spark", "Flame", "Trail")
+    """
+    params: dict = {"system_path": system_path}
+    if filter is not None:
+        params["filter"] = filter
+    return _call("get_niagara_emitters", params)
 
 
 @mcp.tool()
@@ -227,8 +251,12 @@ def get_niagara_modules(
     emitter_name: str,
     script_usage: str = "all",
     include_inputs: bool = True,
+    filter: str | None = None,
 ) -> str:
     """Get modules in an emitter's script usage stack.
+
+    Returns name, display_name, index, script_usage, script_path, and optionally
+    input parameters per module. Use filter to get specific modules by function name.
 
     Args:
         system_path: Path to the Niagara System asset
@@ -236,13 +264,17 @@ def get_niagara_modules(
         script_usage: Which stack — EmitterSpawn, EmitterUpdate, ParticleSpawn, ParticleUpdate,
             SystemSpawn, SystemUpdate, or "all" for every stack
         include_inputs: If true, include each module's input parameters
+        filter: Optional function name filter (e.g. "Spawn", "Color", "Gravity", "Velocity")
     """
-    return _call("get_niagara_modules", {
+    params: dict = {
         "system_path": system_path,
         "emitter_name": emitter_name,
         "script_usage": script_usage,
         "include_inputs": include_inputs,
-    })
+    }
+    if filter is not None:
+        params["filter"] = filter
+    return _call("get_niagara_modules", params)
 
 
 @mcp.tool()
@@ -497,20 +529,26 @@ def set_niagara_curve(
 def get_niagara_user_parameters(
     system_path: str | None = None,
     actor_name: str | None = None,
+    filter: str | None = None,
 ) -> str:
     """Get user-exposed parameters from a Niagara System asset or a level actor's component.
 
+    Returns name, type, and value_type per parameter.
     Provide either system_path (asset) or actor_name (level instance).
+    Use filter to narrow by parameter name substring.
 
     Args:
         system_path: Path to the Niagara System asset
         actor_name: Name of an actor in the level with a NiagaraComponent
+        filter: Optional name filter (e.g. "Color", "Intensity", "Size")
     """
     params: dict = {}
     if system_path is not None:
         params["system_path"] = system_path
     if actor_name is not None:
         params["actor_name"] = actor_name
+    if filter is not None:
+        params["filter"] = filter
     return _call("get_niagara_user_parameters", params)
 
 
@@ -1089,21 +1127,28 @@ def get_niagara_emitter_attributes(
     system_path: str,
     emitter_name: str,
     scope: str = "particle",
+    filter: str | None = None,
 ) -> str:
-    """Get all attributes defined on an emitter at a given scope.
+    """Get attributes defined on an emitter at a given scope.
 
-    Useful for discovering available particle/emitter attributes for bindings and expressions.
+    Returns name, type, scope, and source per attribute. Includes both rapid iteration
+    parameters and well-known particle attributes (Position, Velocity, Color, etc.).
+    Use filter to narrow by attribute name substring.
 
     Args:
         system_path: Path to the Niagara System asset
         emitter_name: Name of the target emitter
         scope: Attribute scope — "particle", "emitter", "system", "all"
+        filter: Optional name filter (e.g. "Color", "Position", "Velocity", "Size")
     """
-    return _call("get_niagara_emitter_attributes", {
+    params: dict = {
         "system_path": system_path,
         "emitter_name": emitter_name,
         "scope": scope,
-    })
+    }
+    if filter is not None:
+        params["filter"] = filter
+    return _call("get_niagara_emitter_attributes", params)
 
 
 # ---------------------------------------------------------------------------
@@ -1176,3 +1221,188 @@ def set_niagara_rapid_iteration_parameter(
         "value": value,
         "script_usage": script_usage,
     })
+
+
+# ---------------------------------------------------------------------------
+# Renderer Property Discovery
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def get_niagara_renderer_properties(
+    system_path: str,
+    emitter_name: str,
+    renderer_index: int = 0,
+    filter: str | None = None,
+) -> str:
+    """Get editable properties of a renderer with current values and valid enum values.
+
+    Token-efficient: use filter to get only specific properties instead of all.
+    Property names can be used directly with set_niagara_renderer_property.
+
+    Common filters: "Facing", "Material", "Sort", "Shadow", "Width", "Shape", "UV"
+
+    Args:
+        system_path: Path to the Niagara System asset
+        emitter_name: Name of the target emitter
+        renderer_index: Renderer index (default 0)
+        filter: Substring filter on property name — strongly recommended to save tokens
+    """
+    params: dict = {
+        "system_path": system_path,
+        "emitter_name": emitter_name,
+        "renderer_index": renderer_index,
+    }
+    if filter:
+        params["filter"] = filter
+    return _call("get_niagara_renderer_properties", params)
+
+
+# ---------------------------------------------------------------------------
+# System Properties
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def set_niagara_system_property(
+    system_path: str,
+    property: str,
+    value: str,
+) -> str:
+    """Set a system-level property on a Niagara System via reflection.
+
+    Supports any UPROPERTY on UNiagaraSystem: WarmupTime, WarmupTickDelta,
+    bDeterminism, RandomSeed, bFixedBounds, FixedBounds, bFixedTickDelta,
+    FixedTickDeltaTime, etc. Use exact C++ property name (PascalCase).
+
+    Args:
+        system_path: Path to the Niagara System asset
+        property: Property name (e.g. "WarmupTime", "bDeterminism", "RandomSeed")
+        value: Value as string (e.g. "2.0", "true", "42")
+    """
+    return _call("set_niagara_system_property", {
+        "system_path": system_path,
+        "property": property,
+        "value": value,
+    })
+
+
+# ---------------------------------------------------------------------------
+# Diagnostics & Timeline
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def get_niagara_system_errors(
+    system_path: str,
+    emitter_name: str | None = None,
+    severity: str = "all",
+) -> str:
+    """Get compilation errors, warnings, and validation issues for a Niagara System.
+
+    Returns issues found during compilation and validation. Use to diagnose why
+    a system isn't working, find outdated modules, or check for configuration problems.
+
+    Args:
+        system_path: Path to the Niagara System asset
+        emitter_name: Optional — filter to issues from a specific emitter
+        severity: Filter by severity — "error", "warning", "info", or "all" (default)
+    """
+    params: dict = {
+        "system_path": system_path,
+        "severity": severity,
+    }
+    if emitter_name is not None:
+        params["emitter_name"] = emitter_name
+    return _call("get_niagara_system_errors", params)
+
+
+@mcp.tool()
+def get_niagara_particle_stats(
+    system_path: str,
+    emitter_name: str | None = None,
+) -> str:
+    """Get live particle counts and emitter execution state from running preview.
+
+    Shows how many particles are alive per emitter, total spawned count,
+    execution state (Active/Inactive/Complete), and bounds info.
+    Requires the system to be previewing in the Niagara editor or spawned in level.
+
+    Args:
+        system_path: Path to the Niagara System asset
+        emitter_name: Optional — filter to a specific emitter's stats
+    """
+    params: dict = {
+        "system_path": system_path,
+    }
+    if emitter_name is not None:
+        params["emitter_name"] = emitter_name
+    return _call("get_niagara_particle_stats", params)
+
+
+@mcp.tool()
+def set_niagara_playback_range(
+    system_path: str,
+    range_end: float,
+    range_start: float = 0.0,
+    frame_rate: int | None = None,
+) -> str:
+    """Set the timeline playback range in the Niagara editor.
+
+    Controls how long the preview plays. If your effect dies at 0.02s, extend
+    the range. For looping effects set a longer range (e.g. 5-10 seconds).
+
+    Args:
+        system_path: Path to the Niagara System asset
+        range_end: End time in seconds (e.g. 5.0 for 5 second preview)
+        range_start: Start time in seconds (default 0.0)
+        frame_rate: Optional frame rate override (default 60)
+    """
+    params: dict = {
+        "system_path": system_path,
+        "range_end": range_end,
+        "range_start": range_start,
+    }
+    if frame_rate is not None:
+        params["frame_rate"] = frame_rate
+    return _call("set_niagara_playback_range", params)
+
+
+@mcp.tool()
+def get_niagara_playback_range(
+    system_path: str,
+) -> str:
+    """Get the current timeline playback range and frame rate settings.
+
+    Returns the start/end time in seconds and the frame rate configuration.
+    Use to check if the playback range is too short (common cause of effects
+    appearing to not play).
+
+    Args:
+        system_path: Path to the Niagara System asset
+    """
+    return _call("get_niagara_playback_range", {
+        "system_path": system_path,
+    })
+
+
+@mcp.tool()
+def get_niagara_module_versions(
+    system_path: str,
+    emitter_name: str,
+    filter: str | None = None,
+) -> str:
+    """Check for outdated modules in an emitter and their available versions.
+
+    Identifies modules that have newer versions available — a common source of
+    Niagara warnings and compatibility issues. Use to find modules that need upgrading.
+
+    Args:
+        system_path: Path to the Niagara System asset
+        emitter_name: Name of the target emitter
+        filter: Optional module name filter (e.g. "Spawn", "Color", "Force")
+    """
+    params: dict = {
+        "system_path": system_path,
+        "emitter_name": emitter_name,
+    }
+    if filter is not None:
+        params["filter"] = filter
+    return _call("get_niagara_module_versions", params)

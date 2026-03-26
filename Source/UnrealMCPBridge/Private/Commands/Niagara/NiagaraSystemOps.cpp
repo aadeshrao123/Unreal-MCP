@@ -178,6 +178,9 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleGetNiagaraSystemInf
 	Params->TryGetStringField(TEXT("include"), IncludeStr);
 	IncludeStr = IncludeStr.ToLower();
 
+	FString Filter;
+	Params->TryGetStringField(TEXT("filter"), Filter);
+
 	bool bAll = IncludeStr.Contains(TEXT("all"));
 	bool bEmitters = bAll || IncludeStr.Contains(TEXT("emitters"));
 	bool bParameters = bAll || IncludeStr.Contains(TEXT("parameters"));
@@ -195,6 +198,11 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleGetNiagaraSystemInf
 		const TArray<FNiagaraEmitterHandle>& Handles = System->GetEmitterHandles();
 		for (int32 i = 0; i < Handles.Num(); ++i)
 		{
+			if (!Filter.IsEmpty() &&
+				!Handles[i].GetName().ToString().Contains(Filter, ESearchCase::IgnoreCase))
+			{
+				continue;
+			}
 			EmitterArr.Add(MakeShared<FJsonValueObject>(
 				NiagaraHelpers::EmitterHandleToJson(Handles[i], i)));
 		}
@@ -208,8 +216,13 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleGetNiagaraSystemInf
 		TArrayView<const FNiagaraVariableWithOffset> Vars = Store.ReadParameterVariables();
 		for (const FNiagaraVariableWithOffset& V : Vars)
 		{
+			FString ParamName = V.GetName().ToString();
+			if (!Filter.IsEmpty() && !ParamName.Contains(Filter, ESearchCase::IgnoreCase))
+			{
+				continue;
+			}
 			auto PObj = MakeShared<FJsonObject>();
-			PObj->SetStringField(TEXT("name"), V.GetName().ToString());
+			PObj->SetStringField(TEXT("name"), ParamName);
 			PObj->SetStringField(TEXT("type"), V.GetType().GetName());
 			ParamArr.Add(MakeShared<FJsonValueObject>(PObj));
 		}
@@ -456,4 +469,85 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleCompileNiagaraSyste
 	Result->SetNumberField(TEXT("error_count"), ErrorCount);
 	Result->SetArrayField(TEXT("script_statuses"), ScriptStatuses);
 	return Result;
+}
+
+// ---------------------------------------------------------------------------
+// HandleSetNiagaraSystemProperty — set any system-level property via reflection
+// Supports: WarmupTime, WarmupTickDelta, bFixedBounds, FixedBounds,
+//           bDeterminism, RandomSeed, bFixedTickDelta, FixedTickDeltaTime, etc.
+// ---------------------------------------------------------------------------
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleSetNiagaraSystemProperty(
+	const TSharedPtr<FJsonObject>& Params)
+{
+	FString SystemPath, PropertyName;
+	if (!Params->TryGetStringField(TEXT("system_path"), SystemPath) ||
+		!Params->TryGetStringField(TEXT("property"), PropertyName))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			TEXT("Missing required: system_path, property"));
+	}
+
+	FString ValueStr;
+	if (!Params->TryGetStringField(TEXT("value"), ValueStr))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'value' parameter"));
+	}
+
+	FString Error;
+	UNiagaraSystem* System = NiagaraHelpers::LoadNiagaraSystem(SystemPath, Error);
+	if (!System)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(Error);
+	}
+
+	// Try exact property name
+	FProperty* Prop = UNiagaraSystem::StaticClass()->FindPropertyByName(FName(*PropertyName));
+
+	// Try with 'b' prefix for booleans
+	if (!Prop && (ValueStr == TEXT("true") || ValueStr == TEXT("false")))
+	{
+		FString BoolName = TEXT("b") + PropertyName;
+		Prop = UNiagaraSystem::StaticClass()->FindPropertyByName(FName(*BoolName));
+	}
+
+	if (Prop)
+	{
+		System->Modify();
+		Prop->ImportText_Direct(*ValueStr, Prop->ContainerPtrToValuePtr<void>(System), System, PPF_None);
+		NiagaraHelpers::CompileAndSync(System);
+		UEditorAssetLibrary::SaveAsset(SystemPath);
+
+		auto Result = MakeShared<FJsonObject>();
+		Result->SetBoolField(TEXT("success"), true);
+		Result->SetStringField(TEXT("property"), Prop->GetName());
+		Result->SetStringField(TEXT("value"), ValueStr);
+		return Result;
+	}
+
+	// Property not found — list available ones
+	FString Filter;
+	Params->TryGetStringField(TEXT("filter"), Filter);
+
+	TArray<FString> AvailableProps;
+	for (TFieldIterator<FProperty> It(UNiagaraSystem::StaticClass()); It; ++It)
+	{
+		if (It->HasAnyPropertyFlags(CPF_Edit))
+		{
+			FString Name = It->GetName();
+			if (Filter.IsEmpty() || Name.Contains(Filter, ESearchCase::IgnoreCase))
+			{
+				AvailableProps.Add(Name);
+			}
+		}
+	}
+	if (AvailableProps.Num() > 20)
+	{
+		AvailableProps.SetNum(20);
+		AvailableProps.Add(TEXT("..."));
+	}
+
+	return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+		FString::Printf(TEXT("Property '%s' not found on UNiagaraSystem. Available: %s"),
+			*PropertyName, *FString::Join(AvailableProps, TEXT(", "))));
 }

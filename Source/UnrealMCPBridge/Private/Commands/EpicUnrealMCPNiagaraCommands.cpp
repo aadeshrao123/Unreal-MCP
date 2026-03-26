@@ -146,9 +146,39 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleCommand(
 	{
 		return HandleSetNiagaraRendererProperty(Params);
 	}
+	else if (CommandType == TEXT("get_niagara_renderer_properties"))
+	{
+		return HandleGetNiagaraRendererProperties(Params);
+	}
+	else if (CommandType == TEXT("set_niagara_system_property"))
+	{
+		return HandleSetNiagaraSystemProperty(Params);
+	}
 	else if (CommandType == TEXT("set_niagara_renderer_binding"))
 	{
 		return HandleSetNiagaraRendererBinding(Params);
+	}
+
+	// ---- Diagnostics & Timeline ----
+	else if (CommandType == TEXT("get_niagara_system_errors"))
+	{
+		return HandleGetNiagaraSystemErrors(Params);
+	}
+	else if (CommandType == TEXT("get_niagara_particle_stats"))
+	{
+		return HandleGetNiagaraParticleStats(Params);
+	}
+	else if (CommandType == TEXT("set_niagara_playback_range"))
+	{
+		return HandleSetNiagaraPlaybackRange(Params);
+	}
+	else if (CommandType == TEXT("get_niagara_playback_range"))
+	{
+		return HandleGetNiagaraPlaybackRange(Params);
+	}
+	else if (CommandType == TEXT("get_niagara_module_versions"))
+	{
+		return HandleGetNiagaraModuleVersions(Params);
 	}
 
 	// ---- Scratch Pad & Custom Modules ----

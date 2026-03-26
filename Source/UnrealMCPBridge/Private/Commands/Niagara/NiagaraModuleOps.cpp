@@ -1,3 +1,4 @@
+#include "EditorAssetLibrary.h"
 #include "Commands/EpicUnrealMCPNiagaraCommands.h"
 #include "Commands/EpicUnrealMCPCommonUtils.h"
 #include "NiagaraHelpers.h"
@@ -21,8 +22,15 @@
 
 #if WITH_EDITORONLY_DATA
 #include "NiagaraSystemEditorData.h"
+#include "NiagaraEditorModule.h"
+#include "EdGraphSchema_Niagara.h"
 #include "ViewModels/Stack/NiagaraStackGraphUtilities.h"
+#include "ViewModels/Stack/NiagaraStackFunctionInput.h"
 #include "ViewModels/Stack/NiagaraParameterHandle.h"
+#include "ViewModels/NiagaraSystemViewModel.h"
+#include "ViewModels/NiagaraEmitterHandleViewModel.h"
+#include "ViewModels/Stack/NiagaraStackViewModel.h"
+#include "ViewModels/Stack/NiagaraStackModuleItem.h"
 #endif
 
 // ---------------------------------------------------------------------------
@@ -172,6 +180,9 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleGetNiagaraModules(
 	FString ScriptUsageFilter = TEXT("all");
 	Params->TryGetStringField(TEXT("script_usage"), ScriptUsageFilter);
 
+	FString Filter;
+	Params->TryGetStringField(TEXT("filter"), Filter);
+
 	bool bIncludeInputs = true;
 	Params->TryGetBoolField(TEXT("include_inputs"), bIncludeInputs);
 
@@ -242,6 +253,11 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleGetNiagaraModules(
 
 		for (int32 i = 0; i < Chain.Num(); ++i)
 		{
+			if (!Filter.IsEmpty() &&
+				!Chain[i]->GetFunctionName().Contains(Filter, ESearchCase::IgnoreCase))
+			{
+				continue;
+			}
 			TSharedPtr<FJsonObject> ModuleJson = NiagaraHelpers::ModuleNodeToJson(
 				Chain[i], i, Usage, bIncludeInputs);
 			ModulesArray.Add(MakeShared<FJsonValueObject>(ModuleJson));
@@ -1441,21 +1457,238 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleSetNiagaraDynamicIn
 				TEXT("Missing 'parameter_name' for parameter_link dynamic input"));
 		}
 
-		FNiagaraTypeDefinition InputType = FNiagaraTypeDefinition::GetFloatDef();
-		UEdGraphPin& OverridePin = FNiagaraStackGraphUtilities::GetOrCreateStackFunctionInputOverridePin(
-			*ModuleNode, AliasedHandle, InputType, FGuid(), FGuid());
+		const UEdGraphSchema_Niagara* NiagaraSchema = GetDefault<UEdGraphSchema_Niagara>();
 
-		if (OverridePin.LinkedTo.Num() > 0)
+		// Determine the target input type from the module pin
+		FNiagaraTypeDefinition TargetType = FNiagaraTypeDefinition::GetFloatDef();
+		for (UEdGraphPin* Pin : ModuleNode->Pins)
 		{
-			RemoveOverridePinConnections(OverridePin, Graph);
+			if (Pin->Direction == EGPD_Input &&
+				Pin->PinName.ToString().Equals(InputName, ESearchCase::IgnoreCase))
+			{
+				TargetType = NiagaraSchema->PinToTypeDefinition(Pin);
+				break;
+			}
 		}
 
-		// Link by setting the override pin's default value to the parameter name
-		// This creates a parameter-linked input in the Niagara stack
-		OverridePin.DefaultValue = ParameterName;
+		// Find the source parameter's actual type from the system's exposed parameters
+		FNiagaraTypeDefinition SourceType;
+		bool bFoundSourceParam = false;
+		TArrayView<const FNiagaraVariableWithOffset> ExposedVars =
+			System->GetExposedParameters().ReadParameterVariables();
+		for (const FNiagaraVariableWithOffset& Var : ExposedVars)
+		{
+			FString VarName = Var.GetName().ToString();
+			if (VarName.Equals(ParameterName, ESearchCase::IgnoreCase) ||
+				VarName.Contains(ParameterName, ESearchCase::IgnoreCase))
+			{
+				SourceType = Var.GetType();
+				bFoundSourceParam = true;
+				break;
+			}
+		}
+
+		if (!bFoundSourceParam)
+		{
+			SourceType = FNiagaraTypeDefinition::GetVec3Def();
+		}
+
+		// Debug: log the types in the response
+		Data->SetStringField(TEXT("source_type"), SourceType.GetName());
+		Data->SetStringField(TEXT("target_type"), TargetType.GetName());
+		Data->SetBoolField(TEXT("types_differ"), SourceType != TargetType);
+
+		// Get the EXISTING ViewModel from the Niagara editor (if the system is open)
+		// This avoids creating a new ViewModel which can crash due to MessageManager GUID issues
+		TSharedPtr<FNiagaraSystemViewModel> SystemViewModel =
+			FNiagaraEditorModule::Get().GetExistingViewModelForSystem(System);
+
+		if (!SystemViewModel.IsValid())
+		{
+			return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+				TEXT("No active Niagara editor found for this system. "
+				     "Open the system in the Niagara editor first, then retry the parameter_link command."));
+		}
+
+		// Find the target emitter handle ViewModel
+		TSharedPtr<FNiagaraEmitterHandleViewModel> EmitterHandleVM;
+		for (const TSharedRef<FNiagaraEmitterHandleViewModel>& HandleVM : SystemViewModel->GetEmitterHandleViewModels())
+		{
+			if (HandleVM->GetName().ToString().Equals(EmitterName, ESearchCase::IgnoreCase))
+			{
+				EmitterHandleVM = HandleVM;
+				break;
+			}
+		}
+
+		if (!EmitterHandleVM.IsValid())
+		{
+			// ViewModel cleanup handled by shared pointer destructor
+			return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+				FString::Printf(TEXT("Could not find emitter '%s' in SystemViewModel"), *EmitterName));
+		}
+
+		// Get the emitter stack ViewModel and find the target module + input
+		UNiagaraStackViewModel* StackVM = EmitterHandleVM->GetEmitterStackViewModel();
+		if (!StackVM)
+		{
+			// ViewModel cleanup handled by shared pointer destructor
+			return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+				TEXT("Failed to get emitter stack ViewModel"));
+		}
+
+		UNiagaraStackEntry* RootEntry = StackVM->GetRootEntry();
+		if (!RootEntry)
+		{
+			// ViewModel cleanup handled by shared pointer destructor
+			return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+				TEXT("Failed to get stack root entry"));
+		}
+
+		// Recursively find the UNiagaraStackModuleItem matching our module name
+		TArray<UNiagaraStackModuleItem*> ModuleItems;
+		RootEntry->GetFilteredChildrenOfType<UNiagaraStackModuleItem>(ModuleItems, true);
+
+		UNiagaraStackModuleItem* TargetModuleItem = nullptr;
+		for (UNiagaraStackModuleItem* Item : ModuleItems)
+		{
+			FString DisplayName = Item->GetDisplayName().ToString();
+			if (DisplayName.Equals(ModuleName, ESearchCase::IgnoreCase))
+			{
+				TargetModuleItem = Item;
+				break;
+			}
+
+			// Also try matching against the function call node name
+			UNiagaraNodeFunctionCall& FuncNode = Item->GetModuleNode();
+			FString FuncName = FuncNode.GetFunctionName();
+			if (FuncName.Equals(ModuleName, ESearchCase::IgnoreCase))
+			{
+				TargetModuleItem = Item;
+				break;
+			}
+		}
+
+		if (!TargetModuleItem)
+		{
+			// ViewModel cleanup handled by shared pointer destructor
+			return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+				FString::Printf(
+					TEXT("Could not find module '%s' in the stack ViewModel (found %d modules)"),
+					*ModuleName, ModuleItems.Num()));
+		}
+
+		// Get ALL inputs recursively — includes nested children like Shape Origin under Transform
+		TArray<UNiagaraStackFunctionInput*> ParameterInputs;
+		TargetModuleItem->GetUnfilteredChildrenOfType<UNiagaraStackFunctionInput>(
+			ParameterInputs, true);
+
+		UNiagaraStackFunctionInput* TargetInput = nullptr;
+		for (UNiagaraStackFunctionInput* Input : ParameterInputs)
+		{
+			FString InputDisplayName = Input->GetDisplayName().ToString();
+			FString InputParamName = Input->GetInputParameterHandle().GetName().ToString();
+
+			// Exact match first
+			if (InputDisplayName.Equals(InputName, ESearchCase::IgnoreCase) ||
+				InputParamName.Equals(InputName, ESearchCase::IgnoreCase))
+			{
+				TargetInput = Input;
+				break;
+			}
+
+			// Partial/contains match as fallback
+			if (InputDisplayName.Contains(InputName, ESearchCase::IgnoreCase) ||
+				InputParamName.Contains(InputName, ESearchCase::IgnoreCase))
+			{
+				TargetInput = Input;
+				// Don't break — keep looking for exact match
+			}
+		}
+
+		if (!TargetInput)
+		{
+			// List available inputs to help the user find the right name
+			TArray<FString> AvailableInputs;
+			for (UNiagaraStackFunctionInput* Input : ParameterInputs)
+			{
+				AvailableInputs.Add(Input->GetDisplayName().ToString());
+			}
+			// Cap to avoid huge responses
+			if (AvailableInputs.Num() > 20)
+			{
+				AvailableInputs.SetNum(20);
+				AvailableInputs.Add(TEXT("..."));
+			}
+
+			return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+				FString::Printf(
+					TEXT("Could not find input '%s' on module '%s' (found %d inputs). Available: %s"),
+					*InputName, *ModuleName, ParameterInputs.Num(),
+					*FString::Join(AvailableInputs, TEXT(", "))));
+		}
+
+		// Use the ViewModel's input type — this is the CORRECT type, not from pin scanning
+		FNiagaraTypeDefinition ActualTargetType = TargetInput->GetInputType();
+
+		// Check current input state — if it has an existing linked value or dynamic input,
+		// we need to reset it first. But Reset can crash if graph nodes are inconsistent
+		// (CastChecked in RemoveOverridePin fails on nodes left by prior MCP operations).
+		// Use the ViewModel's own reset which is safer than manual graph manipulation.
+		auto CurrentMode = TargetInput->GetValueMode();
+		if (CurrentMode != UNiagaraStackFunctionInput::EValueMode::Local &&
+			CurrentMode != UNiagaraStackFunctionInput::EValueMode::DefaultFunction &&
+			TargetInput->CanReset())
+		{
+			TargetInput->Reset();
+			// Refresh the stack after reset to ensure clean state
+			TargetInput->RefreshChildren();
+		}
+
+		// Build the linked parameter variable with the source type
+		FNiagaraVariable LinkedParam(SourceType, FName(*ParameterName));
+
+		// Update debug info with actual types
+		Data->SetStringField(TEXT("actual_target_type"), ActualTargetType.GetName());
+
+		// Check if type conversion is needed using the ACTUAL target type
+		bool bTypeConversionUsed = false;
+		FString ConversionScriptPath;
+
+		if (SourceType != ActualTargetType)
+		{
+			TArray<UNiagaraScript*> ConversionScripts =
+				UNiagaraStackFunctionInput::GetPossibleConversionScripts(SourceType, ActualTargetType);
+
+			if (ConversionScripts.Num() > 0)
+			{
+				TargetInput->SetLinkedParameterValueViaConversionScript(
+					LinkedParam, *ConversionScripts[0]);
+
+				bTypeConversionUsed = true;
+				ConversionScriptPath = ConversionScripts[0]->GetPathName();
+			}
+			else
+			{
+				// No conversion script available — try direct link anyway
+				TargetInput->SetLinkedParameterValue(LinkedParam);
+			}
+		}
+		else
+		{
+			// Types match — direct link
+			TargetInput->SetLinkedParameterValue(LinkedParam);
+		}
 
 		Data->SetStringField(TEXT("linked_parameter"), ParameterName);
+		Data->SetBoolField(TEXT("type_conversion_used"), bTypeConversionUsed);
 		Data->SetBoolField(TEXT("dynamic_input_created"), true);
+		if (bTypeConversionUsed)
+		{
+			Data->SetStringField(TEXT("conversion_script"), ConversionScriptPath);
+		}
+
+		// ViewModel cleanup handled by shared pointer going out of scope
 	}
 	// ---- Custom Expression ----
 	else if (LowerType == TEXT("custom_expression"))

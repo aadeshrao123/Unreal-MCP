@@ -77,6 +77,17 @@ private:
 	TSharedPtr<FJsonObject> HandleGetNiagaraRendererInfo(const TSharedPtr<FJsonObject>& Params);
 	TSharedPtr<FJsonObject> HandleSetNiagaraRendererProperty(const TSharedPtr<FJsonObject>& Params);
 	TSharedPtr<FJsonObject> HandleSetNiagaraRendererBinding(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleGetNiagaraRendererProperties(const TSharedPtr<FJsonObject>& Params);
+
+	// ---- System Properties (NiagaraSystemOps.cpp) ----
+	TSharedPtr<FJsonObject> HandleSetNiagaraSystemProperty(const TSharedPtr<FJsonObject>& Params);
+
+	// ---- Diagnostics & Timeline (NiagaraDiagnosticsOps.cpp) ----
+	TSharedPtr<FJsonObject> HandleGetNiagaraSystemErrors(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleGetNiagaraParticleStats(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleSetNiagaraPlaybackRange(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleGetNiagaraPlaybackRange(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleGetNiagaraModuleVersions(const TSharedPtr<FJsonObject>& Params);
 
 	// ---- Scratch Pad & Custom Modules (NiagaraScratchPadOps.cpp) ----
 	TSharedPtr<FJsonObject> HandleCreateNiagaraScratchPadModule(const TSharedPtr<FJsonObject>& Params);

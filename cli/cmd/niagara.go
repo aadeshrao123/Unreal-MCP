@@ -27,12 +27,15 @@ ue-cli create_niagara_system --asset-path /Game/VFX/NS_Fire --template "Fountain
 		Short: "Get full info about a Niagara system",
 		Long: "Returns detailed information about a Niagara system including its emitters, user parameters, " +
 			"system settings, and compilation status. Use include to control what sections are returned " +
-			"(all, emitters, parameters, settings). Useful for inspecting a system before modifying it.",
+			"(all, emitters, parameters, compilation). Use filter to narrow emitters and parameters " +
+			"by name substring.",
 		Example: `ue-cli get_niagara_system_info --system-path /Game/VFX/NS_Explosion
-ue-cli get_niagara_system_info --system-path /Game/VFX/NS_Fire --include emitters`,
+ue-cli get_niagara_system_info --system-path /Game/VFX/NS_Fire --include emitters
+ue-cli get_niagara_system_info --system-path /Game/VFX/NS_Fire --filter Spark`,
 		Params: []ParamSpec{
 			{Name: "system_path", Type: "string", Required: true, Help: "Asset path of the Niagara system"},
-			{Name: "include", Type: "string", Default: "all", Help: "Sections to include: all, emitters, parameters, settings"},
+			{Name: "include", Type: "string", Default: "all", Help: "Sections to include: all, emitters, parameters, compilation"},
+			{Name: "filter", Type: "string", Help: "Substring filter on emitter and parameter names"},
 		},
 	},
 	{
@@ -84,13 +87,15 @@ ue-cli compile_niagara_system --system-path /Game/VFX/NS_Fire --wait-for-complet
 	{
 		Name:  "get_niagara_emitters",
 		Group: "niagara",
-		Short: "List all emitters in a Niagara system",
-		Long: "Returns all emitters in a Niagara system with their names, indices, enabled states, and " +
-			"summary info (sim target, module counts, renderer types). Use this to discover emitter " +
-			"names before modifying modules or renderers.",
-		Example: "ue-cli get_niagara_emitters --system-path /Game/VFX/NS_Explosion",
+		Short: "List emitters in a Niagara system",
+		Long: "Returns emitters in a Niagara system with their names, indices, enabled states, and " +
+			"summary info (sim target, local_space, determinism, renderer_count). Use filter to " +
+			"narrow results by emitter name substring.",
+		Example: `ue-cli get_niagara_emitters --system-path /Game/VFX/NS_Explosion
+ue-cli get_niagara_emitters --system-path /Game/VFX/NS_Fire --filter Spark`,
 		Params: []ParamSpec{
 			{Name: "system_path", Type: "string", Required: true, Help: "Asset path of the Niagara system"},
+			{Name: "filter", Type: "string", Help: "Substring filter on emitter names"},
 		},
 	},
 	{
@@ -172,17 +177,20 @@ ue-cli set_niagara_emitter_property --system-path /Game/VFX/NS_Fire --emitter-na
 		Name:  "get_niagara_modules",
 		Group: "niagara",
 		Short: "List modules in an emitter's stack",
-		Long: "Returns all modules in an emitter's script stack. Filter by script_usage to see only " +
+		Long: "Returns modules in an emitter's script stack. Filter by script_usage to see only " +
 			"specific stages: EmitterSpawn, EmitterUpdate, ParticleSpawn, ParticleUpdate, or all. " +
+			"Use filter to narrow by module function name substring. " +
 			"Set include_inputs to true to also return each module's input parameters and their current values.",
 		Example: `ue-cli get_niagara_modules --system-path /Game/VFX/NS_Fire --emitter-name Sparks
 ue-cli get_niagara_modules --system-path /Game/VFX/NS_Fire --emitter-name Sparks --script-usage ParticleUpdate
+ue-cli get_niagara_modules --system-path /Game/VFX/NS_Fire --emitter-name Sparks --filter Color
 ue-cli get_niagara_modules --system-path /Game/VFX/NS_Fire --emitter-name Sparks --include-inputs=false`,
 		Params: []ParamSpec{
 			{Name: "system_path", Type: "string", Required: true, Help: "Asset path of the Niagara system"},
 			{Name: "emitter_name", Type: "string", Required: true, Help: "Name of the emitter"},
 			{Name: "script_usage", Type: "string", Default: "all", Help: "Stage filter: all, EmitterSpawn, EmitterUpdate, ParticleSpawn, ParticleUpdate"},
 			{Name: "include_inputs", Type: "bool", Default: true, Help: "Include module input parameters"},
+			{Name: "filter", Type: "string", Help: "Substring filter on module function names"},
 		},
 	},
 	{
@@ -337,14 +345,17 @@ ue-cli set_niagara_curve --system-path /Game/VFX/NS_Fire --emitter-name Flame --
 		Name:  "get_niagara_user_parameters",
 		Group: "niagara",
 		Short: "Get user-exposed parameters",
-		Long: "Returns all user-exposed parameters on a Niagara system asset or on a placed Niagara " +
+		Long: "Returns user-exposed parameters on a Niagara system asset or on a placed Niagara " +
 			"component in the level. Provide system_path to read the asset definition, or actor_name " +
-			"to read runtime overrides on a placed instance. Shows parameter names, types, and current values.",
+			"to read runtime overrides on a placed instance. Shows parameter names, types, and value types. " +
+			"Use filter to narrow by parameter name substring.",
 		Example: `ue-cli get_niagara_user_parameters --system-path /Game/VFX/NS_Fire
-ue-cli get_niagara_user_parameters --actor-name "NS_Fire_Instance"`,
+ue-cli get_niagara_user_parameters --actor-name "NS_Fire_Instance"
+ue-cli get_niagara_user_parameters --system-path /Game/VFX/NS_Fire --filter Color`,
 		Params: []ParamSpec{
 			{Name: "system_path", Type: "string", Help: "Asset path of the Niagara system"},
 			{Name: "actor_name", Type: "string", Help: "Name of a placed Niagara actor in the level"},
+			{Name: "filter", Type: "string", Help: "Substring filter on parameter names"},
 		},
 	},
 	{
@@ -731,16 +742,50 @@ ue-cli list_niagara_parameter_types --scope engine`,
 		Name:  "get_niagara_emitter_attributes",
 		Group: "niagara",
 		Short: "Get attributes available on an emitter",
-		Long: "Returns all attributes available on an emitter grouped by scope (particle, emitter, " +
-			"system, engine). Shows attribute names, types, and which modules read or write them. " +
-			"Useful for understanding what data is available for renderer bindings, dynamic inputs, " +
-			"or custom HLSL modules.",
+		Long: "Returns attributes available on an emitter including rapid iteration parameters and " +
+			"well-known particle attributes (Position, Velocity, Color, etc.). Shows names, types, " +
+			"scope, and source. Use filter to narrow by attribute name substring.",
 		Example: `ue-cli get_niagara_emitter_attributes --system-path /Game/VFX/NS_Fire --emitter-name Sparks
-ue-cli get_niagara_emitter_attributes --system-path /Game/VFX/NS_Fire --emitter-name Sparks --scope particle`,
+ue-cli get_niagara_emitter_attributes --system-path /Game/VFX/NS_Fire --emitter-name Sparks --scope particle
+ue-cli get_niagara_emitter_attributes --system-path /Game/VFX/NS_Fire --emitter-name Sparks --filter Color`,
 		Params: []ParamSpec{
 			{Name: "system_path", Type: "string", Required: true, Help: "Asset path of the Niagara system"},
 			{Name: "emitter_name", Type: "string", Required: true, Help: "Name of the emitter"},
 			{Name: "scope", Type: "string", Default: "particle", Help: "Attribute scope: particle, emitter, system, engine"},
+			{Name: "filter", Type: "string", Help: "Substring filter on attribute names"},
+		},
+	},
+
+	// -- Renderer Property Discovery --
+	{
+		Name:    "get_niagara_renderer_properties",
+		Group:   "niagara",
+		Short:   "List editable properties on a renderer with current values",
+		Long:    "Returns all editable UPROPERTY fields on a renderer (sprite, ribbon, mesh, light, component) with their current values and valid enum options. Use filter to get specific properties — strongly recommended to save tokens. Property names can be used directly with set_niagara_renderer_property.",
+		Example: `ue-cli get_niagara_renderer_properties --system-path /Game/VFX/NS_Fire --emitter-name Sparks --filter Facing
+ue-cli get_niagara_renderer_properties --system-path /Game/VFX/NS_Fire --emitter-name Sparks --filter Material
+ue-cli get_niagara_renderer_properties --system-path /Game/VFX/NS_Fire --emitter-name Sparks --filter Sort`,
+		Params: []ParamSpec{
+			{Name: "system_path", Type: "string", Required: true, Help: "Asset path of the Niagara system"},
+			{Name: "emitter_name", Type: "string", Required: true, Help: "Name of the emitter"},
+			{Name: "renderer_index", Type: "int", Default: 0, Help: "Renderer index (default 0)"},
+			{Name: "filter", Type: "string", Help: "Substring filter on property name (e.g. Facing, Material, Sort, Shadow)"},
+		},
+	},
+
+	// -- System Properties --
+	{
+		Name:    "set_niagara_system_property",
+		Group:   "niagara",
+		Short:   "Set a system-level property via reflection",
+		Long:    "Sets any UPROPERTY on UNiagaraSystem: WarmupTime, WarmupTickDelta, bDeterminism, RandomSeed, bFixedBounds, FixedBounds, bFixedTickDelta, FixedTickDeltaTime, etc. Use the exact C++ property name (PascalCase). For booleans, can auto-add 'b' prefix.",
+		Example: `ue-cli set_niagara_system_property --system-path /Game/VFX/NS_Fire --property WarmupTime --value 2.0
+ue-cli set_niagara_system_property --system-path /Game/VFX/NS_Fire --property bDeterminism --value true
+ue-cli set_niagara_system_property --system-path /Game/VFX/NS_Fire --property RandomSeed --value 42`,
+		Params: []ParamSpec{
+			{Name: "system_path", Type: "string", Required: true, Help: "Asset path of the Niagara system"},
+			{Name: "property", Type: "string", Required: true, Help: "Property name (PascalCase, e.g. WarmupTime, bDeterminism)"},
+			{Name: "value", Type: "string", Required: true, Help: "Value as string"},
 		},
 	},
 
@@ -775,6 +820,81 @@ ue-cli set_niagara_rapid_iteration_parameter --system-path /Game/VFX/NS_Fire --e
 			{Name: "input_name", Type: "string", Required: true, Help: "Input parameter name (e.g. SpawnRate, Color, Gravity)"},
 			{Name: "value", Type: "json", Required: true, Help: "Value to set — format depends on type"},
 			{Name: "script_usage", Type: "string", Required: true, Help: "Stack: emitter_update, particle_spawn, particle_update, etc."},
+		},
+	},
+
+	// -- Diagnostics & Timeline --
+	{
+		Name:  "get_niagara_system_errors",
+		Group: "niagara",
+		Short: "Get compilation errors and warnings for a Niagara system",
+		Long: "Returns compilation errors, warnings, and validation issues for a Niagara system. " +
+			"Use to diagnose why a system isn't working, find outdated modules, or check for " +
+			"configuration problems. Filter by emitter name or severity level.",
+		Example: `ue-cli get_niagara_system_errors --system-path /Game/VFX/NS_Fire
+ue-cli get_niagara_system_errors --system-path /Game/VFX/NS_Fire --emitter-name Sparks --severity error`,
+		Params: []ParamSpec{
+			{Name: "system_path", Type: "string", Required: true, Help: "Asset path of the Niagara system"},
+			{Name: "emitter_name", Type: "string", Help: "Filter to issues from a specific emitter"},
+			{Name: "severity", Type: "string", Default: "all", Help: "Severity filter: error, warning, info, or all"},
+		},
+	},
+	{
+		Name:  "get_niagara_particle_stats",
+		Group: "niagara",
+		Short: "Get live particle counts and emitter execution state",
+		Long: "Returns live particle counts per emitter, total spawned count, execution state " +
+			"(Active/Inactive/Complete), and bounds info. Requires the system to be previewing " +
+			"in the Niagara editor or spawned in the level. Use to verify emitters are spawning " +
+			"particles and to diagnose empty effects.",
+		Example: `ue-cli get_niagara_particle_stats --system-path /Game/VFX/NS_Fire
+ue-cli get_niagara_particle_stats --system-path /Game/VFX/NS_Fire --emitter-name Sparks`,
+		Params: []ParamSpec{
+			{Name: "system_path", Type: "string", Required: true, Help: "Asset path of the Niagara system"},
+			{Name: "emitter_name", Type: "string", Help: "Filter to a specific emitter's stats"},
+		},
+	},
+	{
+		Name:  "set_niagara_playback_range",
+		Group: "niagara",
+		Short: "Set the timeline playback range in the Niagara editor",
+		Long: "Controls how long the Niagara editor preview plays. If your effect dies at 0.02s, " +
+			"extend the range. For looping effects set a longer range (e.g. 5-10 seconds). " +
+			"Optionally override the frame rate.",
+		Example: `ue-cli set_niagara_playback_range --system-path /Game/VFX/NS_Fire --range-end 5.0
+ue-cli set_niagara_playback_range --system-path /Game/VFX/NS_Fire --range-start 0.5 --range-end 10.0 --frame-rate 30`,
+		Params: []ParamSpec{
+			{Name: "system_path", Type: "string", Required: true, Help: "Asset path of the Niagara system"},
+			{Name: "range_end", Type: "float", Required: true, Help: "End time in seconds (e.g. 5.0)"},
+			{Name: "range_start", Type: "float", Default: 0.0, Help: "Start time in seconds"},
+			{Name: "frame_rate", Type: "int", Help: "Optional frame rate override (default 60)"},
+		},
+	},
+	{
+		Name:  "get_niagara_playback_range",
+		Group: "niagara",
+		Short: "Get the current playback range and frame rate settings",
+		Long: "Returns the current timeline playback range (start/end in seconds) and frame rate " +
+			"configuration. Use to check if the playback range is too short — a common cause of " +
+			"effects appearing to not play.",
+		Example: "ue-cli get_niagara_playback_range --system-path /Game/VFX/NS_Fire",
+		Params: []ParamSpec{
+			{Name: "system_path", Type: "string", Required: true, Help: "Asset path of the Niagara system"},
+		},
+	},
+	{
+		Name:  "get_niagara_module_versions",
+		Group: "niagara",
+		Short: "Check for outdated modules in an emitter",
+		Long: "Identifies modules that have newer versions available — a common source of Niagara " +
+			"warnings and compatibility issues. Returns current and available versions per module. " +
+			"Use filter to narrow by module name substring.",
+		Example: `ue-cli get_niagara_module_versions --system-path /Game/VFX/NS_Fire --emitter-name Sparks
+ue-cli get_niagara_module_versions --system-path /Game/VFX/NS_Fire --emitter-name Sparks --filter "Spawn"`,
+		Params: []ParamSpec{
+			{Name: "system_path", Type: "string", Required: true, Help: "Asset path of the Niagara system"},
+			{Name: "emitter_name", Type: "string", Required: true, Help: "Name of the emitter"},
+			{Name: "filter", Type: "string", Help: "Filter modules by name substring"},
 		},
 	},
 }

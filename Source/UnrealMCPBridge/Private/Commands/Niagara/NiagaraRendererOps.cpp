@@ -578,56 +578,17 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleSetNiagaraRendererP
 		return Result;
 	}
 
-	// Handle "facing_mode" for sprite renderer
-	if (LowerProp == TEXT("facing_mode"))
+	// Handle "facing_mode" for any renderer type that has it
+	if (LowerProp == TEXT("facing_mode") || LowerProp == TEXT("facingmode"))
 	{
-		UNiagaraSpriteRendererProperties* Sprite = Cast<UNiagaraSpriteRendererProperties>(Renderer);
-		if (!Sprite)
-		{
-			return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("'facing_mode' only applies to sprite renderers"));
-		}
-
 		FString ValueStr;
 		if (!Params->TryGetStringField(TEXT("value"), ValueStr))
 		{
 			return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'value' for facing_mode"));
 		}
 
-		int64 EnumVal = 0;
-		UEnum* FacingEnum = StaticEnum<ENiagaraSpriteFacingMode>();
-		if (FacingEnum)
-		{
-			EnumVal = FacingEnum->GetValueByNameString(ValueStr);
-			if (EnumVal == INDEX_NONE)
-			{
-				// Try case-insensitive
-				for (int32 i = 0; i < FacingEnum->NumEnums() - 1; ++i)
-				{
-					FString EnumName = FacingEnum->GetNameStringByIndex(i);
-					if (EnumName.Equals(ValueStr, ESearchCase::IgnoreCase))
-					{
-						EnumVal = FacingEnum->GetValueByIndex(i);
-						break;
-					}
-				}
-			}
-		}
-
-		Sprite->FacingMode = static_cast<ENiagaraSpriteFacingMode>(EnumVal);
-		NiagaraHelpers::CompileAndSync(System);
-
-		auto Result = MakeShared<FJsonObject>();
-		Result->SetBoolField(TEXT("success"), true);
-		Result->SetStringField(TEXT("property"), TEXT("facing_mode"));
-		Result->SetStringField(TEXT("value"), FacingEnum ? FacingEnum->GetNameStringByValue(EnumVal) : ValueStr);
-		return Result;
-	}
-
-	// Fallback: try generic UPROPERTY reflection
-	FString ValueStr;
-	if (Params->TryGetStringField(TEXT("value"), ValueStr))
-	{
-		FProperty* Prop = Renderer->GetClass()->FindPropertyByName(FName(*PropertyName));
+		// Try the actual C++ property name "FacingMode" via reflection — works for all renderer types
+		FProperty* Prop = Renderer->GetClass()->FindPropertyByName(TEXT("FacingMode"));
 		if (Prop)
 		{
 			Prop->ImportText_Direct(*ValueStr, Prop->ContainerPtrToValuePtr<void>(Renderer), Renderer, PPF_None);
@@ -635,14 +596,81 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleSetNiagaraRendererP
 
 			auto Result = MakeShared<FJsonObject>();
 			Result->SetBoolField(TEXT("success"), true);
-			Result->SetStringField(TEXT("property"), PropertyName);
+			Result->SetStringField(TEXT("property"), TEXT("FacingMode"));
 			Result->SetStringField(TEXT("value"), ValueStr);
+			Result->SetStringField(TEXT("renderer_type"), Renderer->GetClass()->GetName());
 			return Result;
 		}
+
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			TEXT("This renderer type does not have a FacingMode property"));
 	}
 
-	return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
-		FString::Printf(TEXT("Unknown renderer property '%s'. Supported: material, mesh, sort_order, enabled, facing_mode"), *PropertyName));
+	// Generic UPROPERTY reflection — works for ANY property on ANY renderer type
+	// Supports: FacingMode, Shape, Alignment, SortMode, Material, SubImageSize,
+	// RadiusScale, DefaultExponent, TessellationMode, bCastShadows, etc.
+	// Use the exact C++ property name (PascalCase)
+	FString ValueStr;
+	if (Params->TryGetStringField(TEXT("value"), ValueStr))
+	{
+		// Try exact property name first
+		FProperty* Prop = Renderer->GetClass()->FindPropertyByName(FName(*PropertyName));
+
+		// If not found, try common conversions: snake_case -> PascalCase
+		if (!Prop)
+		{
+			// Try removing underscores and capitalizing
+			FString PascalName = PropertyName;
+			PascalName.ReplaceInline(TEXT("_"), TEXT(""));
+			Prop = Renderer->GetClass()->FindPropertyByName(FName(*PascalName));
+		}
+
+		// Try with 'b' prefix for booleans
+		if (!Prop && (ValueStr == TEXT("true") || ValueStr == TEXT("false")))
+		{
+			FString BoolName = TEXT("b") + PropertyName;
+			BoolName.ReplaceInline(TEXT("_"), TEXT(""));
+			Prop = Renderer->GetClass()->FindPropertyByName(FName(*BoolName));
+		}
+
+		if (Prop)
+		{
+			Renderer->Modify();
+			Prop->ImportText_Direct(*ValueStr, Prop->ContainerPtrToValuePtr<void>(Renderer), Renderer, PPF_None);
+			NiagaraHelpers::CompileAndSync(System);
+
+			auto Result = MakeShared<FJsonObject>();
+			Result->SetBoolField(TEXT("success"), true);
+			Result->SetStringField(TEXT("property"), Prop->GetName());
+			Result->SetStringField(TEXT("value"), ValueStr);
+			Result->SetStringField(TEXT("renderer_type"), Renderer->GetClass()->GetName());
+			return Result;
+		}
+
+		// Property not found — list available properties for this renderer
+		TArray<FString> AvailableProps;
+		for (TFieldIterator<FProperty> It(Renderer->GetClass()); It; ++It)
+		{
+			if (It->HasAnyPropertyFlags(CPF_Edit))
+			{
+				AvailableProps.Add(It->GetName());
+			}
+		}
+
+		// Cap the list to avoid huge responses
+		if (AvailableProps.Num() > 30)
+		{
+			AvailableProps.SetNum(30);
+			AvailableProps.Add(TEXT("... (truncated)"));
+		}
+
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Property '%s' not found on %s. Available editable properties: %s"),
+				*PropertyName, *Renderer->GetClass()->GetName(),
+				*FString::Join(AvailableProps, TEXT(", "))));
+	}
+
+	return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'value' parameter"));
 #else
 	return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Editor-only operation"));
 #endif
@@ -764,4 +792,138 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleSetNiagaraRendererB
 #else
 	return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Editor-only operation"));
 #endif
+}
+
+// ---------------------------------------------------------------------------
+// HandleGetNiagaraRendererProperties — list available properties with values
+// Token-efficient: uses optional filter to return only matching properties
+// ---------------------------------------------------------------------------
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleGetNiagaraRendererProperties(
+	const TSharedPtr<FJsonObject>& Params)
+{
+	FString SystemPath, EmitterName;
+	if (!Params->TryGetStringField(TEXT("system_path"), SystemPath) ||
+		!Params->TryGetStringField(TEXT("emitter_name"), EmitterName))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			TEXT("Missing required: system_path, emitter_name"));
+	}
+
+	double IdxD = 0;
+	Params->TryGetNumberField(TEXT("renderer_index"), IdxD);
+	int32 RendererIndex = (int32)IdxD;
+
+	FString Filter;
+	Params->TryGetStringField(TEXT("filter"), Filter);
+
+	FString Error;
+	UNiagaraSystem* System = NiagaraHelpers::LoadNiagaraSystem(SystemPath, Error);
+	if (!System)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(Error);
+	}
+
+	int32 EmitterIdx;
+	FNiagaraEmitterHandle* Handle = NiagaraHelpers::FindEmitterHandle(
+		System, EmitterName, EmitterIdx, Error);
+	if (!Handle)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(Error);
+	}
+
+	FVersionedNiagaraEmitterData* EmitterData = NiagaraHelpers::GetEmitterData(Handle);
+	if (!EmitterData)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No emitter data"));
+	}
+
+	const TArray<UNiagaraRendererProperties*>& Renderers = EmitterData->GetRenderers();
+	if (RendererIndex < 0 || RendererIndex >= Renderers.Num())
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Renderer index %d out of range"), RendererIndex));
+	}
+
+	UNiagaraRendererProperties* Renderer = Renderers[RendererIndex];
+	TArray<TSharedPtr<FJsonValue>> PropsArr;
+
+	for (TFieldIterator<FProperty> It(Renderer->GetClass()); It; ++It)
+	{
+		FProperty* Prop = *It;
+
+		// Only include editable properties
+		if (!Prop->HasAnyPropertyFlags(CPF_Edit))
+		{
+			continue;
+		}
+
+		FString PropName = Prop->GetName();
+
+		// Apply filter if provided
+		if (!Filter.IsEmpty() &&
+			!PropName.Contains(Filter, ESearchCase::IgnoreCase))
+		{
+			continue;
+		}
+
+		auto PropObj = MakeShared<FJsonObject>();
+		PropObj->SetStringField(TEXT("name"), PropName);
+		PropObj->SetStringField(TEXT("type"), Prop->GetCPPType());
+
+		// Export current value as string
+		FString ValueStr;
+		const void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(Renderer);
+		Prop->ExportTextItem_Direct(ValueStr, ValuePtr, nullptr, Renderer, PPF_None);
+
+		// Truncate long values for token efficiency
+		if (ValueStr.Len() > 200)
+		{
+			ValueStr = ValueStr.Left(200) + TEXT("...(truncated)");
+		}
+		PropObj->SetStringField(TEXT("value"), ValueStr);
+
+		// For enum properties, list valid values
+		if (FEnumProperty* EnumProp = CastField<FEnumProperty>(Prop))
+		{
+			UEnum* Enum = EnumProp->GetEnum();
+			if (Enum)
+			{
+				TArray<TSharedPtr<FJsonValue>> EnumVals;
+				for (int32 i = 0; i < Enum->NumEnums() - 1; ++i)
+				{
+					EnumVals.Add(MakeShared<FJsonValueString>(
+						Enum->GetNameStringByIndex(i)));
+				}
+				PropObj->SetArrayField(TEXT("valid_values"), EnumVals);
+			}
+		}
+		else if (FByteProperty* ByteProp = CastField<FByteProperty>(Prop))
+		{
+			if (UEnum* Enum = ByteProp->Enum)
+			{
+				TArray<TSharedPtr<FJsonValue>> EnumVals;
+				for (int32 i = 0; i < Enum->NumEnums() - 1; ++i)
+				{
+					EnumVals.Add(MakeShared<FJsonValueString>(
+						Enum->GetNameStringByIndex(i)));
+				}
+				PropObj->SetArrayField(TEXT("valid_values"), EnumVals);
+			}
+		}
+
+		PropsArr.Add(MakeShared<FJsonValueObject>(PropObj));
+	}
+
+	auto Result = MakeShared<FJsonObject>();
+	Result->SetBoolField(TEXT("success"), true);
+	Result->SetStringField(TEXT("renderer_type"), Renderer->GetClass()->GetName());
+	Result->SetNumberField(TEXT("renderer_index"), RendererIndex);
+	Result->SetArrayField(TEXT("properties"), PropsArr);
+	Result->SetNumberField(TEXT("count"), PropsArr.Num());
+	if (!Filter.IsEmpty())
+	{
+		Result->SetStringField(TEXT("filter"), Filter);
+	}
+	return Result;
 }
