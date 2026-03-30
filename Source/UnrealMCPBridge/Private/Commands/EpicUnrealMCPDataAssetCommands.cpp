@@ -62,6 +62,14 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPDataAssetCommands::HandleCommand(
 	{
 		return HandleAddMassConfigTrait(Params);
 	}
+	if (CommandType == TEXT("set_mass_config_trait_property"))
+	{
+		return HandleSetMassConfigTraitProperty(Params);
+	}
+	if (CommandType == TEXT("remove_mass_config_trait"))
+	{
+		return HandleRemoveMassConfigTrait(Params);
+	}
 
 	return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
 		FString::Printf(TEXT("Unknown data asset command: %s"), *CommandType));
@@ -1202,5 +1210,325 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPDataAssetCommands::HandleAddMassConfigTrai
 	Result->SetStringField(TEXT("trait_class"), TraitClass->GetName());
 	Result->SetNumberField(TEXT("trait_index"), NewIndex);
 	Result->SetNumberField(TEXT("total_traits"), ArrayHelper.Num());
+	return Result;
+}
+
+// ============================================================================
+// Shared helper: locate the Config → Traits array and resolve a trait UObject
+// by index or class name. Returns nullptr and sets ErrorResponse on failure.
+// ============================================================================
+
+static UObject* ResolveMassConfigTrait(
+	UObject* Asset,
+	const TSharedPtr<FJsonObject>& Params,
+	FScriptArrayHelper*& OutArrayHelper,
+	FArrayProperty*& OutTraitsArrayProp,
+	FObjectProperty*& OutInnerObjProp,
+	int32& OutTraitIndex,
+	TSharedPtr<FJsonObject>& ErrorResponse)
+{
+	// Find Config struct property
+	FStructProperty* ConfigProp = nullptr;
+	for (TFieldIterator<FStructProperty> It(Asset->GetClass()); It; ++It)
+	{
+		if (It->GetName() == TEXT("Config"))
+		{
+			ConfigProp = *It;
+			break;
+		}
+	}
+
+	if (!ConfigProp)
+	{
+		ErrorResponse = FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			TEXT("Asset has no 'Config' struct property (not a MassEntityConfigAsset?)"));
+		return nullptr;
+	}
+
+	void* ConfigPtr = ConfigProp->ContainerPtrToValuePtr<void>(Asset);
+
+	// Find Traits array
+	OutTraitsArrayProp = nullptr;
+	for (TFieldIterator<FArrayProperty> It(ConfigProp->Struct); It; ++It)
+	{
+		if (It->GetName() == TEXT("Traits"))
+		{
+			OutTraitsArrayProp = *It;
+			break;
+		}
+	}
+
+	if (!OutTraitsArrayProp)
+	{
+		ErrorResponse = FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			TEXT("Config struct has no 'Traits' array"));
+		return nullptr;
+	}
+
+	OutInnerObjProp = CastField<FObjectProperty>(OutTraitsArrayProp->Inner);
+	if (!OutInnerObjProp)
+	{
+		ErrorResponse = FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			TEXT("Traits array inner type is not an object"));
+		return nullptr;
+	}
+
+	OutArrayHelper = new FScriptArrayHelper(
+		OutTraitsArrayProp,
+		OutTraitsArrayProp->ContainerPtrToValuePtr<void>(ConfigPtr));
+
+	// Resolve trait by index or class name
+	int32 TraitIndex = INDEX_NONE;
+	if (Params->HasField(TEXT("trait_index")))
+	{
+		TraitIndex = static_cast<int32>(Params->GetNumberField(TEXT("trait_index")));
+	}
+
+	FString TraitClass;
+	Params->TryGetStringField(TEXT("trait_class"), TraitClass);
+
+	if (TraitIndex == INDEX_NONE && TraitClass.IsEmpty())
+	{
+		ErrorResponse = FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			TEXT("Must provide 'trait_index' (int) or 'trait_class' (string, e.g. '/Script/MassCrowd.MassCrowdVisualizationTrait' or 'MassCrowdVisualizationTrait')"));
+		delete OutArrayHelper;
+		OutArrayHelper = nullptr;
+		return nullptr;
+	}
+
+	// If class name given, find the trait by class
+	if (TraitIndex == INDEX_NONE && !TraitClass.IsEmpty())
+	{
+		for (int32 i = 0; i < OutArrayHelper->Num(); ++i)
+		{
+			UObject* TraitObj = OutInnerObjProp->GetObjectPropertyValue(OutArrayHelper->GetRawPtr(i));
+			if (!TraitObj)
+			{
+				continue;
+			}
+
+			const FString ClassName = TraitObj->GetClass()->GetName();
+			const FString ClassPathName = TraitObj->GetClass()->GetPathName();
+
+			if (ClassPathName == TraitClass
+				|| ClassName == TraitClass
+				|| (TraitClass.StartsWith(TEXT("U")) && ClassName == TraitClass.RightChop(1)))
+			{
+				TraitIndex = i;
+				break;
+			}
+		}
+
+		if (TraitIndex == INDEX_NONE)
+		{
+			ErrorResponse = FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+				FString::Printf(TEXT("No trait matching class '%s' found in config"), *TraitClass));
+			delete OutArrayHelper;
+			OutArrayHelper = nullptr;
+			return nullptr;
+		}
+	}
+
+	if (TraitIndex < 0 || TraitIndex >= OutArrayHelper->Num())
+	{
+		ErrorResponse = FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("trait_index %d out of range [0, %d)"), TraitIndex, OutArrayHelper->Num()));
+		delete OutArrayHelper;
+		OutArrayHelper = nullptr;
+		return nullptr;
+	}
+
+	OutTraitIndex = TraitIndex;
+	UObject* TraitObj = OutInnerObjProp->GetObjectPropertyValue(OutArrayHelper->GetRawPtr(TraitIndex));
+	if (!TraitObj)
+	{
+		ErrorResponse = FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Trait at index %d is null"), TraitIndex));
+		delete OutArrayHelper;
+		OutArrayHelper = nullptr;
+		return nullptr;
+	}
+
+	return TraitObj;
+}
+
+// ============================================================================
+// set_mass_config_trait_property — Modify properties on an EXISTING trait
+// in-place. Never replaces the Traits array, never creates new UObjects.
+// Uses Unreal's own ImportText reflection for maximum type compatibility.
+//
+// Params:
+//   asset_path   — path to the MassEntityConfigAsset
+//   trait_index   — (int) index of the trait, OR
+//   trait_class   — (string) class name or full path (e.g. "MassMovementTrait")
+//   property_name  — (string) single property to set (with property_value)
+//   property_value — (any) value for that property
+//   properties    — (object) multiple properties to set at once {name: value, ...}
+// ============================================================================
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPDataAssetCommands::HandleSetMassConfigTraitProperty(
+	const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath;
+	if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path'"));
+	}
+
+	UObject* Asset = StaticLoadObject(UObject::StaticClass(), nullptr, *AssetPath);
+	if (!Asset)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Asset not found: %s"), *AssetPath));
+	}
+
+	FScriptArrayHelper* ArrayHelper = nullptr;
+	FArrayProperty* TraitsArrayProp = nullptr;
+	FObjectProperty* InnerObjProp = nullptr;
+	int32 TraitIndex = INDEX_NONE;
+	TSharedPtr<FJsonObject> ErrorResponse;
+
+	UObject* TraitObj = ResolveMassConfigTrait(
+		Asset, Params, ArrayHelper, TraitsArrayProp, InnerObjProp, TraitIndex, ErrorResponse);
+
+	if (!TraitObj)
+	{
+		return ErrorResponse;
+	}
+
+	// Collect properties to set — either single (property_name + property_value)
+	// or batch (properties object)
+	TSharedPtr<FJsonObject> PropsToSet = MakeShared<FJsonObject>();
+
+	FString SinglePropName;
+	if (Params->TryGetStringField(TEXT("property_name"), SinglePropName))
+	{
+		if (!Params->HasField(TEXT("property_value")))
+		{
+			delete ArrayHelper;
+			return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+				TEXT("'property_name' requires 'property_value'"));
+		}
+		PropsToSet->SetField(SinglePropName, Params->TryGetField(TEXT("property_value")));
+	}
+
+	const TSharedPtr<FJsonObject>* BatchProps = nullptr;
+	if (Params->TryGetObjectField(TEXT("properties"), BatchProps) && BatchProps)
+	{
+		for (const auto& Pair : (*BatchProps)->Values)
+		{
+			PropsToSet->SetField(Pair.Key, Pair.Value);
+		}
+	}
+
+	if (PropsToSet->Values.Num() == 0)
+	{
+		delete ArrayHelper;
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			TEXT("No properties to set. Provide 'property_name'+'property_value' or 'properties' object"));
+	}
+
+	// Apply each property using the existing PropertyUtils — handles ALL UE types
+	TArray<FString> SucceededProps;
+	TArray<FString> FailedProps;
+
+	for (const auto& Pair : PropsToSet->Values)
+	{
+		FString SetError;
+		if (PU::SetProperty(TraitObj, Pair.Key, Pair.Value, SetError))
+		{
+			SucceededProps.Add(Pair.Key);
+		}
+		else
+		{
+			FailedProps.Add(FString::Printf(TEXT("%s: %s"), *Pair.Key, *SetError));
+		}
+	}
+
+	delete ArrayHelper;
+
+	// Mark dirty
+	Asset->MarkPackageDirty();
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetBoolField(TEXT("success"), FailedProps.Num() == 0);
+	Result->SetStringField(TEXT("asset_path"), AssetPath);
+	Result->SetStringField(TEXT("trait_class"), TraitObj->GetClass()->GetName());
+	Result->SetNumberField(TEXT("trait_index"), TraitIndex);
+
+	TArray<TSharedPtr<FJsonValue>> SuccArr;
+	for (const FString& S : SucceededProps)
+	{
+		SuccArr.Add(MakeShared<FJsonValueString>(S));
+	}
+	Result->SetArrayField(TEXT("properties_set"), SuccArr);
+
+	if (FailedProps.Num() > 0)
+	{
+		TArray<TSharedPtr<FJsonValue>> FailArr;
+		for (const FString& S : FailedProps)
+		{
+			FailArr.Add(MakeShared<FJsonValueString>(S));
+		}
+		Result->SetArrayField(TEXT("errors"), FailArr);
+	}
+
+	return Result;
+}
+
+// ============================================================================
+// remove_mass_config_trait — Remove a single trait from the Traits array
+// without affecting other traits. Identifies by index or class name.
+//
+// Params:
+//   asset_path  — path to the MassEntityConfigAsset
+//   trait_index  — (int) index of the trait to remove, OR
+//   trait_class  — (string) class name or full path
+// ============================================================================
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPDataAssetCommands::HandleRemoveMassConfigTrait(
+	const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath;
+	if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path'"));
+	}
+
+	UObject* Asset = StaticLoadObject(UObject::StaticClass(), nullptr, *AssetPath);
+	if (!Asset)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Asset not found: %s"), *AssetPath));
+	}
+
+	FScriptArrayHelper* ArrayHelper = nullptr;
+	FArrayProperty* TraitsArrayProp = nullptr;
+	FObjectProperty* InnerObjProp = nullptr;
+	int32 TraitIndex = INDEX_NONE;
+	TSharedPtr<FJsonObject> ErrorResponse;
+
+	UObject* TraitObj = ResolveMassConfigTrait(
+		Asset, Params, ArrayHelper, TraitsArrayProp, InnerObjProp, TraitIndex, ErrorResponse);
+
+	if (!TraitObj)
+	{
+		return ErrorResponse;
+	}
+
+	FString RemovedClass = TraitObj->GetClass()->GetName();
+
+	// Remove the trait at the resolved index
+	ArrayHelper->RemoveValues(TraitIndex, 1);
+
+	delete ArrayHelper;
+
+	Asset->MarkPackageDirty();
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetBoolField(TEXT("success"), true);
+	Result->SetStringField(TEXT("asset_path"), AssetPath);
+	Result->SetStringField(TEXT("removed_trait_class"), RemovedClass);
+	Result->SetNumberField(TEXT("removed_index"), TraitIndex);
 	return Result;
 }

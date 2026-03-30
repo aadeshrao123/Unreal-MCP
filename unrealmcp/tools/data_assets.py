@@ -230,6 +230,97 @@ def add_mass_config_trait(
 
 
 @mcp.tool()
+def set_mass_config_trait_property(
+    asset_path: str,
+    trait_index: int | None = None,
+    trait_class: str | None = None,
+    property_name: str | None = None,
+    property_value: str | float | int | bool | dict | list | None = None,
+    properties: dict | None = None,
+) -> str:
+    """Modify properties on an EXISTING trait in a Mass Entity Config in-place.
+
+    Never replaces the Traits array, never creates new UObjects. Only touches
+    the specific properties you provide — all other trait values stay intact.
+    Uses Unreal's own ImportText reflection so it supports ANY property type
+    (structs, arrays, object refs, meshes, LOD params, enums, etc.).
+
+    Identify the trait by EITHER trait_index OR trait_class (not both required).
+    Set properties with EITHER property_name+property_value (single) OR
+    properties dict (batch).
+
+    Args:
+        asset_path: Path to MassEntityConfigAsset
+        trait_index: Index of the trait in the Traits array (from get_mass_config_traits)
+        trait_class: Class name or full path (e.g. "MassMovementTrait" or
+            "/Script/MassMovement.MassMovementTrait")
+        property_name: Single property to set (requires property_value)
+        property_value: Value for property_name. For structs use dict, for
+            object refs use asset path string, for enums use name string.
+        properties: Batch set multiple properties {name: value, ...}
+
+    Examples:
+        # Set MaxSpeed on movement trait by class name
+        set_mass_config_trait_property(
+            asset_path="/Jiggify/Game/.../DA_Config",
+            trait_class="MassMovementTrait",
+            property_name="Movement",
+            property_value={"MaxSpeed": 300, "MaxAcceleration": 500}
+        )
+
+        # Set LODMaxCount on visualization trait by index
+        set_mass_config_trait_property(
+            asset_path="/Jiggify/Game/.../DA_Config",
+            trait_index=4,
+            property_name="LODParams",
+            property_value={"LODMaxCount": [2000, 5000, 10000, 2147483647]}
+        )
+
+        # Batch set multiple properties
+        set_mass_config_trait_property(
+            asset_path="/Jiggify/Game/.../DA_Config",
+            trait_class="MassEnemyTrait",
+            properties={"MaxHealth": 50, "BaseDamage": 10, "MoveSpeed": 400}
+        )
+    """
+    params: dict = {"asset_path": asset_path}
+    if trait_index is not None:
+        params["trait_index"] = trait_index
+    if trait_class is not None:
+        params["trait_class"] = trait_class
+    if property_name is not None:
+        params["property_name"] = property_name
+    if property_value is not None:
+        params["property_value"] = property_value
+    if properties is not None:
+        params["properties"] = properties
+    return _call("set_mass_config_trait_property", params)
+
+
+@mcp.tool()
+def remove_mass_config_trait(
+    asset_path: str,
+    trait_index: int | None = None,
+    trait_class: str | None = None,
+) -> str:
+    """Remove a single trait from a Mass Entity Config without affecting other traits.
+
+    Identify the trait by EITHER trait_index OR trait_class (not both required).
+
+    Args:
+        asset_path: Path to MassEntityConfigAsset
+        trait_index: Index of the trait to remove
+        trait_class: Class name or full path (e.g. "MassMovementTrait")
+    """
+    params: dict = {"asset_path": asset_path}
+    if trait_index is not None:
+        params["trait_index"] = trait_index
+    if trait_class is not None:
+        params["trait_class"] = trait_class
+    return _call("remove_mass_config_trait", params)
+
+
+@mcp.tool()
 def list_data_assets(
     path: str = "/Game",
     class_filter: str = "",

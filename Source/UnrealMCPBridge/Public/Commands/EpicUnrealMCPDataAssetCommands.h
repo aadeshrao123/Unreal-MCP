@@ -28,6 +28,8 @@ private:
 	TSharedPtr<FJsonObject> HandleSearchClassPaths(const TSharedPtr<FJsonObject>& Params);
 	TSharedPtr<FJsonObject> HandleGetMassConfigTraits(const TSharedPtr<FJsonObject>& Params);
 	TSharedPtr<FJsonObject> HandleAddMassConfigTrait(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleSetMassConfigTraitProperty(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleRemoveMassConfigTrait(const TSharedPtr<FJsonObject>& Params);
 
 	// Limited to UDataAsset subclasses. For any class use PU::ResolveAnyClass.
 	static UClass* ResolveDataAssetClass(const FString& ClassName);

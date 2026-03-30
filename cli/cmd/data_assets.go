@@ -114,6 +114,56 @@ ue-cli get_data_asset_properties --asset-path /Game/Data/DA_MyRecipe --filter "P
 		},
 	},
 	{
+		Name:  "set_mass_config_trait_property",
+		Group: "dataassets",
+		Short: "Modify existing trait properties in-place",
+		Long: `Modifies properties on an EXISTING trait in a Mass Entity Config without replacing the
+Traits array or creating new UObjects. Only the specific properties you provide are changed —
+all other trait values stay intact. Uses Unreal's own ImportText reflection so it supports
+ANY property type (structs, arrays, object refs, meshes, LOD params, enums, etc.).
+
+Identify the trait by EITHER --trait-index OR --trait-class.
+Set properties with EITHER --property-name + --property-value (single) OR --properties (batch).
+
+IMPORTANT: Always use this instead of set_data_asset_property with property_name="Config" on
+MassEntityConfigAssets — that approach destructively replaces the entire Traits array.`,
+		Example: `# Set MaxSpeed on movement trait by class name
+ue-cli set_mass_config_trait_property --asset-path /Game/Mass/DA_Config \
+  --trait-class MassMovementTrait \
+  --property-name Movement --property-value '{"MaxSpeed":300,"MaxAcceleration":500}'
+
+# Batch set multiple properties on enemy trait
+ue-cli set_mass_config_trait_property --asset-path /Game/Mass/DA_Config \
+  --trait-class MassEnemyTrait \
+  --properties '{"MaxHealth":50,"BaseDamage":10,"MoveSpeed":400}'
+
+# Set by trait index
+ue-cli set_mass_config_trait_property --asset-path /Game/Mass/DA_Config \
+  --trait-index 4 --property-name LODParams \
+  --property-value '{"LODMaxCount":[2000,5000,10000,2147483647]}'`,
+		Params: []ParamSpec{
+			{Name: "asset_path", Type: "string", Required: true, Help: "Content path to the Mass Entity config asset"},
+			{Name: "trait_index", Type: "int", Help: "Index of the trait (from get_mass_config_traits)"},
+			{Name: "trait_class", Type: "string", Help: "Class name or full path (e.g. MassMovementTrait or /Script/MassMovement.MassMovementTrait)"},
+			{Name: "property_name", Type: "string", Help: "Single property to set (requires --property-value)"},
+			{Name: "property_value", Type: "json", Help: "Value for --property-name (struct as JSON object, object ref as path string, enum as name)"},
+			{Name: "properties", Type: "json", Help: "Batch set multiple properties: {name: value, ...}"},
+		},
+	},
+	{
+		Name:  "remove_mass_config_trait",
+		Group: "dataassets",
+		Short: "Remove a single trait from a Mass Entity config",
+		Long:  "Removes a single trait from a MassEntityConfigAsset without affecting other traits. Identify the trait by EITHER --trait-index OR --trait-class.",
+		Example: `ue-cli remove_mass_config_trait --asset-path /Game/Mass/DA_Config --trait-class MassMovementTrait
+ue-cli remove_mass_config_trait --asset-path /Game/Mass/DA_Config --trait-index 3`,
+		Params: []ParamSpec{
+			{Name: "asset_path", Type: "string", Required: true, Help: "Content path to the Mass Entity config asset"},
+			{Name: "trait_index", Type: "int", Help: "Index of the trait to remove"},
+			{Name: "trait_class", Type: "string", Help: "Class name or full path of the trait to remove"},
+		},
+	},
+	{
 		Name:  "list_data_assets",
 		Group: "dataassets",
 		Short: "List data assets by path/class",
