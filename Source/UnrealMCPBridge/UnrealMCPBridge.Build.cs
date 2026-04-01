@@ -29,7 +29,8 @@ public class UnrealMCPBridge : ModuleRules
 				System.IO.Path.Combine(ModuleDirectory, "Private/Commands/BlueprintGraph/Function"),
 				System.IO.Path.Combine(ModuleDirectory, "Private/Commands/Material"),
 				System.IO.Path.Combine(ModuleDirectory, "Private/Commands/Profiling"),
-				System.IO.Path.Combine(ModuleDirectory, "Private/Commands/Niagara")
+				System.IO.Path.Combine(ModuleDirectory, "Private/Commands/Niagara"),
+				System.IO.Path.Combine(ModuleDirectory, "Private/Commands/StateTree")
 			}
 		);
 
@@ -80,7 +81,11 @@ public class UnrealMCPBridge : ModuleRules
 				"TraceLog",
 				"Niagara",
 				"NiagaraEditor",
-				"NiagaraShader"
+				"NiagaraShader",
+				"StateTreeModule",
+				"StateTreeEditorModule",
+				"GameplayTags",
+				"PropertyBindingUtils"
 			}
 		);
 

@@ -38,6 +38,7 @@ UEpicUnrealMCPBridge::UEpicUnrealMCPBridge()
 	EnhancedInputCommands = MakeShared<FEpicUnrealMCPEnhancedInputCommands>();
 	ProfilingCommands = MakeShared<FEpicUnrealMCPProfilingCommands>();
 	NiagaraCommands = MakeShared<FEpicUnrealMCPNiagaraCommands>();
+	StateTreeCommands = MakeShared<FEpicUnrealMCPStateTreeCommands>();
 }
 
 UEpicUnrealMCPBridge::~UEpicUnrealMCPBridge()
@@ -755,6 +756,16 @@ FString UEpicUnrealMCPBridge::ExecuteCommand(
 				CommandType.StartsWith(TEXT("reorder_niagara")))
 			{
 				ResultJson = NiagaraCommands->HandleCommand(CommandType, Params);
+			}
+			else if (CommandType.StartsWith(TEXT("create_statetree")) ||
+				CommandType.StartsWith(TEXT("get_statetree")) ||
+				CommandType.StartsWith(TEXT("list_statetree")) ||
+				CommandType.StartsWith(TEXT("compile_statetree")) ||
+				CommandType.StartsWith(TEXT("add_statetree")) ||
+				CommandType.StartsWith(TEXT("remove_statetree")) ||
+				CommandType.StartsWith(TEXT("set_statetree")))
+			{
+				ResultJson = StateTreeCommands->HandleCommand(CommandType, Params);
 			}
 			else
 			{

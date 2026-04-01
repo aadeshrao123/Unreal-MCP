@@ -16,3 +16,4 @@ from unrealmcp.tools import enhanced_input   # noqa: F401 — C++ bridge: Enhanc
 from unrealmcp.tools import profiling        # noqa: F401 — C++ bridge: .utrace profiling analysis
 from unrealmcp.tools import debug            # noqa: F401 — C++ bridge: token debug & response analysis
 from unrealmcp.tools import niagara          # noqa: F401 — C++ bridge: Niagara particle system tools
+from unrealmcp.tools import statetree        # noqa: F401 — C++ bridge: StateTree AI asset tools
