@@ -9,6 +9,7 @@ class UStateTreeEditorData;
 class UStateTreeState;
 struct FStateTreeEditorNode;
 struct FStateTreeTransition;
+struct FStateTreePropertyPathBinding;
 
 /**
  * Shared helper functions for all StateTree MCP command files.
@@ -76,19 +77,58 @@ namespace StateTreeHelpers
 		UStateTreeEditorData* EditorData,
 		UStateTreeState* State);
 
-	/** Serialize a state with full details (properties, tasks, conditions, transitions). */
+	/** Serialize a state with full details (properties, tasks, conditions, transitions, parameters, bindings). */
 	TSharedPtr<FJsonObject> StateToJsonDetailed(
 		UStateTreeEditorData* EditorData,
-		UStateTreeState* State);
+		UStateTreeState* State,
+		bool bIncludeBindings = false);
 
 	/** Serialize an FStateTreeEditorNode (task/evaluator/condition) to JSON. */
 	TSharedPtr<FJsonObject> EditorNodeToJson(const FStateTreeEditorNode& Node, int32 Index);
 
+	/**
+	 * Serialize an FStateTreeEditorNode with its bindings inlined.
+	 * Looks up all bindings where the node's ID matches source or target struct ID.
+	 */
+	TSharedPtr<FJsonObject> EditorNodeToJsonWithBindings(
+		const FStateTreeEditorNode& Node,
+		int32 Index,
+		UStateTreeEditorData* EditorData);
+
 	/** Serialize an FStateTreeTransition to JSON. */
-	TSharedPtr<FJsonObject> TransitionToJson(const FStateTreeTransition& Transition, int32 Index);
+	TSharedPtr<FJsonObject> TransitionToJson(
+		const FStateTreeTransition& Transition,
+		int32 Index,
+		UStateTreeEditorData* EditorData = nullptr,
+		bool bIncludeBindings = false);
 
 	/** Serialize all properties of an FInstancedStruct using reflection. */
 	TSharedPtr<FJsonObject> SerializeInstancedStructProperties(const FInstancedStruct& Struct);
+
+	// ---- Binding Serialization ----
+
+	/**
+	 * Serialize a single property binding to JSON with full property path details.
+	 * Resolves struct IDs to human-readable names via GetBindableStructByID.
+	 */
+	TSharedPtr<FJsonObject> BindingToJson(
+		const FStateTreePropertyPathBinding& Binding,
+		int32 Index,
+		UStateTreeEditorData* EditorData);
+
+	/**
+	 * Collect all bindings that reference the given struct ID (as source or target).
+	 * Returns a JSON array of binding objects.
+	 */
+	TArray<TSharedPtr<FJsonValue>> CollectBindingsForNode(
+		const FGuid& NodeStructID,
+		UStateTreeEditorData* EditorData);
+
+	/**
+	 * Resolve a binding struct ID to a human-readable name.
+	 * Uses EditorData->GetBindableStructByID and falls back to node search.
+	 */
+	FString ResolveStructIDToName(const FGuid& StructID, UStateTreeEditorData* EditorData);
 
 	// ---- Enum Conversion ----
 
@@ -97,6 +137,7 @@ namespace StateTreeHelpers
 	FString TransitionTriggerToString(uint8 Trigger);
 	FString TransitionPriorityToString(uint8 Priority);
 	FString ExpressionOperandToString(uint8 Operand);
+	FString TaskCompletionTypeToString(uint8 CompletionType);
 
 	// ---- Compilation ----
 

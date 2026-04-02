@@ -38,6 +38,8 @@ private:
 	TSharedPtr<FJsonObject> HandleGetStateTreeNode(const TSharedPtr<FJsonObject>& Params);
 	TSharedPtr<FJsonObject> HandleGetStateTreeBindings(const TSharedPtr<FJsonObject>& Params);
 	TSharedPtr<FJsonObject> HandleGetStateTreeTransitionTargets(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleGetStateTreeFullInfo(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleSearchStateTreeNodes(const TSharedPtr<FJsonObject>& Params);
 
 	// ---- Create/Add (StateTreeCreateOps.cpp) ----
 	TSharedPtr<FJsonObject> HandleCreateStateTree(const TSharedPtr<FJsonObject>& Params);

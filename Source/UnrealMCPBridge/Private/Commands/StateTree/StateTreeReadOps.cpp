@@ -72,6 +72,8 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPStateTreeCommands::HandleGetStateTreeInfo(
 	Result->SetNumberField(TEXT("state_count"), TotalStateCount);
 	Result->SetNumberField(TEXT("evaluator_count"), EditorData->Evaluators.Num());
 	Result->SetNumberField(TEXT("global_task_count"), EditorData->GlobalTasks.Num());
+	Result->SetStringField(TEXT("global_tasks_completion"),
+		StateTreeHelpers::TaskCompletionTypeToString(static_cast<uint8>(EditorData->GlobalTasksCompletion)));
 	Result->SetNumberField(TEXT("color_count"), EditorData->Colors.Num());
 	Result->SetNumberField(TEXT("root_state_count"), EditorData->SubTrees.Num());
 
@@ -84,6 +86,15 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPStateTreeCommands::HandleGetStateTreeInfo(
 		ParameterCount = BagStruct->GetPropertyDescs().Num();
 	}
 	Result->SetNumberField(TEXT("parameter_count"), ParameterCount);
+
+	// Binding count
+	int32 BindingCount = 0;
+	const FStateTreeEditorPropertyBindings* EditorBindings = EditorData->GetPropertyEditorBindings();
+	if (EditorBindings)
+	{
+		BindingCount = EditorBindings->GetBindings().Num();
+	}
+	Result->SetNumberField(TEXT("binding_count"), BindingCount);
 
 	return Result;
 }
@@ -606,12 +617,8 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPStateTreeCommands::HandleGetStateTreeBindi
 			}
 		}
 
-		auto BindingJson = MakeShared<FJsonObject>();
-		BindingJson->SetNumberField(TEXT("index"), i);
-		BindingJson->SetStringField(TEXT("source_struct_id"), SourcePath.GetStructID().ToString());
-		BindingJson->SetStringField(TEXT("target_struct_id"), TargetPath.GetStructID().ToString());
-
-		BindingsArray.Add(MakeShared<FJsonValueObject>(BindingJson));
+		BindingsArray.Add(MakeShared<FJsonValueObject>(
+			StateTreeHelpers::BindingToJson(Binding, i, EditorData)));
 	}
 
 	auto Result = MakeShared<FJsonObject>();
@@ -714,5 +721,472 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPStateTreeCommands::HandleGetStateTreeTrans
 	Result->SetArrayField(TEXT("meta_targets"), MetaArray);
 	Result->SetNumberField(TEXT("state_count"), StatesArray.Num());
 	Result->SetNumberField(TEXT("meta_count"), MetaArray.Num());
+	return Result;
+}
+
+// ---------------------------------------------------------------------------
+// HandleGetStateTreeFullInfo
+// ---------------------------------------------------------------------------
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPStateTreeCommands::HandleGetStateTreeFullInfo(
+	const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath;
+	if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+	}
+
+	FString Error;
+	UStateTree* Tree = StateTreeHelpers::LoadStateTree(AssetPath, Error);
+	if (!Tree)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(Error);
+	}
+
+	UStateTreeEditorData* EditorData = StateTreeHelpers::GetEditorData(Tree, Error);
+	if (!EditorData)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(Error);
+	}
+
+	// Verbosity: "summary" = counts only, "standard" = states+nodes, "full" = everything + bindings inline
+	FString Verbosity = TEXT("standard");
+	Params->TryGetStringField(TEXT("verbosity"), Verbosity);
+
+	// Optional section filter: comma-separated list of sections to include
+	// Valid sections: states, evaluators, global_tasks, parameters, bindings
+	// Empty = all sections
+	FString SectionFilter;
+	Params->TryGetStringField(TEXT("sections"), SectionFilter);
+
+	TSet<FString> RequestedSections;
+	if (!SectionFilter.IsEmpty())
+	{
+		TArray<FString> Parts;
+		SectionFilter.ParseIntoArray(Parts, TEXT(","));
+		for (FString& Part : Parts)
+		{
+			Part.TrimStartAndEndInline();
+			RequestedSections.Add(Part.ToLower());
+		}
+	}
+
+	auto WantSection = [&](const FString& Section) -> bool
+	{
+		return RequestedSections.Num() == 0 || RequestedSections.Contains(Section);
+	};
+
+	bool bIncludeBindings = Verbosity.Equals(TEXT("full"), ESearchCase::IgnoreCase);
+	bool bSummaryOnly = Verbosity.Equals(TEXT("summary"), ESearchCase::IgnoreCase);
+
+	auto Result = MakeShared<FJsonObject>();
+	Result->SetBoolField(TEXT("success"), true);
+	Result->SetStringField(TEXT("asset_path"), AssetPath);
+	Result->SetStringField(TEXT("verbosity"), Verbosity);
+
+	// Schema
+	FString SchemaClassName;
+	if (EditorData->Schema)
+	{
+		SchemaClassName = EditorData->Schema->GetClass()->GetName();
+	}
+	Result->SetStringField(TEXT("schema_class"), SchemaClassName);
+
+	// Global tasks completion
+	Result->SetStringField(TEXT("global_tasks_completion"),
+		StateTreeHelpers::TaskCompletionTypeToString(static_cast<uint8>(EditorData->GlobalTasksCompletion)));
+
+	// Counts (always included)
+	int32 TotalStateCount = 0;
+	TFunction<void(const UStateTreeState*)> CountStates = [&](const UStateTreeState* State)
+	{
+		if (!State)
+		{
+			return;
+		}
+		TotalStateCount++;
+		for (const UStateTreeState* Child : State->Children)
+		{
+			CountStates(Child);
+		}
+	};
+	for (const UStateTreeState* SubTree : EditorData->SubTrees)
+	{
+		CountStates(SubTree);
+	}
+
+	Result->SetNumberField(TEXT("state_count"), TotalStateCount);
+	Result->SetNumberField(TEXT("evaluator_count"), EditorData->Evaluators.Num());
+	Result->SetNumberField(TEXT("global_task_count"), EditorData->GlobalTasks.Num());
+	Result->SetNumberField(TEXT("root_state_count"), EditorData->SubTrees.Num());
+
+	int32 BindingCount = 0;
+	const FStateTreeEditorPropertyBindings* EditorBindings = EditorData->GetPropertyEditorBindings();
+	if (EditorBindings)
+	{
+		BindingCount = EditorBindings->GetBindings().Num();
+	}
+	Result->SetNumberField(TEXT("binding_count"), BindingCount);
+
+	// Parameter count
+	int32 ParameterCount = 0;
+	const FInstancedPropertyBag& RootParams = EditorData->GetRootParametersPropertyBag();
+	const UPropertyBag* BagStruct = RootParams.GetPropertyBagStruct();
+	if (BagStruct)
+	{
+		ParameterCount = BagStruct->GetPropertyDescs().Num();
+	}
+	Result->SetNumberField(TEXT("parameter_count"), ParameterCount);
+
+	if (bSummaryOnly)
+	{
+		return Result;
+	}
+
+	// ---- Parameters ----
+	if (WantSection(TEXT("parameters")) && BagStruct)
+	{
+		auto ParametersJson = MakeShared<FJsonObject>();
+		TConstArrayView<FPropertyBagPropertyDesc> Descs = BagStruct->GetPropertyDescs();
+		FConstStructView BagValue = RootParams.GetValue();
+
+		for (const FPropertyBagPropertyDesc& Desc : Descs)
+		{
+			auto ParamJson = MakeShared<FJsonObject>();
+
+			FString TypeName;
+			const UEnum* TypeEnum = StaticEnum<EPropertyBagPropertyType>();
+			if (TypeEnum)
+			{
+				TypeName = TypeEnum->GetNameStringByValue(static_cast<int64>(Desc.ValueType));
+			}
+			ParamJson->SetStringField(TEXT("type"), TypeName);
+
+			if (Desc.ValueTypeObject != nullptr)
+			{
+				ParamJson->SetStringField(TEXT("value_type_object"), Desc.ValueTypeObject->GetPathName());
+			}
+
+			FString ValueString;
+			if (BagValue.IsValid())
+			{
+				TValueOrError<FString, EPropertyBagResult> SerializedValue =
+					RootParams.GetValueSerializedString(Desc.Name);
+				if (SerializedValue.IsValid())
+				{
+					ValueString = SerializedValue.GetValue();
+				}
+			}
+			ParamJson->SetStringField(TEXT("value"), ValueString);
+			ParamJson->SetStringField(TEXT("id"), Desc.ID.ToString());
+
+			ParametersJson->SetObjectField(Desc.Name.ToString(), ParamJson);
+		}
+
+		Result->SetObjectField(TEXT("parameters"), ParametersJson);
+	}
+
+	// ---- Evaluators ----
+	if (WantSection(TEXT("evaluators")) && EditorData->Evaluators.Num() > 0)
+	{
+		TArray<TSharedPtr<FJsonValue>> EvaluatorsArray;
+		for (int32 i = 0; i < EditorData->Evaluators.Num(); ++i)
+		{
+			if (bIncludeBindings)
+			{
+				EvaluatorsArray.Add(MakeShared<FJsonValueObject>(
+					StateTreeHelpers::EditorNodeToJsonWithBindings(EditorData->Evaluators[i], i, EditorData)));
+			}
+			else
+			{
+				EvaluatorsArray.Add(MakeShared<FJsonValueObject>(
+					StateTreeHelpers::EditorNodeToJson(EditorData->Evaluators[i], i)));
+			}
+		}
+		Result->SetArrayField(TEXT("evaluators"), EvaluatorsArray);
+	}
+
+	// ---- Global Tasks ----
+	if (WantSection(TEXT("global_tasks")) && EditorData->GlobalTasks.Num() > 0)
+	{
+		TArray<TSharedPtr<FJsonValue>> GlobalTasksArray;
+		for (int32 i = 0; i < EditorData->GlobalTasks.Num(); ++i)
+		{
+			if (bIncludeBindings)
+			{
+				GlobalTasksArray.Add(MakeShared<FJsonValueObject>(
+					StateTreeHelpers::EditorNodeToJsonWithBindings(EditorData->GlobalTasks[i], i, EditorData)));
+			}
+			else
+			{
+				GlobalTasksArray.Add(MakeShared<FJsonValueObject>(
+					StateTreeHelpers::EditorNodeToJson(EditorData->GlobalTasks[i], i)));
+			}
+		}
+		Result->SetArrayField(TEXT("global_tasks"), GlobalTasksArray);
+	}
+
+	// ---- States (recursive, fully detailed) ----
+	if (WantSection(TEXT("states")))
+	{
+		TFunction<TSharedPtr<FJsonObject>(UStateTreeState*)> BuildStateJson =
+			[&](UStateTreeState* State) -> TSharedPtr<FJsonObject>
+		{
+			if (!State)
+			{
+				return nullptr;
+			}
+
+			TSharedPtr<FJsonObject> StateJson = StateTreeHelpers::StateToJsonDetailed(
+				EditorData, State, bIncludeBindings);
+
+			// Replace children summary with full recursive children
+			if (State->Children.Num() > 0)
+			{
+				TArray<TSharedPtr<FJsonValue>> ChildrenArray;
+				for (UStateTreeState* Child : State->Children)
+				{
+					TSharedPtr<FJsonObject> ChildJson = BuildStateJson(Child);
+					if (ChildJson.IsValid())
+					{
+						ChildrenArray.Add(MakeShared<FJsonValueObject>(ChildJson));
+					}
+				}
+				StateJson->SetArrayField(TEXT("children"), ChildrenArray);
+			}
+
+			return StateJson;
+		};
+
+		TArray<TSharedPtr<FJsonValue>> StatesArray;
+		for (UStateTreeState* SubTree : EditorData->SubTrees)
+		{
+			TSharedPtr<FJsonObject> StateJson = BuildStateJson(SubTree);
+			if (StateJson.IsValid())
+			{
+				StatesArray.Add(MakeShared<FJsonValueObject>(StateJson));
+			}
+		}
+		Result->SetArrayField(TEXT("states"), StatesArray);
+	}
+
+	// ---- Bindings (standalone section) ----
+	if (WantSection(TEXT("bindings")) && EditorBindings)
+	{
+		TConstArrayView<FStateTreePropertyPathBinding> Bindings = EditorBindings->GetBindings();
+		if (Bindings.Num() > 0)
+		{
+			TArray<TSharedPtr<FJsonValue>> BindingsArray;
+			for (int32 i = 0; i < Bindings.Num(); ++i)
+			{
+				BindingsArray.Add(MakeShared<FJsonValueObject>(
+					StateTreeHelpers::BindingToJson(Bindings[i], i, EditorData)));
+			}
+			Result->SetArrayField(TEXT("bindings"), BindingsArray);
+		}
+	}
+
+	return Result;
+}
+
+// ---------------------------------------------------------------------------
+// HandleSearchStateTreeNodes
+// ---------------------------------------------------------------------------
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPStateTreeCommands::HandleSearchStateTreeNodes(
+	const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath;
+	if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+	}
+
+	FString Error;
+	UStateTree* Tree = StateTreeHelpers::LoadStateTree(AssetPath, Error);
+	if (!Tree)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(Error);
+	}
+
+	UStateTreeEditorData* EditorData = StateTreeHelpers::GetEditorData(Tree, Error);
+	if (!EditorData)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(Error);
+	}
+
+	// Filter: class name substring
+	FString ClassFilter;
+	Params->TryGetStringField(TEXT("class_filter"), ClassFilter);
+
+	// Category filter: "task", "evaluator", "condition", "consideration", or empty for all
+	FString CategoryFilter;
+	Params->TryGetStringField(TEXT("category"), CategoryFilter);
+	FString CategoryLower = CategoryFilter.ToLower();
+
+	// Helper: check if a node matches filters
+	auto NodeMatchesFilter = [&](const FStateTreeEditorNode& Node) -> bool
+	{
+		if (!Node.Node.IsValid())
+		{
+			return false;
+		}
+
+		if (!ClassFilter.IsEmpty())
+		{
+			FString ClassName = Node.Node.GetScriptStruct()->GetName();
+			if (!ClassName.Contains(ClassFilter, ESearchCase::IgnoreCase))
+			{
+				return false;
+			}
+		}
+
+		return true;
+	};
+
+	// Helper: serialize a search result
+	auto MakeResult = [&](const FStateTreeEditorNode& Node, int32 NodeIndex,
+		const FString& Location, const FString& StateName) -> TSharedPtr<FJsonObject>
+	{
+		auto ResultObj = StateTreeHelpers::EditorNodeToJson(Node, NodeIndex);
+		ResultObj->SetStringField(TEXT("location"), Location);
+
+		if (!StateName.IsEmpty())
+		{
+			ResultObj->SetStringField(TEXT("state_name"), StateName);
+		}
+
+		return ResultObj;
+	};
+
+	TArray<TSharedPtr<FJsonValue>> Results;
+
+	// Search evaluators
+	if (CategoryLower.IsEmpty() || CategoryLower == TEXT("evaluator"))
+	{
+		for (int32 i = 0; i < EditorData->Evaluators.Num(); ++i)
+		{
+			if (NodeMatchesFilter(EditorData->Evaluators[i]))
+			{
+				Results.Add(MakeShared<FJsonValueObject>(
+					MakeResult(EditorData->Evaluators[i], i, TEXT("evaluator"), TEXT(""))));
+			}
+		}
+	}
+
+	// Search global tasks
+	if (CategoryLower.IsEmpty() || CategoryLower == TEXT("global_task") || CategoryLower == TEXT("task"))
+	{
+		for (int32 i = 0; i < EditorData->GlobalTasks.Num(); ++i)
+		{
+			if (NodeMatchesFilter(EditorData->GlobalTasks[i]))
+			{
+				Results.Add(MakeShared<FJsonValueObject>(
+					MakeResult(EditorData->GlobalTasks[i], i, TEXT("global_task"), TEXT(""))));
+			}
+		}
+	}
+
+	// Recursive state search
+	TFunction<void(UStateTreeState*)> SearchState = [&](UStateTreeState* State)
+	{
+		if (!State)
+		{
+			return;
+		}
+
+		FString StateName = State->Name.ToString();
+
+		// Tasks
+		if (CategoryLower.IsEmpty() || CategoryLower == TEXT("task"))
+		{
+			for (int32 i = 0; i < State->Tasks.Num(); ++i)
+			{
+				if (NodeMatchesFilter(State->Tasks[i]))
+				{
+					Results.Add(MakeShared<FJsonValueObject>(
+						MakeResult(State->Tasks[i], i, TEXT("task"), StateName)));
+				}
+			}
+
+			if (State->SingleTask.Node.IsValid() && NodeMatchesFilter(State->SingleTask))
+			{
+				Results.Add(MakeShared<FJsonValueObject>(
+					MakeResult(State->SingleTask, 0, TEXT("single_task"), StateName)));
+			}
+		}
+
+		// Enter conditions
+		if (CategoryLower.IsEmpty() || CategoryLower == TEXT("condition"))
+		{
+			for (int32 i = 0; i < State->EnterConditions.Num(); ++i)
+			{
+				if (NodeMatchesFilter(State->EnterConditions[i]))
+				{
+					Results.Add(MakeShared<FJsonValueObject>(
+						MakeResult(State->EnterConditions[i], i, TEXT("enter_condition"), StateName)));
+				}
+			}
+		}
+
+		// Transition conditions
+		if (CategoryLower.IsEmpty() || CategoryLower == TEXT("condition"))
+		{
+			for (int32 TransIdx = 0; TransIdx < State->Transitions.Num(); ++TransIdx)
+			{
+				for (int32 i = 0; i < State->Transitions[TransIdx].Conditions.Num(); ++i)
+				{
+					if (NodeMatchesFilter(State->Transitions[TransIdx].Conditions[i]))
+					{
+						FString Location = FString::Printf(
+							TEXT("transition_condition[%d]"), TransIdx);
+						Results.Add(MakeShared<FJsonValueObject>(
+							MakeResult(State->Transitions[TransIdx].Conditions[i], i, Location, StateName)));
+					}
+				}
+			}
+		}
+
+		// Considerations
+		if (CategoryLower.IsEmpty() || CategoryLower == TEXT("consideration"))
+		{
+			for (int32 i = 0; i < State->Considerations.Num(); ++i)
+			{
+				if (NodeMatchesFilter(State->Considerations[i]))
+				{
+					Results.Add(MakeShared<FJsonValueObject>(
+						MakeResult(State->Considerations[i], i, TEXT("consideration"), StateName)));
+				}
+			}
+		}
+
+		// Recurse into children
+		for (UStateTreeState* Child : State->Children)
+		{
+			SearchState(Child);
+		}
+	};
+
+	for (UStateTreeState* SubTree : EditorData->SubTrees)
+	{
+		SearchState(SubTree);
+	}
+
+	auto Result = MakeShared<FJsonObject>();
+	Result->SetBoolField(TEXT("success"), true);
+	Result->SetStringField(TEXT("asset_path"), AssetPath);
+	Result->SetArrayField(TEXT("results"), Results);
+	Result->SetNumberField(TEXT("count"), Results.Num());
+
+	if (!ClassFilter.IsEmpty())
+	{
+		Result->SetStringField(TEXT("class_filter"), ClassFilter);
+	}
+	if (!CategoryFilter.IsEmpty())
+	{
+		Result->SetStringField(TEXT("category"), CategoryFilter);
+	}
+
 	return Result;
 }

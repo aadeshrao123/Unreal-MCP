@@ -8,7 +8,12 @@
 #include "StateTreeTypes.h"
 #include "StateTreeCompiler.h"
 #include "StateTreeCompilerLog.h"
+#include "StateTreePropertyBindings.h"
+#include "StateTreeEditorPropertyBindings.h"
+#include "PropertyBindingPath.h"
+#include "PropertyBindingBindableStructDescriptor.h"
 #include "StructUtils/InstancedStruct.h"
+#include "StructUtils/PropertyBag.h"
 
 #include "Logging/TokenizedMessage.h"
 #include "UObject/UnrealType.h"
@@ -564,7 +569,11 @@ TSharedPtr<FJsonObject> StateTreeHelpers::EditorNodeToJson(const FStateTreeEdito
 	return Obj;
 }
 
-TSharedPtr<FJsonObject> StateTreeHelpers::TransitionToJson(const FStateTreeTransition& Transition, int32 Index)
+TSharedPtr<FJsonObject> StateTreeHelpers::TransitionToJson(
+	const FStateTreeTransition& Transition,
+	int32 Index,
+	UStateTreeEditorData* EditorData,
+	bool bIncludeBindings)
 {
 	auto Obj = MakeShared<FJsonObject>();
 
@@ -577,6 +586,18 @@ TSharedPtr<FJsonObject> StateTreeHelpers::TransitionToJson(const FStateTreeTrans
 	Obj->SetNumberField(TEXT("delay_duration"), Transition.DelayDuration);
 	Obj->SetNumberField(TEXT("delay_variance"), Transition.DelayRandomVariance);
 	Obj->SetNumberField(TEXT("condition_count"), Transition.Conditions.Num());
+
+	// Required event for OnEvent transitions
+	if (Transition.Trigger == EStateTreeTransitionTrigger::OnEvent && Transition.RequiredEvent.Tag.IsValid())
+	{
+		auto EventObj = MakeShared<FJsonObject>();
+		EventObj->SetStringField(TEXT("tag"), Transition.RequiredEvent.Tag.ToString());
+		if (Transition.RequiredEvent.PayloadStruct)
+		{
+			EventObj->SetStringField(TEXT("payload_struct"), Transition.RequiredEvent.PayloadStruct->GetPathName());
+		}
+		Obj->SetObjectField(TEXT("required_event"), EventObj);
+	}
 
 	// Target state info
 #if WITH_EDITORONLY_DATA
@@ -619,7 +640,16 @@ TSharedPtr<FJsonObject> StateTreeHelpers::TransitionToJson(const FStateTreeTrans
 		TArray<TSharedPtr<FJsonValue>> ConditionsArray;
 		for (int32 i = 0; i < Transition.Conditions.Num(); ++i)
 		{
-			ConditionsArray.Add(MakeShared<FJsonValueObject>(EditorNodeToJson(Transition.Conditions[i], i)));
+			if (bIncludeBindings && EditorData)
+			{
+				ConditionsArray.Add(MakeShared<FJsonValueObject>(
+					EditorNodeToJsonWithBindings(Transition.Conditions[i], i, EditorData)));
+			}
+			else
+			{
+				ConditionsArray.Add(MakeShared<FJsonValueObject>(
+					EditorNodeToJson(Transition.Conditions[i], i)));
+			}
 		}
 		Obj->SetArrayField(TEXT("conditions"), ConditionsArray);
 	}
@@ -661,7 +691,8 @@ TSharedPtr<FJsonObject> StateTreeHelpers::StateToJsonSummary(
 
 TSharedPtr<FJsonObject> StateTreeHelpers::StateToJsonDetailed(
 	UStateTreeEditorData* EditorData,
-	UStateTreeState* State)
+	UStateTreeState* State,
+	bool bIncludeBindings)
 {
 	// Start with the summary
 	TSharedPtr<FJsonObject> Obj = StateToJsonSummary(EditorData, State);
@@ -683,13 +714,94 @@ TSharedPtr<FJsonObject> StateTreeHelpers::StateToJsonDetailed(
 		Obj->SetStringField(TEXT("tag"), State->Tag.ToString());
 	}
 
+	// Tasks completion mode
+	Obj->SetStringField(TEXT("tasks_completion"), TaskCompletionTypeToString(static_cast<uint8>(State->TasksCompletion)));
+
+	// Weight (for utility selection)
+	if (State->Weight != 1.0f)
+	{
+		Obj->SetNumberField(TEXT("weight"), State->Weight);
+	}
+
+	// Custom tick rate
+	if (State->CustomTickRate > 0.0f)
+	{
+		Obj->SetNumberField(TEXT("custom_tick_rate"), State->CustomTickRate);
+	}
+
+	// Required event to enter
+	if (State->bHasRequiredEventToEnter && State->RequiredEventToEnter.Tag.IsValid())
+	{
+		auto EventObj = MakeShared<FJsonObject>();
+		EventObj->SetStringField(TEXT("tag"), State->RequiredEventToEnter.Tag.ToString());
+		if (State->RequiredEventToEnter.PayloadStruct)
+		{
+			EventObj->SetStringField(TEXT("payload_struct"), State->RequiredEventToEnter.PayloadStruct->GetPathName());
+		}
+		EventObj->SetBoolField(TEXT("consume_on_select"), State->RequiredEventToEnter.bConsumeEventOnSelect);
+		Obj->SetObjectField(TEXT("required_event"), EventObj);
+	}
+
+	// State-level parameters
+	const FInstancedPropertyBag& StateParams = State->Parameters.Parameters;
+	const UPropertyBag* StateBagStruct = StateParams.GetPropertyBagStruct();
+	if (StateBagStruct && StateBagStruct->GetPropertyDescs().Num() > 0)
+	{
+		auto ParamsObj = MakeShared<FJsonObject>();
+		TConstArrayView<FPropertyBagPropertyDesc> Descs = StateBagStruct->GetPropertyDescs();
+		FConstStructView BagValue = StateParams.GetValue();
+
+		for (const FPropertyBagPropertyDesc& Desc : Descs)
+		{
+			auto ParamJson = MakeShared<FJsonObject>();
+
+			FString TypeName;
+			const UEnum* TypeEnum = StaticEnum<EPropertyBagPropertyType>();
+			if (TypeEnum)
+			{
+				TypeName = TypeEnum->GetNameStringByValue(static_cast<int64>(Desc.ValueType));
+			}
+			ParamJson->SetStringField(TEXT("type"), TypeName);
+
+			if (Desc.ValueTypeObject != nullptr)
+			{
+				ParamJson->SetStringField(TEXT("value_type_object"), Desc.ValueTypeObject->GetPathName());
+			}
+
+			FString ValueString;
+			if (BagValue.IsValid())
+			{
+				TValueOrError<FString, EPropertyBagResult> SerializedValue =
+					StateParams.GetValueSerializedString(Desc.Name);
+				if (SerializedValue.IsValid())
+				{
+					ValueString = SerializedValue.GetValue();
+				}
+			}
+			ParamJson->SetStringField(TEXT("value"), ValueString);
+			ParamJson->SetStringField(TEXT("id"), Desc.ID.ToString());
+
+			ParamsObj->SetObjectField(Desc.Name.ToString(), ParamJson);
+		}
+
+		Obj->SetObjectField(TEXT("parameters"), ParamsObj);
+	}
+
 	// Tasks
 	if (State->Tasks.Num() > 0)
 	{
 		TArray<TSharedPtr<FJsonValue>> TasksArray;
 		for (int32 i = 0; i < State->Tasks.Num(); ++i)
 		{
-			TasksArray.Add(MakeShared<FJsonValueObject>(EditorNodeToJson(State->Tasks[i], i)));
+			if (bIncludeBindings && EditorData)
+			{
+				TasksArray.Add(MakeShared<FJsonValueObject>(
+					EditorNodeToJsonWithBindings(State->Tasks[i], i, EditorData)));
+			}
+			else
+			{
+				TasksArray.Add(MakeShared<FJsonValueObject>(EditorNodeToJson(State->Tasks[i], i)));
+			}
 		}
 		Obj->SetArrayField(TEXT("tasks"), TasksArray);
 	}
@@ -697,7 +809,15 @@ TSharedPtr<FJsonObject> StateTreeHelpers::StateToJsonDetailed(
 	// Single task (some schemas use single task mode)
 	if (State->SingleTask.Node.IsValid())
 	{
-		Obj->SetObjectField(TEXT("single_task"), EditorNodeToJson(State->SingleTask, 0));
+		if (bIncludeBindings && EditorData)
+		{
+			Obj->SetObjectField(TEXT("single_task"),
+				EditorNodeToJsonWithBindings(State->SingleTask, 0, EditorData));
+		}
+		else
+		{
+			Obj->SetObjectField(TEXT("single_task"), EditorNodeToJson(State->SingleTask, 0));
+		}
 	}
 
 	// Enter conditions
@@ -706,7 +826,16 @@ TSharedPtr<FJsonObject> StateTreeHelpers::StateToJsonDetailed(
 		TArray<TSharedPtr<FJsonValue>> ConditionsArray;
 		for (int32 i = 0; i < State->EnterConditions.Num(); ++i)
 		{
-			ConditionsArray.Add(MakeShared<FJsonValueObject>(EditorNodeToJson(State->EnterConditions[i], i)));
+			if (bIncludeBindings && EditorData)
+			{
+				ConditionsArray.Add(MakeShared<FJsonValueObject>(
+					EditorNodeToJsonWithBindings(State->EnterConditions[i], i, EditorData)));
+			}
+			else
+			{
+				ConditionsArray.Add(MakeShared<FJsonValueObject>(
+					EditorNodeToJson(State->EnterConditions[i], i)));
+			}
 		}
 		Obj->SetArrayField(TEXT("enter_conditions"), ConditionsArray);
 	}
@@ -717,7 +846,8 @@ TSharedPtr<FJsonObject> StateTreeHelpers::StateToJsonDetailed(
 		TArray<TSharedPtr<FJsonValue>> TransitionsArray;
 		for (int32 i = 0; i < State->Transitions.Num(); ++i)
 		{
-			TransitionsArray.Add(MakeShared<FJsonValueObject>(TransitionToJson(State->Transitions[i], i)));
+			TransitionsArray.Add(MakeShared<FJsonValueObject>(
+				TransitionToJson(State->Transitions[i], i, EditorData, bIncludeBindings)));
 		}
 		Obj->SetArrayField(TEXT("transitions"), TransitionsArray);
 	}
@@ -728,7 +858,16 @@ TSharedPtr<FJsonObject> StateTreeHelpers::StateToJsonDetailed(
 		TArray<TSharedPtr<FJsonValue>> ConsiderationsArray;
 		for (int32 i = 0; i < State->Considerations.Num(); ++i)
 		{
-			ConsiderationsArray.Add(MakeShared<FJsonValueObject>(EditorNodeToJson(State->Considerations[i], i)));
+			if (bIncludeBindings && EditorData)
+			{
+				ConsiderationsArray.Add(MakeShared<FJsonValueObject>(
+					EditorNodeToJsonWithBindings(State->Considerations[i], i, EditorData)));
+			}
+			else
+			{
+				ConsiderationsArray.Add(MakeShared<FJsonValueObject>(
+					EditorNodeToJson(State->Considerations[i], i)));
+			}
 		}
 		Obj->SetArrayField(TEXT("considerations"), ConsiderationsArray);
 	}
@@ -885,6 +1024,276 @@ FString StateTreeHelpers::ExpressionOperandToString(uint8 Operand)
 	default:
 		return TEXT("Unknown");
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Task Completion Type
+// ---------------------------------------------------------------------------
+
+FString StateTreeHelpers::TaskCompletionTypeToString(uint8 CompletionType)
+{
+	switch (static_cast<EStateTreeTaskCompletionType>(CompletionType))
+	{
+	case EStateTreeTaskCompletionType::Any:
+		return TEXT("Any");
+	case EStateTreeTaskCompletionType::All:
+		return TEXT("All");
+	default:
+		return TEXT("Unknown");
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Binding Serialization
+// ---------------------------------------------------------------------------
+
+FString StateTreeHelpers::ResolveStructIDToName(const FGuid& StructID, UStateTreeEditorData* EditorData)
+{
+	if (!EditorData || !StructID.IsValid())
+	{
+		return TEXT("");
+	}
+
+	// Try the official API first
+	TInstancedStruct<FPropertyBindingBindableStructDescriptor> DescInstance;
+	if (EditorData->GetBindableStructByID(StructID, DescInstance))
+	{
+		const FPropertyBindingBindableStructDescriptor& Desc = DescInstance.Get();
+		if (!Desc.Name.IsNone())
+		{
+			return Desc.Name.ToString();
+		}
+	}
+
+	// Check root parameters GUID
+	if (StructID == EditorData->GetRootParametersGuid())
+	{
+		return TEXT("TreeParameters");
+	}
+
+	// Fallback: search nodes by ID
+	for (int32 i = 0; i < EditorData->Evaluators.Num(); ++i)
+	{
+		if (EditorData->Evaluators[i].ID == StructID)
+		{
+			if (EditorData->Evaluators[i].Node.IsValid())
+			{
+				return FString::Printf(TEXT("Evaluator:%s"),
+					*EditorData->Evaluators[i].Node.GetScriptStruct()->GetName());
+			}
+			return TEXT("Evaluator");
+		}
+	}
+
+	for (int32 i = 0; i < EditorData->GlobalTasks.Num(); ++i)
+	{
+		if (EditorData->GlobalTasks[i].ID == StructID)
+		{
+			if (EditorData->GlobalTasks[i].Node.IsValid())
+			{
+				return FString::Printf(TEXT("GlobalTask:%s"),
+					*EditorData->GlobalTasks[i].Node.GetScriptStruct()->GetName());
+			}
+			return TEXT("GlobalTask");
+		}
+	}
+
+	// Search all states
+	TFunction<FString(UStateTreeState*)> SearchState = [&](UStateTreeState* State) -> FString
+	{
+		if (!State)
+		{
+			return FString();
+		}
+
+		// Check state parameters
+		if (State->Parameters.ID == StructID)
+		{
+			return FString::Printf(TEXT("StateParams:%s"), *State->Name.ToString());
+		}
+
+		for (const FStateTreeEditorNode& Node : State->Tasks)
+		{
+			if (Node.ID == StructID)
+			{
+				if (Node.Node.IsValid())
+				{
+					return FString::Printf(TEXT("Task:%s/%s"),
+						*State->Name.ToString(), *Node.Node.GetScriptStruct()->GetName());
+				}
+				return FString::Printf(TEXT("Task:%s"), *State->Name.ToString());
+			}
+		}
+
+		if (State->SingleTask.ID == StructID)
+		{
+			return FString::Printf(TEXT("Task:%s"), *State->Name.ToString());
+		}
+
+		for (const FStateTreeEditorNode& Node : State->EnterConditions)
+		{
+			if (Node.ID == StructID)
+			{
+				if (Node.Node.IsValid())
+				{
+					return FString::Printf(TEXT("EnterCondition:%s/%s"),
+						*State->Name.ToString(), *Node.Node.GetScriptStruct()->GetName());
+				}
+				return FString::Printf(TEXT("EnterCondition:%s"), *State->Name.ToString());
+			}
+		}
+
+		for (const FStateTreeTransition& Trans : State->Transitions)
+		{
+			for (const FStateTreeEditorNode& Node : Trans.Conditions)
+			{
+				if (Node.ID == StructID)
+				{
+					if (Node.Node.IsValid())
+					{
+						return FString::Printf(TEXT("TransCondition:%s/%s"),
+							*State->Name.ToString(), *Node.Node.GetScriptStruct()->GetName());
+					}
+					return FString::Printf(TEXT("TransCondition:%s"), *State->Name.ToString());
+				}
+			}
+		}
+
+		for (const FStateTreeEditorNode& Node : State->Considerations)
+		{
+			if (Node.ID == StructID)
+			{
+				if (Node.Node.IsValid())
+				{
+					return FString::Printf(TEXT("Consideration:%s/%s"),
+						*State->Name.ToString(), *Node.Node.GetScriptStruct()->GetName());
+				}
+				return FString::Printf(TEXT("Consideration:%s"), *State->Name.ToString());
+			}
+		}
+
+		for (UStateTreeState* Child : State->Children)
+		{
+			FString Result = SearchState(Child);
+			if (!Result.IsEmpty())
+			{
+				return Result;
+			}
+		}
+
+		return FString();
+	};
+
+	for (UStateTreeState* SubTree : EditorData->SubTrees)
+	{
+		FString Result = SearchState(SubTree);
+		if (!Result.IsEmpty())
+		{
+			return Result;
+		}
+	}
+
+	return TEXT("");
+}
+
+TSharedPtr<FJsonObject> StateTreeHelpers::BindingToJson(
+	const FStateTreePropertyPathBinding& Binding,
+	int32 Index,
+	UStateTreeEditorData* EditorData)
+{
+	auto BindingJson = MakeShared<FJsonObject>();
+	BindingJson->SetNumberField(TEXT("index"), Index);
+
+	const FPropertyBindingPath& SourcePath = Binding.GetSourcePath();
+	const FPropertyBindingPath& TargetPath = Binding.GetTargetPath();
+
+	// Struct IDs
+	BindingJson->SetStringField(TEXT("source_struct_id"), SourcePath.GetStructID().ToString());
+	BindingJson->SetStringField(TEXT("target_struct_id"), TargetPath.GetStructID().ToString());
+
+	// Property paths as human-readable strings
+	FString SourcePathStr = SourcePath.ToString();
+	FString TargetPathStr = TargetPath.ToString();
+	BindingJson->SetStringField(TEXT("source_path"), SourcePathStr);
+	BindingJson->SetStringField(TEXT("target_path"), TargetPathStr);
+
+	// Resolve struct IDs to names
+	if (EditorData)
+	{
+		FString SourceName = ResolveStructIDToName(SourcePath.GetStructID(), EditorData);
+		FString TargetName = ResolveStructIDToName(TargetPath.GetStructID(), EditorData);
+
+		if (!SourceName.IsEmpty())
+		{
+			BindingJson->SetStringField(TEXT("source_node"), SourceName);
+		}
+
+		if (!TargetName.IsEmpty())
+		{
+			BindingJson->SetStringField(TEXT("target_node"), TargetName);
+		}
+	}
+
+	// Output binding flag
+	if (Binding.IsOutputBinding())
+	{
+		BindingJson->SetBoolField(TEXT("is_output_binding"), true);
+	}
+
+	return BindingJson;
+}
+
+TArray<TSharedPtr<FJsonValue>> StateTreeHelpers::CollectBindingsForNode(
+	const FGuid& NodeStructID,
+	UStateTreeEditorData* EditorData)
+{
+	TArray<TSharedPtr<FJsonValue>> Result;
+
+	if (!EditorData || !NodeStructID.IsValid())
+	{
+		return Result;
+	}
+
+	const FStateTreeEditorPropertyBindings* EditorBindings = EditorData->GetPropertyEditorBindings();
+	if (!EditorBindings)
+	{
+		return Result;
+	}
+
+	TConstArrayView<FStateTreePropertyPathBinding> Bindings = EditorBindings->GetBindings();
+	for (int32 i = 0; i < Bindings.Num(); ++i)
+	{
+		const FPropertyBindingPath& SourcePath = Bindings[i].GetSourcePath();
+		const FPropertyBindingPath& TargetPath = Bindings[i].GetTargetPath();
+
+		if (SourcePath.GetStructID() == NodeStructID || TargetPath.GetStructID() == NodeStructID)
+		{
+			Result.Add(MakeShared<FJsonValueObject>(BindingToJson(Bindings[i], i, EditorData)));
+		}
+	}
+
+	return Result;
+}
+
+TSharedPtr<FJsonObject> StateTreeHelpers::EditorNodeToJsonWithBindings(
+	const FStateTreeEditorNode& Node,
+	int32 Index,
+	UStateTreeEditorData* EditorData)
+{
+	// Start with the standard node JSON
+	TSharedPtr<FJsonObject> Obj = EditorNodeToJson(Node, Index);
+
+	// Add bindings connected to this node
+	if (EditorData && Node.ID.IsValid())
+	{
+		TArray<TSharedPtr<FJsonValue>> NodeBindings = CollectBindingsForNode(Node.ID, EditorData);
+		if (NodeBindings.Num() > 0)
+		{
+			Obj->SetArrayField(TEXT("bindings"), NodeBindings);
+		}
+	}
+
+	return Obj;
 }
 
 // ---------------------------------------------------------------------------

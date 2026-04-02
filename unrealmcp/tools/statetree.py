@@ -136,7 +136,10 @@ def get_statetree_bindings(
     asset_path: str,
     node_guid: str | None = None,
 ) -> str:
-    """Get property bindings. Optionally filter to bindings involving a specific node.
+    """Get property bindings with full path details. Each binding shows source/target
+    node names, struct IDs, and property paths (e.g. "TargetLocation.X").
+
+    Optionally filter to bindings involving a specific node.
 
     Args:
         asset_path: Content path to the StateTree asset
@@ -146,6 +149,64 @@ def get_statetree_bindings(
     if node_guid is not None:
         params["node_guid"] = node_guid
     return _call("get_statetree_bindings", params)
+
+
+@mcp.tool()
+def get_statetree_full_info(
+    asset_path: str,
+    verbosity: str = "standard",
+    sections: str | None = None,
+) -> str:
+    """Get complete StateTree data in one call with verbosity control.
+
+    Three verbosity levels:
+    - "summary": Counts only (state_count, evaluator_count, etc.) — minimal tokens
+    - "standard": All states (recursively detailed), evaluators, global tasks, parameters
+    - "full": Everything from standard + property bindings inlined on every node
+
+    Use 'sections' to request only specific parts and save context:
+    - "states" — state hierarchy with tasks, conditions, transitions
+    - "evaluators" — global evaluators
+    - "global_tasks" — global tasks
+    - "parameters" — tree-level parameters
+    - "bindings" — all property bindings as a flat list
+
+    Comma-separate multiple sections: "states,bindings"
+
+    Args:
+        asset_path: Content path to the StateTree asset
+        verbosity: "summary", "standard", or "full"
+        sections: Comma-separated section filter (empty = all sections)
+    """
+    params: dict = {"asset_path": asset_path, "verbosity": verbosity}
+    if sections is not None:
+        params["sections"] = sections
+    return _call("get_statetree_full_info", params)
+
+
+@mcp.tool()
+def search_statetree_nodes(
+    asset_path: str,
+    class_filter: str | None = None,
+    category: str | None = None,
+) -> str:
+    """Search for nodes across the entire StateTree by class name or category.
+
+    Answers questions like: "Is MassEnemyAttackTask used?" or "Which states have conditions?"
+    Returns each match with its location (which state, evaluator list, transition, etc.).
+
+    Args:
+        asset_path: Content path to the StateTree asset
+        class_filter: Substring filter on node class name (e.g. "Attack", "CompareInt")
+        category: Filter by node category: "task", "evaluator", "condition", "consideration",
+            "global_task" (empty = search all categories)
+    """
+    params: dict = {"asset_path": asset_path}
+    if class_filter is not None:
+        params["class_filter"] = class_filter
+    if category is not None:
+        params["category"] = category
+    return _call("search_statetree_nodes", params)
 
 
 # ---------------------------------------------------------------------------

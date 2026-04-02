@@ -46,6 +46,14 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPStateTreeCommands::HandleCommand(
 	{
 		return HandleGetStateTreeTransitionTargets(Params);
 	}
+	else if (CommandType == TEXT("get_statetree_full_info"))
+	{
+		return HandleGetStateTreeFullInfo(Params);
+	}
+	else if (CommandType == TEXT("search_statetree_nodes"))
+	{
+		return HandleSearchStateTreeNodes(Params);
+	}
 
 	// ---- Create/Add ----
 	else if (CommandType == TEXT("create_statetree"))

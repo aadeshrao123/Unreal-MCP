@@ -91,11 +91,34 @@ ue-cli get_statetree_state --asset-path /Game/AI/ST_HollowCrawler --state-guid "
 	{
 		Name:  "get_statetree_bindings",
 		Group: "statetree",
-		Short: "Get property bindings",
-		Long:  "Returns all property bindings in the StateTree. Optionally filter to bindings involving a specific node.",
+		Short: "Get property bindings with full path details",
+		Long:  "Returns all property bindings with source/target node names, struct IDs, and property paths. Optionally filter to bindings involving a specific node.",
 		Params: []ParamSpec{
 			{Name: "asset_path", Type: "string", Required: true, Help: "Content path to the StateTree asset"},
 			{Name: "node_guid", Type: "string", Help: "Filter to bindings involving this node"},
+		},
+	},
+	{
+		Name:  "get_statetree_full_info",
+		Group: "statetree",
+		Short: "Get complete StateTree data in one call",
+		Long:  "Returns complete StateTree data with verbosity control. 'summary'=counts only, 'standard'=all states/tasks/conditions, 'full'=everything+bindings inline. Use 'sections' to filter: states,evaluators,global_tasks,parameters,bindings.",
+		Params: []ParamSpec{
+			{Name: "asset_path", Type: "string", Required: true, Help: "Content path to the StateTree asset"},
+			{Name: "verbosity", Type: "string", Help: "summary, standard, or full (default: standard)"},
+			{Name: "sections", Type: "string", Help: "Comma-separated section filter (empty=all)"},
+		},
+	},
+
+	{
+		Name:  "search_statetree_nodes",
+		Group: "statetree",
+		Short: "Search for nodes by class name or category",
+		Long:  "Searches entire StateTree for tasks, evaluators, conditions, or considerations matching a class filter. Returns each match with its location context.",
+		Params: []ParamSpec{
+			{Name: "asset_path", Type: "string", Required: true, Help: "Content path to the StateTree asset"},
+			{Name: "class_filter", Type: "string", Help: "Substring filter on node class name"},
+			{Name: "category", Type: "string", Help: "Filter by category: task, evaluator, condition, consideration, global_task"},
 		},
 	},
 
