@@ -1,6 +1,6 @@
 # UnrealMCP — AI Bridge for Unreal Engine 5
 
-Control Unreal Engine 5 editor from AI coding assistants (Claude Code, Cursor, Windsurf, etc.). Create materials, blueprints, spawn actors, manage data tables, profile performance, and more — all without leaving your terminal.
+Control Unreal Engine 5 editor from AI coding assistants (Claude Code, Cursor, Windsurf, etc.). Create materials, blueprints, Niagara VFX, StateTrees, spawn actors, manage data tables, profile performance, and more — **238 commands** across 13 categories, all without leaving your terminal.
 
 **Two ways to use it:**
 
@@ -55,8 +55,9 @@ pip install unrealmcp
                     │                                          │
                     │   C++ Plugin (UnrealMCPBridge)           │
                     │   TCP server on localhost:55557           │
-                    │   163 commands: materials, blueprints,   │
-                    │   actors, data tables, profiling, etc.   │
+                    │   238 commands: materials, blueprints,   │
+                    │   niagara, statetree, actors, data       │
+                    │   tables, profiling, and more            │
                     └──────────────┬───────────────────────────┘
                                    │ TCP/JSON
                     ┌──────────────┴───────────────────────────┐
@@ -71,7 +72,7 @@ pip install unrealmcp
           └───────────────────┘              └────────────────────┘
 ```
 
-The C++ plugin runs inside the editor and exposes 163 commands over TCP. The CLI and MCP server are two different front doors to the same plugin.
+The C++ plugin runs inside the editor and exposes 238 commands over TCP. The CLI and MCP server are two different front doors to the same plugin.
 
 ---
 
@@ -213,6 +214,41 @@ ue-cli performance_analyze_insight --query search --filter "ConveyorProcessor"
 ue-cli create_input_action --asset-path /Game/Input/IA_Jump --value-type Boolean
 ue-cli create_input_mapping_context --asset-path /Game/Input/IMC_Default
 ue-cli add_key_mapping --context-path /Game/Input/IMC_Default --action-path /Game/Input/IA_Jump --key SpaceBar
+```
+
+#### Niagara VFX
+```bash
+# Create a system from an emitter template, then tweak it
+ue-cli create_niagara_system --asset-path /Game/VFX/NS_Sparks \
+  --template "/Niagara/DefaultAssets/FX_Sparks.FX_Sparks"
+ue-cli get_niagara_system_info --asset-path /Game/VFX/NS_Sparks
+ue-cli set_niagara_module_input --asset-path /Game/VFX/NS_Sparks \
+  --emitter-name Sparks --stack SpawnStack \
+  --module-name "Spawn Rate" --input-name SpawnRate --value 250
+ue-cli compile_niagara_system --asset-path /Game/VFX/NS_Sparks
+
+# Spawn it in the level
+ue-cli spawn_niagara_effect --asset-path /Game/VFX/NS_Sparks --location "[0,0,200]"
+```
+
+#### StateTree
+```bash
+# Create a StateTree, add a state with a task, compile
+ue-cli create_statetree --asset-path /Game/AI/ST_Enemy
+ue-cli add_statetree_state --asset-path /Game/AI/ST_Enemy --state-name Patrol
+ue-cli add_statetree_task --asset-path /Game/AI/ST_Enemy \
+  --state-name Patrol --task-type "MassEnemyNestPatrolTask"
+ue-cli add_statetree_transition --asset-path /Game/AI/ST_Enemy \
+  --from-state Patrol --trigger OnEvent --event-tag "Enemy.SeePlayer"
+ue-cli compile_statetree --asset-path /Game/AI/ST_Enemy
+```
+
+#### Mass Config Traits (Surgical Editing)
+```bash
+# Modify a single trait property without touching the rest of the trait array
+ue-cli get_mass_config_traits --asset-path /Game/Mass/Enemy_Config
+ue-cli set_mass_config_trait_property --asset-path /Game/Mass/Enemy_Config \
+  --trait-class MassMovementTrait --property-name MaxSpeed --property-value 600
 ```
 
 #### Widgets (UMG)
@@ -403,7 +439,23 @@ The script asks where to create the MCP config:
 
 ---
 
-## All 163 Commands
+## All 238 Commands
+
+| Category | Count | Highlights |
+|----------|------:|-----------|
+| [Core](#core-2) | 2 | health_check, execute_python |
+| [Asset Management](#asset-management-16) | 16 | find/list/import/duplicate/rename/delete/save |
+| [Blueprints](#blueprints-22) | 22 | create, compile, variables, functions, graph nodes |
+| [Materials](#materials-35) | 35 | create, build_material_graph, material functions, Substrate |
+| [Data Tables](#data-tables-8) | 8 | full CRUD on rows + schema introspection |
+| [Data Assets](#data-assets-12) | 12 | data assets + **surgical Mass Config trait editing** |
+| [Actors & Level](#actors--level-19) | 19 | spawn, transform, properties, screenshot |
+| [Enhanced Input](#enhanced-input-21) | 21 | actions, mapping contexts, triggers, modifiers |
+| [Widgets — UMG](#widgets--umg-11) | 11 | widget tree, add/move/rename, slot props |
+| [**Niagara VFX**](#niagara-vfx-54-new) | **54** | systems, emitters, modules, renderers, scratch pad, parameters |
+| [**StateTree**](#statetree-33-new) | **33** | states, tasks, evaluators, transitions, conditions, bindings |
+| [Performance Profiling](#performance-profiling-3) | 3 | record .utrace + smart analysis (diagnose/spikes/flame) |
+| [Debug](#debug-2) | 2 | token tracking, debug toggle |
 
 ### Core (2)
 | Command | Description |
@@ -451,7 +503,7 @@ The script asks where to create the MCP config:
 | `delete_blueprint_node` | Remove node |
 | `set_blueprint_node_property` | Edit node properties |
 
-### Materials (34)
+### Materials (35)
 | Command | Description |
 |---------|-------------|
 | `create_material` | Create with blend/shading mode |
@@ -493,16 +545,19 @@ The script asks where to create the MCP config:
 | `duplicate_data_table_row` | Copy row |
 | `rename_data_table_row` | Rename row |
 
-### Data Assets (9)
+### Data Assets (12)
 | Command | Description |
 |---------|-------------|
 | `create_data_asset` | Create any UDataAsset subclass |
-| `get/set_data_asset_property(ies)` | Read/write properties |
+| `get/set_data_asset_property(ies)` | Read/write properties (single or batch) |
 | `list_data_assets` | Browse by path/class |
-| `list_data_asset_classes` | Discover classes |
-| `get_property_valid_types` | Valid dropdown values |
+| `list_data_asset_classes` | Discover all loaded UDataAsset subclasses |
+| `get_property_valid_types` | Valid dropdown values for a property slot |
 | `search_class_paths` | Find class paths |
-| `get_mass_config_traits` | Mass Entity traits |
+| `get_mass_config_traits` | Inspect all traits on a Mass Entity Config asset |
+| `add_mass_config_trait` | Append a new trait to a Mass Config (non-destructive) |
+| `set_mass_config_trait_property` | **Surgical** in-place edit of a single trait property — never replaces the Traits array |
+| `remove_mass_config_trait` | Remove a single trait by index or class without affecting siblings |
 
 ### Actors & Level (19)
 | Command | Description |
@@ -550,6 +605,156 @@ The script asks where to create the MCP config:
 | `get/set_widget_properties` | Widget properties |
 | `get/set_slot_properties` | Layout slot properties |
 | `list_widget_types` | Available widget classes |
+
+### Niagara VFX (54, NEW)
+
+Full coverage of the Niagara editor — create systems from templates, add and configure emitters, manage modules and renderers, write scratch pad HLSL, and spawn effects in the level. Built on Niagara's ViewModel API for safe asset modification.
+
+#### Systems
+| Command | Description |
+|---------|-------------|
+| `create_niagara_system` | Create from emitter template or empty |
+| `get_niagara_system_info` | System metadata, emitters, parameters |
+| `list_niagara_systems` | Browse Niagara systems by path |
+| `delete_niagara_system` | Delete a system |
+| `compile_niagara_system` | Force recompile |
+| `set_niagara_system_property` | Set top-level system property |
+| `get_niagara_system_errors` | Compilation errors / warnings |
+| `get_niagara_particle_stats` | Per-emitter particle stats |
+| `get/set_niagara_playback_range` | Preview playback range |
+
+#### Emitters
+| Command | Description |
+|---------|-------------|
+| `get_niagara_emitters` | List emitters in a system |
+| `add_niagara_emitter` | Add from template |
+| `remove_niagara_emitter` | Remove an emitter |
+| `duplicate_niagara_emitter` | Copy emitter with new name |
+| `reorder_niagara_emitter` | Change emitter index |
+| `set_niagara_emitter_property` | Set emitter property |
+| `get_niagara_emitter_attributes` | Particle attributes (Position, Velocity, etc.) |
+
+#### Modules (Spawn / Update / Render stacks)
+| Command | Description |
+|---------|-------------|
+| `get_niagara_modules` | List modules in any stack |
+| `add_niagara_module` | Add module from script asset |
+| `remove_niagara_module` | Remove a module |
+| `set_niagara_module_enabled` | Enable/disable a module |
+| `reorder_niagara_module` | Reorder within stack |
+| `get_niagara_module_inputs` | Inspect module inputs with current values |
+| `set_niagara_module_input` | Set static value on a module input |
+| `set_niagara_dynamic_input` | Replace input with a dynamic input function |
+| `set_niagara_curve` | Set curve points on a curve input |
+| `get_niagara_module_versions` | List script versions |
+
+#### Parameters & Bindings
+| Command | Description |
+|---------|-------------|
+| `get_niagara_user_parameters` | List User-namespace parameters |
+| `add_niagara_user_parameter` | Add a User parameter |
+| `set_niagara_user_parameter` | Set a User parameter value |
+| `remove_niagara_user_parameter` | Remove a User parameter |
+| `link_niagara_parameter` | Bind module input to a parameter |
+| `get_niagara_rapid_iteration_parameters` | RI param introspection |
+| `set_niagara_rapid_iteration_parameter` | Set RI param value |
+
+#### Renderers
+| Command | Description |
+|---------|-------------|
+| `add_niagara_renderer` | Add Sprite/Mesh/Ribbon/Light renderer |
+| `remove_niagara_renderer` | Remove a renderer |
+| `get_niagara_renderer_info` | Renderer summary |
+| `get_niagara_renderer_properties` | Full renderer property dump |
+| `set_niagara_renderer_property` | Set renderer property |
+| `set_niagara_renderer_binding` | Bind renderer attribute to particle data |
+
+#### Scratch Pad & Custom Modules
+| Command | Description |
+|---------|-------------|
+| `create_niagara_scratch_pad_module` | Create per-emitter scratch module |
+| `set_niagara_scratch_pad_hlsl` | Write HLSL into scratch pad |
+| `create_niagara_module_asset` | Create reusable Niagara Module Script asset |
+
+#### Events & Simulation Stages
+| Command | Description |
+|---------|-------------|
+| `add_niagara_event_handler` | Add event handler stage |
+| `add_niagara_simulation_stage` | Add simulation stage |
+| `get_niagara_event_handlers` | Inspect handlers on emitter |
+
+#### Level Spawning
+| Command | Description |
+|---------|-------------|
+| `spawn_niagara_effect` | Spawn at world location |
+| `control_niagara_effect` | Activate / deactivate / restart |
+| `add_niagara_component` | Add NiagaraComponent to a Blueprint |
+| `get_niagara_actors` | Find spawned Niagara actors |
+
+#### Discovery
+| Command | Description |
+|---------|-------------|
+| `list_niagara_modules` | List all available Niagara module scripts |
+| `list_niagara_emitter_templates` | List emitter templates |
+| `list_niagara_data_interfaces` | Available data interfaces (DI_*) |
+| `list_niagara_parameter_types` | Parameter type registry |
+
+### StateTree (33, NEW)
+
+Read and author StateTree assets — states, tasks, evaluators, transitions, conditions, parameters, and bindings. Schema-aware: works with both `StateTreeSchemaBase` and Mass schema variants.
+
+#### Reading
+| Command | Description |
+|---------|-------------|
+| `get_statetree_info` | Asset summary (schema, states, evaluators) |
+| `get_statetree_full_info` | Full recursive dump (states + tasks + transitions + bindings) |
+| `get_statetree_states` | List all states (flat) |
+| `get_statetree_state` | Single state details by ID/name |
+| `get_statetree_node` | Inspect any node (task/evaluator/condition) |
+| `get_statetree_evaluators` | Global evaluators |
+| `get_statetree_global_tasks` | Global tasks |
+| `get_statetree_parameters` | Tree parameters |
+| `get_statetree_bindings` | All property bindings |
+| `get_statetree_transition_targets` | Valid transition targets for a state |
+| `search_statetree_nodes` | Search nodes by name / type |
+
+#### Authoring
+| Command | Description |
+|---------|-------------|
+| `create_statetree` | Create new StateTree asset |
+| `set_statetree_schema` | Set schema (e.g. Mass schema) |
+| `add_statetree_state` | Add a state (parent or root) |
+| `add_statetree_task` | Add task to a state |
+| `add_statetree_evaluator` | Add global evaluator |
+| `add_statetree_global_task` | Add global task |
+| `add_statetree_condition` | Add enter / transition condition |
+| `add_statetree_transition` | Add transition (event / completed / delegate) |
+| `add_statetree_parameter` | Add tree parameter |
+| `add_statetree_binding` | Bind property between nodes |
+| `compile_statetree` | Compile after edits |
+
+#### Modification
+| Command | Description |
+|---------|-------------|
+| `set_statetree_state_property` | Edit state property |
+| `set_statetree_node_property` | Edit task / evaluator / condition property |
+| `set_statetree_transition_property` | Edit transition property |
+| `set_statetree_color` | Set state color |
+
+#### Removal
+| Command | Description |
+|---------|-------------|
+| `remove_statetree_state` | Remove a state |
+| `remove_statetree_node` | Remove a task / evaluator / condition |
+| `remove_statetree_transition` | Remove a transition |
+| `remove_statetree_binding` | Remove a binding |
+| `remove_statetree_parameter` | Remove a parameter |
+
+#### Discovery
+| Command | Description |
+|---------|-------------|
+| `list_statetree_node_types` | All available task / evaluator / condition types |
+| `list_statetree_enum_values` | Enum values for property dropdowns |
 
 ### Performance Profiling (3)
 | Command | Description |
@@ -648,7 +853,7 @@ Each editor picks a unique port automatically. The CLI and MCP server read the p
 Plugins/UnrealMCP/
 ├── UnrealMCP.uplugin              # Plugin manifest
 ├── cli/                            # Go CLI source (ue-cli)
-│   ├── cmd/                        # Command definitions (163 commands)
+│   ├── cmd/                        # Command definitions (238 commands)
 │   ├── internal/bridge/            # TCP client
 │   ├── internal/project/           # Plugin embedding & project detection
 │   └── npm/                        # npm package wrapper
@@ -758,10 +963,10 @@ Add a command handler in `Source/UnrealMCPBridge/Private/Commands/` and register
 
 Releases are automated via GitHub Actions. Push a tag to trigger:
 ```bash
-git tag v1.1.0 && git push origin v1.1.0
+git tag v1.2.2 && git push origin v1.2.2
 # → Builds 5 platform binaries
 # → Creates GitHub Release
-# → Publishes to npm
+# → Publishes to npm + PyPI
 ```
 
 ---
