@@ -753,7 +753,12 @@ FString UEpicUnrealMCPBridge::ExecuteCommand(
 				CommandType.StartsWith(TEXT("control_niagara")) ||
 				CommandType.StartsWith(TEXT("link_niagara")) ||
 				CommandType.StartsWith(TEXT("duplicate_niagara")) ||
-				CommandType.StartsWith(TEXT("reorder_niagara")))
+				CommandType.StartsWith(TEXT("reorder_niagara")) ||
+				CommandType.StartsWith(TEXT("rename_niagara")) ||
+				CommandType.StartsWith(TEXT("search_niagara")) ||
+				CommandType.StartsWith(TEXT("connect_niagara")) ||
+				CommandType.StartsWith(TEXT("disconnect_niagara")) ||
+				CommandType.StartsWith(TEXT("describe_niagara")))
 			{
 				ResultJson = NiagaraCommands->HandleCommand(CommandType, Params);
 			}

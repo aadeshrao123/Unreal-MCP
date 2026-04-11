@@ -453,8 +453,15 @@ def set_niagara_dynamic_input(
     max_value: str | None = None,
     parameter_name: str | None = None,
     expression: str | None = None,
+    dynamic_input_script_path: str | None = None,
+    suggested_name: str | None = None,
+    pin_defaults: dict | None = None,
 ) -> str:
-    """Set a dynamic input (random range, linked parameter, custom expression) on a module input.
+    """Set a dynamic input (random range, linked parameter, custom expression, or arbitrary script) on a module input.
+
+    Uses FNiagaraStackGraphUtilities::SetDynamicInputForFunctionInput for the script
+    path, which is the same code path the editor uses when picking a dynamic input
+    from the stack UI.
 
     Args:
         system_path: Path to the Niagara System asset
@@ -462,12 +469,19 @@ def set_niagara_dynamic_input(
         module_name: Name of the module
         input_name: Name of the input parameter
         script_usage: Stack the module is in
-        dynamic_input_type: Type of dynamic input — "UniformRangedFloat", "UniformRangedVector",
-            "LinkedParameter", "CustomExpression", etc.
-        min_value: Minimum value for range types
-        max_value: Maximum value for range types
-        parameter_name: Parameter name for LinkedParameter type
-        expression: HLSL expression for CustomExpression type
+        dynamic_input_type: One of:
+            - "random_range" / "uniform_random"   — Ranged random (min_value, max_value)
+            - "parameter_link"                    — Link to an existing parameter (parameter_name)
+            - "custom_expression"                 — Custom HLSL expression node (expression)
+            - "script" / "asset"                  — Arbitrary dynamic input script (dynamic_input_script_path)
+        min_value / max_value: Values for random_range types (float or vector JSON object)
+        parameter_name: Parameter name for parameter_link type
+        expression: HLSL expression for custom_expression type
+        dynamic_input_script_path: Asset path of a DynamicInput-usage UNiagaraScript
+            (for dynamic_input_type="script"). Discover candidates via search_niagara_functions.
+        suggested_name: Optional friendly name for the dynamic input in the stack UI
+        pin_defaults: Optional {pin_name: default_value_string} dict applied to the
+            new dynamic input node's own input pins after wiring
     """
     params: dict = {
         "system_path": system_path,
@@ -485,6 +499,12 @@ def set_niagara_dynamic_input(
         params["parameter_name"] = parameter_name
     if expression is not None:
         params["expression"] = expression
+    if dynamic_input_script_path is not None:
+        params["dynamic_input_script_path"] = dynamic_input_script_path
+    if suggested_name is not None:
+        params["suggested_name"] = suggested_name
+    if pin_defaults is not None:
+        params["pin_defaults"] = pin_defaults
     return _call("set_niagara_dynamic_input", params)
 
 
@@ -788,84 +808,11 @@ def set_niagara_renderer_binding(
 # Scratch Pad & Module Assets
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
-def create_niagara_scratch_pad_module(
-    system_path: str,
-    script_usage: str,
-    module_name: str | None = None,
-) -> str:
-    """Create a new scratch pad module inline within a Niagara System.
-
-    Scratch pad modules are local to the system and allow custom HLSL logic.
-
-    Args:
-        system_path: Path to the Niagara System asset
-        script_usage: Target stack — ParticleSpawn, ParticleUpdate, EmitterSpawn, EmitterUpdate,
-            SystemSpawn, SystemUpdate
-        module_name: Optional display name for the scratch pad module
-    """
-    params: dict = {
-        "system_path": system_path,
-        "script_usage": script_usage,
-    }
-    if module_name is not None:
-        params["module_name"] = module_name
-    return _call("create_niagara_scratch_pad_module", params)
-
-
-@mcp.tool()
-def set_niagara_scratch_pad_hlsl(
-    system_path: str,
-    module_name: str,
-    hlsl_code: str,
-    inputs: str | None = None,
-    outputs: str | None = None,
-) -> str:
-    """Set the HLSL code and pin definitions on a scratch pad module.
-
-    Args:
-        system_path: Path to the Niagara System asset
-        module_name: Name of the scratch pad module
-        hlsl_code: The HLSL code body
-        inputs: Optional JSON array of input pins, e.g. [{"name":"Speed","type":"float"}]
-        outputs: Optional JSON array of output pins, e.g. [{"name":"OutColor","type":"float4"}]
-    """
-    params: dict = {
-        "system_path": system_path,
-        "module_name": module_name,
-        "hlsl_code": hlsl_code,
-    }
-    if inputs is not None:
-        params["inputs"] = inputs
-    if outputs is not None:
-        params["outputs"] = outputs
-    return _call("set_niagara_scratch_pad_hlsl", params)
-
-
-@mcp.tool()
-def create_niagara_module_asset(
-    asset_path: str,
-    script_usage: str,
-    description: str | None = None,
-    expose_to_library: bool = True,
-) -> str:
-    """Create a new standalone Niagara Module Script asset.
-
-    Args:
-        asset_path: Full content path including name (e.g. "/Game/FX/Modules/NMS_CustomForce")
-        script_usage: Module usage — ParticleSpawn, ParticleUpdate, EmitterSpawn, EmitterUpdate,
-            SystemSpawn, SystemUpdate
-        description: Optional description for the module
-        expose_to_library: If true, the module appears in the module browser
-    """
-    params: dict = {
-        "asset_path": asset_path,
-        "script_usage": script_usage,
-        "expose_to_library": expose_to_library,
-    }
-    if description is not None:
-        params["description"] = description
-    return _call("create_niagara_module_asset", params)
+# Scratch pad + module asset + pin ops moved to the bottom of this file —
+# see the "Scratch Pad Script Manager", "Custom HLSL pin management",
+# "Node discovery & schema introspection", and "Parameter enumeration + pin
+# operations" sections below. Those versions match the rewritten C++ handlers
+# (template duplication, proper pin creation, etc.).
 
 
 # ---------------------------------------------------------------------------
@@ -1406,3 +1353,589 @@ def get_niagara_module_versions(
     if filter is not None:
         params["filter"] = filter
     return _call("get_niagara_module_versions", params)
+
+
+# ---------------------------------------------------------------------------
+# Scratch Pad Script Manager
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def create_niagara_scratch_pad_module(
+    system_path: str,
+    module_name: str = "ScratchPadModule",
+    module_type: str = "module",
+) -> str:
+    """Create a new scratch pad script on a Niagara System.
+
+    Duplicates the editor's default template (DefaultModuleScript /
+    DefaultDynamicInputScript / DefaultFunctionScript from NiagaraEditorSettings) so
+    the resulting graph is pre-wired with Input / MapGet / MapSet / Output just like
+    clicking "Create New Module" in the Scratch Script Manager. Falls back to a
+    manually-built minimal graph if the template asset is unavailable.
+
+    Args:
+        system_path: Niagara System asset path
+        module_name: Desired scratch script name (unique within the system's ScratchPadScripts)
+        module_type: "module" (default), "dynamic_input", or "function"
+    """
+    return _call("create_niagara_scratch_pad_module", {
+        "system_path": system_path,
+        "module_name": module_name,
+        "module_type": module_type,
+    })
+
+
+@mcp.tool()
+def duplicate_niagara_scratch_pad_module(
+    system_path: str,
+    module_name: str,
+    new_name: str | None = None,
+) -> str:
+    """Duplicate an existing scratch pad module on a system.
+
+    Args:
+        system_path: Niagara System asset path
+        module_name: Source scratch pad module name
+        new_name: Optional new name (defaults to "<source>_Copy")
+    """
+    params: dict = {"system_path": system_path, "module_name": module_name}
+    if new_name is not None:
+        params["new_name"] = new_name
+    return _call("duplicate_niagara_scratch_pad_module", params)
+
+
+@mcp.tool()
+def delete_niagara_scratch_pad_module(system_path: str, module_name: str) -> str:
+    """Delete a scratch pad module from a Niagara System."""
+    return _call("delete_niagara_scratch_pad_module", {
+        "system_path": system_path,
+        "module_name": module_name,
+    })
+
+
+@mcp.tool()
+def rename_niagara_scratch_pad_module(
+    system_path: str, module_name: str, new_name: str
+) -> str:
+    """Rename a scratch pad module on a Niagara System."""
+    return _call("rename_niagara_scratch_pad_module", {
+        "system_path": system_path,
+        "module_name": module_name,
+        "new_name": new_name,
+    })
+
+
+@mcp.tool()
+def list_niagara_scratch_pad_modules(system_path: str) -> str:
+    """List all scratch pad modules on a Niagara System.
+
+    Returns name, path, usage, node counts, and custom HLSL node count per script.
+    """
+    return _call("list_niagara_scratch_pad_modules", {"system_path": system_path})
+
+
+@mcp.tool()
+def create_niagara_module_asset(
+    asset_path: str,
+    module_type: str = "module",
+    description: str | None = None,
+) -> str:
+    """Create a standalone Niagara script asset (module / dynamic input / function).
+
+    Duplicates the editor's default template when available so the produced asset
+    has the same initial graph as one created via the Niagara asset wizard.
+
+    Args:
+        asset_path: Full content path including name (e.g. "/Game/FX/Modules/MyModule")
+        module_type: "module", "dynamic_input", or "function"
+        description: Optional description text
+    """
+    params: dict = {"asset_path": asset_path, "module_type": module_type}
+    if description is not None:
+        params["description"] = description
+    return _call("create_niagara_module_asset", params)
+
+
+@mcp.tool()
+def set_niagara_scratch_pad_hlsl(
+    system_path: str,
+    module_name: str,
+    hlsl_code: str,
+    inputs: list[dict] | None = None,
+    outputs: list[dict] | None = None,
+    clear_existing_pins: bool = False,
+) -> str:
+    """Set HLSL source on a scratch pad module's Custom HLSL node, creating pins as needed.
+
+    Pin creation uses exported schema APIs (UEdGraphSchema_Niagara::TypeDefinitionToPinType)
+    plus reflection on the CustomHlsl UPROPERTY (SetCustomHlsl is not NIAGARAEDITOR_API
+    exported). After changes the node's FNiagaraFunctionSignature is rebuilt from the
+    pin list, mirroring UNiagaraNodeCustomHlsl::RebuildSignatureFromPins exactly.
+
+    Args:
+        system_path: Niagara System asset path
+        module_name: Scratch pad module name containing the Custom HLSL node
+        hlsl_code: Raw HLSL source. Reference pins by name (e.g. Result = Value * Scale;)
+        inputs: Optional list of {"name": str, "type": str} — input pins to create
+        outputs: Optional list of {"name": str, "type": str} — output pins to create
+        clear_existing_pins: If true, remove all current non-Add pins before adding new ones
+    """
+    params: dict = {
+        "system_path": system_path,
+        "module_name": module_name,
+        "hlsl_code": hlsl_code,
+        "clear_existing_pins": clear_existing_pins,
+    }
+    if inputs is not None:
+        params["inputs"] = inputs
+    if outputs is not None:
+        params["outputs"] = outputs
+    return _call("set_niagara_scratch_pad_hlsl", params)
+
+
+# ---------------------------------------------------------------------------
+# Custom HLSL pin management
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def add_niagara_custom_hlsl_input(
+    system_path: str, module_name: str, pin_name: str, pin_type: str = "float"
+) -> str:
+    """Add a typed input pin to a scratch pad module's Custom HLSL node.
+
+    Types: float, int, bool, vec2/3/4, color, quat, matrix, position, ParameterMap,
+    or any registered Niagara type. The pin's name is usable inside the HLSL source.
+    """
+    return _call("add_niagara_custom_hlsl_input", {
+        "system_path": system_path,
+        "module_name": module_name,
+        "pin_name": pin_name,
+        "pin_type": pin_type,
+    })
+
+
+@mcp.tool()
+def add_niagara_custom_hlsl_output(
+    system_path: str, module_name: str, pin_name: str, pin_type: str = "float"
+) -> str:
+    """Add a typed output pin to a scratch pad module's Custom HLSL node."""
+    return _call("add_niagara_custom_hlsl_output", {
+        "system_path": system_path,
+        "module_name": module_name,
+        "pin_name": pin_name,
+        "pin_type": pin_type,
+    })
+
+
+@mcp.tool()
+def rename_niagara_custom_hlsl_pin(
+    system_path: str, module_name: str, old_name: str, new_name: str
+) -> str:
+    """Rename a Custom HLSL pin and update references inside the HLSL source.
+
+    Braced references ("{OldName}") inside the HLSL code are rewritten to "{NewName}"
+    via a whole-word replacement after the pin is renamed.
+    """
+    return _call("rename_niagara_custom_hlsl_pin", {
+        "system_path": system_path,
+        "module_name": module_name,
+        "old_name": old_name,
+        "new_name": new_name,
+    })
+
+
+@mcp.tool()
+def remove_niagara_custom_hlsl_pin(
+    system_path: str, module_name: str, pin_name: str
+) -> str:
+    """Remove a pin from a Custom HLSL node and rebuild its signature."""
+    return _call("remove_niagara_custom_hlsl_pin", {
+        "system_path": system_path,
+        "module_name": module_name,
+        "pin_name": pin_name,
+    })
+
+
+# ---------------------------------------------------------------------------
+# Node discovery & schema introspection
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def list_niagara_node_types(
+    filter: str | None = None,
+    kind: str = "all",
+    include_engine: bool = False,
+    max_results: int = 500,
+) -> str:
+    """Enumerate every Niagara node type that can be added to a graph.
+
+    Combines three sources, mirroring what the right-click menu shows in the editor:
+      * Node classes (UNiagaraNode subclasses) — Map Get, Map Set, Custom HLSL, If, etc.
+      * Script assets — module / dynamic_input / function scripts from the Asset Registry
+      * Data Interface classes (UNiagaraDataInterface subclasses)
+
+    Filter-first to keep output compact. Each entry includes kind, display_name,
+    category, tooltip/keywords, and a class_path or script_path for use with
+    add_niagara_module / add_niagara_node_pin.
+
+    Args:
+        filter: Case-insensitive substring applied to name/display/category/keywords/tooltip
+        kind: "all" (default), "node_class", "module_script", "dynamic_input_script",
+              "function_script", "data_interface"
+        include_engine: When false, script asset scan is restricted to /Game and /Niagara
+        max_results: Cap on total entries returned (default 500)
+    """
+    params: dict = {"kind": kind, "include_engine": include_engine, "max_results": max_results}
+    if filter is not None:
+        params["filter"] = filter
+    return _call("list_niagara_node_types", params)
+
+
+@mcp.tool()
+def get_niagara_node_type_info(type: str, script_path: str | None = None) -> str:
+    """Get pin/property schema for a Niagara node type or script asset.
+
+    For a node class (e.g. "CustomHlsl", "ParameterMapGet"), returns the editable
+    UPROPERTY list via reflection. For CustomHlsl specifically, returns the full
+    HLSL schema (like Material's get_expression_type_info does for the Custom node)
+    with an example payload.
+
+    For a script_path, loads the asset and returns its input/output parameters.
+
+    Args:
+        type: Node short name (e.g. "CustomHlsl", "ParameterMapGet") or full class name
+        script_path: Optional script asset path — when set, returns script input/output info instead
+    """
+    params: dict = {"type": type}
+    if script_path is not None:
+        params["script_path"] = script_path
+    return _call("get_niagara_node_type_info", params)
+
+
+@mcp.tool()
+def search_niagara_functions(
+    filter: str | None = None,
+    usage: str = "function",
+    include_engine: bool = True,
+    max_results: int = 100,
+) -> str:
+    """Search Niagara script assets by usage + name filter.
+
+    Dedicated shortcut for finding module / dynamic_input / function script assets
+    so you can pass the result directly to add_niagara_module or set_niagara_dynamic_input.
+
+    Args:
+        filter: Optional name/path substring
+        usage: "module", "dynamic_input", or "function" (default)
+        include_engine: When false, restricts scan to /Game
+        max_results: Cap on returned entries
+    """
+    params: dict = {"usage": usage, "include_engine": include_engine, "max_results": max_results}
+    if filter is not None:
+        params["filter"] = filter
+    return _call("search_niagara_functions", params)
+
+
+@mcp.tool()
+def describe_niagara_type(type: str) -> str:
+    """Return the full schema of any Niagara type — primitive, enum, struct, or data interface.
+
+    Built on a generic FProperty introspector, so the output handles every
+    Unreal property kind recursively (bool / int{8,16,32,64} / uint{16,32,64} /
+    float / double / string / name / text / enum / struct / array / map / set /
+    object / class / soft_object / soft_class / interface / delegate). For
+    enums, returns every entry with name + display_name + value + tooltip. For
+    structs, walks every editable field. For data interfaces, returns the full
+    CDO schema.
+
+    Args:
+        type: Type identifier — built-in name ("float", "vec3", "Color"),
+              registered Niagara type, UEnum / UScriptStruct path, or
+              UNiagaraDataInterface subclass name (with or without the U prefix).
+    """
+    return _call("describe_niagara_type", {"type": type})
+
+
+@mcp.tool()
+def get_niagara_data_interface_schema(class_: str) -> str:
+    """Return the full editable-property schema of a UNiagaraDataInterface subclass.
+
+    Walks the CDO via the modular FProperty introspector. Covers every DI:
+    Array{Float,Float2,Float3,Float4,Color,Quat,Position,Matrix},
+    SkeletalMesh, StaticMesh, Spline, Curve, RenderTarget2D, VolumeTexture,
+    CameraQuery, NeighborGrid3D, Grid2D, Texture, etc.
+
+    Each field returns: name, kind, sub-type, display_name, tooltip, category,
+    clamp/UI min/max where present, recursive nested struct schema, enum entries
+    for enum-typed fields, etc. Use to discover what fields a DI supports
+    before configuring or instantiating one.
+
+    Args:
+        class_: Class name with or without the "UNiagaraDataInterface" prefix.
+                Examples: "ArrayFloat", "UNiagaraDataInterfaceSkeletalMesh",
+                "Spline", "RenderTarget2D".
+    """
+    return _call("get_niagara_data_interface_schema", {"class": class_})
+
+
+@mcp.tool()
+def get_niagara_schema_actions(
+    system_path: str,
+    module_name: str,
+    filter: str | None = None,
+    max_results: int = 300,
+) -> str:
+    """Return the full graph context-menu actions for a scratch pad module.
+
+    Wraps UEdGraphSchema_Niagara::GetGraphActions — the same call the editor uses to
+    populate the right-click "add node" menu for a Niagara script graph. Each entry
+    has display_name, category, tooltip, keywords, and template_class.
+
+    Args:
+        system_path: Niagara System asset path
+        module_name: Scratch pad module name (the actions are specific to its graph)
+        filter: Optional substring applied to display_name/category/tooltip/keywords
+        max_results: Cap on returned entries
+    """
+    params: dict = {
+        "system_path": system_path,
+        "module_name": module_name,
+        "max_results": max_results,
+    }
+    if filter is not None:
+        params["filter"] = filter
+    return _call("get_niagara_schema_actions", params)
+
+
+# ---------------------------------------------------------------------------
+# Parameter enumeration + pin operations
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def list_niagara_available_parameters(
+    filter: str | None = None,
+    namespace: str = "all",
+    max_results: int = 500,
+    system_path: str | None = None,
+    module_name: str | None = None,
+) -> str:
+    """List parameters that can be bound to a Map Get / Map Set pin.
+
+    Returns well-known Engine.* parameters and Particles.* attributes unconditionally.
+    When system_path + module_name are supplied, also adds:
+      * User.* parameters from the system's exposed parameter collection
+      * Rapid-iteration parameters from every emitter script
+      * The target scratch pad module's own script graph variables (Module.* / Input.* / Transient.*)
+
+    Args:
+        filter: Optional case-insensitive substring filter on parameter name
+        namespace: "all" (default), "engine", "particles", "user", "module", "input", "transient", "rapid_iteration"
+        max_results: Cap on returned entries (default 500)
+        system_path: Optional system path to pull per-emitter + user params
+        module_name: Optional scratch pad module to pull script-local params
+    """
+    params: dict = {"namespace": namespace, "max_results": max_results}
+    if filter is not None:
+        params["filter"] = filter
+    if system_path is not None:
+        params["system_path"] = system_path
+    if module_name is not None:
+        params["module_name"] = module_name
+    return _call("list_niagara_available_parameters", params)
+
+
+@mcp.tool()
+def add_niagara_map_get_pin(
+    system_path: str, module_name: str, parameter_name: str, parameter_type: str = "float"
+) -> str:
+    """Add a typed output pin to the first ParameterMapGet node in a scratch pad graph.
+
+    Mirrors clicking "+" on a Map Get node in the editor and picking a variable.
+    The pin name becomes the parameter handle (e.g. "Engine.DeltaTime", "User.MyParam",
+    "Particles.Velocity").
+
+    Args:
+        system_path: Niagara System asset path
+        module_name: Scratch pad module name
+        parameter_name: Variable name including namespace (e.g. "Engine.DeltaTime")
+        parameter_type: Niagara type (float, int, bool, vec2/3/4, color, quat, matrix, position, ...)
+    """
+    return _call("add_niagara_map_get_pin", {
+        "system_path": system_path,
+        "module_name": module_name,
+        "parameter_name": parameter_name,
+        "parameter_type": parameter_type,
+    })
+
+
+@mcp.tool()
+def add_niagara_map_set_pin(
+    system_path: str, module_name: str, parameter_name: str, parameter_type: str = "float"
+) -> str:
+    """Add a typed input pin to the first ParameterMapSet node in a scratch pad graph.
+
+    Mirrors clicking "+" on a Map Set node in the editor.
+
+    Args:
+        system_path: Niagara System asset path
+        module_name: Scratch pad module name
+        parameter_name: Variable name including namespace
+        parameter_type: Niagara type (see add_niagara_map_get_pin)
+    """
+    return _call("add_niagara_map_set_pin", {
+        "system_path": system_path,
+        "module_name": module_name,
+        "parameter_name": parameter_name,
+        "parameter_type": parameter_type,
+    })
+
+
+@mcp.tool()
+def add_niagara_node_pin(
+    system_path: str,
+    module_name: str,
+    pin_name: str,
+    pin_type: str = "float",
+    direction: str = "input",
+    node_class: str | None = None,
+    node_index: int | None = None,
+    node_id: str | None = None,
+) -> str:
+    """Generic: add a typed dynamic pin to any node in a scratch pad graph.
+
+    Works with Custom HLSL, Map Get, Map Set, or any node inheriting from
+    UNiagaraNodeWithDynamicPins. Identify the target node via exactly one of
+    node_class / node_index / node_id.
+
+    Args:
+        system_path: Niagara System asset path
+        module_name: Scratch pad module name
+        pin_name: New pin name
+        pin_type: Niagara type string (float, vec3, color, etc.)
+        direction: "input" or "output"
+        node_class: Class short name (e.g. "NiagaraNodeParameterMapGet", "ParameterMapGet")
+        node_index: Raw Graph->Nodes index
+        node_id: UEdGraphNode::NodeGuid string
+    """
+    params: dict = {
+        "system_path": system_path,
+        "module_name": module_name,
+        "pin_name": pin_name,
+        "pin_type": pin_type,
+        "direction": direction,
+    }
+    if node_class is not None:
+        params["node_class"] = node_class
+    if node_index is not None:
+        params["node_index"] = node_index
+    if node_id is not None:
+        params["node_id"] = node_id
+    return _call("add_niagara_node_pin", params)
+
+
+@mcp.tool()
+def rename_niagara_node_pin(
+    system_path: str,
+    module_name: str,
+    old_name: str,
+    new_name: str,
+    node_class: str | None = None,
+    node_index: int | None = None,
+    node_id: str | None = None,
+) -> str:
+    """Rename a dynamic pin on any node in a scratch pad graph.
+
+    For Custom HLSL nodes, braced references inside the HLSL source ("{OldName}") are
+    rewritten automatically.
+    """
+    params: dict = {
+        "system_path": system_path,
+        "module_name": module_name,
+        "old_name": old_name,
+        "new_name": new_name,
+    }
+    if node_class is not None:
+        params["node_class"] = node_class
+    if node_index is not None:
+        params["node_index"] = node_index
+    if node_id is not None:
+        params["node_id"] = node_id
+    return _call("rename_niagara_node_pin", params)
+
+
+@mcp.tool()
+def remove_niagara_node_pin(
+    system_path: str,
+    module_name: str,
+    pin_name: str,
+    node_class: str | None = None,
+    node_index: int | None = None,
+    node_id: str | None = None,
+) -> str:
+    """Remove a dynamic pin from any node in a scratch pad graph."""
+    params: dict = {
+        "system_path": system_path,
+        "module_name": module_name,
+        "pin_name": pin_name,
+    }
+    if node_class is not None:
+        params["node_class"] = node_class
+    if node_index is not None:
+        params["node_index"] = node_index
+    if node_id is not None:
+        params["node_id"] = node_id
+    return _call("remove_niagara_node_pin", params)
+
+
+@mcp.tool()
+def connect_niagara_pins(
+    system_path: str,
+    module_name: str,
+    from_pin: str,
+    to_pin: str,
+    from_node_class: str | None = None,
+    from_node_index: int | None = None,
+    from_node_id: str | None = None,
+    to_node_class: str | None = None,
+    to_node_index: int | None = None,
+    to_node_id: str | None = None,
+) -> str:
+    """Wire one node's output pin to another node's input pin inside a scratch pad graph.
+
+    Connection is validated via UEdGraphSchema_Niagara::TryCreateConnection so type
+    mismatches are rejected cleanly. Identify each side via the (class | index | id) trio.
+    """
+    params: dict = {
+        "system_path": system_path,
+        "module_name": module_name,
+        "from_pin": from_pin,
+        "to_pin": to_pin,
+    }
+    if from_node_class is not None: params["from_node_class"] = from_node_class
+    if from_node_index is not None: params["from_node_index"] = from_node_index
+    if from_node_id is not None:    params["from_node_id"] = from_node_id
+    if to_node_class is not None:   params["to_node_class"] = to_node_class
+    if to_node_index is not None:   params["to_node_index"] = to_node_index
+    if to_node_id is not None:      params["to_node_id"] = to_node_id
+    return _call("connect_niagara_pins", params)
+
+
+@mcp.tool()
+def disconnect_niagara_pins(
+    system_path: str,
+    module_name: str,
+    pin_name: str,
+    node_class: str | None = None,
+    node_index: int | None = None,
+    node_id: str | None = None,
+) -> str:
+    """Break all connections on a specific pin of a node in a scratch pad graph."""
+    params: dict = {
+        "system_path": system_path,
+        "module_name": module_name,
+        "pin_name": pin_name,
+    }
+    if node_class is not None: params["node_class"] = node_class
+    if node_index is not None: params["node_index"] = node_index
+    if node_id is not None:    params["node_id"] = node_id
+    return _call("disconnect_niagara_pins", params)

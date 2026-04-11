@@ -186,6 +186,22 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleCommand(
 	{
 		return HandleCreateNiagaraScratchPadModule(Params);
 	}
+	else if (CommandType == TEXT("duplicate_niagara_scratch_pad_module"))
+	{
+		return HandleDuplicateNiagaraScratchPadModule(Params);
+	}
+	else if (CommandType == TEXT("delete_niagara_scratch_pad_module"))
+	{
+		return HandleDeleteNiagaraScratchPadModule(Params);
+	}
+	else if (CommandType == TEXT("rename_niagara_scratch_pad_module"))
+	{
+		return HandleRenameNiagaraScratchPadModule(Params);
+	}
+	else if (CommandType == TEXT("list_niagara_scratch_pad_modules"))
+	{
+		return HandleListNiagaraScratchPadModules(Params);
+	}
 	else if (CommandType == TEXT("set_niagara_scratch_pad_hlsl"))
 	{
 		return HandleSetNiagaraScratchPadHlsl(Params);
@@ -193,6 +209,84 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleCommand(
 	else if (CommandType == TEXT("create_niagara_module_asset"))
 	{
 		return HandleCreateNiagaraModuleAsset(Params);
+	}
+
+	// ---- Custom HLSL pin management ----
+	else if (CommandType == TEXT("add_niagara_custom_hlsl_input"))
+	{
+		return HandleAddNiagaraCustomHlslInput(Params);
+	}
+	else if (CommandType == TEXT("add_niagara_custom_hlsl_output"))
+	{
+		return HandleAddNiagaraCustomHlslOutput(Params);
+	}
+	else if (CommandType == TEXT("rename_niagara_custom_hlsl_pin"))
+	{
+		return HandleRenameNiagaraCustomHlslPin(Params);
+	}
+	else if (CommandType == TEXT("remove_niagara_custom_hlsl_pin"))
+	{
+		return HandleRemoveNiagaraCustomHlslPin(Params);
+	}
+
+	// ---- Node discovery & schema introspection ----
+	else if (CommandType == TEXT("list_niagara_node_types"))
+	{
+		return HandleListNiagaraNodeTypes(Params);
+	}
+	else if (CommandType == TEXT("get_niagara_node_type_info"))
+	{
+		return HandleGetNiagaraNodeTypeInfo(Params);
+	}
+	else if (CommandType == TEXT("search_niagara_functions"))
+	{
+		return HandleSearchNiagaraFunctions(Params);
+	}
+	else if (CommandType == TEXT("get_niagara_schema_actions"))
+	{
+		return HandleGetNiagaraSchemaActions(Params);
+	}
+	else if (CommandType == TEXT("describe_niagara_type"))
+	{
+		return HandleDescribeNiagaraType(Params);
+	}
+	else if (CommandType == TEXT("get_niagara_data_interface_schema"))
+	{
+		return HandleGetNiagaraDataInterfaceSchema(Params);
+	}
+
+	// ---- Pin operations & parameter enumeration ----
+	else if (CommandType == TEXT("list_niagara_available_parameters"))
+	{
+		return HandleListNiagaraAvailableParameters(Params);
+	}
+	else if (CommandType == TEXT("add_niagara_map_get_pin"))
+	{
+		return HandleAddNiagaraMapGetPin(Params);
+	}
+	else if (CommandType == TEXT("add_niagara_map_set_pin"))
+	{
+		return HandleAddNiagaraMapSetPin(Params);
+	}
+	else if (CommandType == TEXT("add_niagara_node_pin"))
+	{
+		return HandleAddNiagaraNodePin(Params);
+	}
+	else if (CommandType == TEXT("rename_niagara_node_pin"))
+	{
+		return HandleRenameNiagaraNodePin(Params);
+	}
+	else if (CommandType == TEXT("remove_niagara_node_pin"))
+	{
+		return HandleRemoveNiagaraNodePin(Params);
+	}
+	else if (CommandType == TEXT("connect_niagara_pins"))
+	{
+		return HandleConnectNiagaraPins(Params);
+	}
+	else if (CommandType == TEXT("disconnect_niagara_pins"))
+	{
+		return HandleDisconnectNiagaraPins(Params);
 	}
 
 	// ---- Events & Simulation Stages ----

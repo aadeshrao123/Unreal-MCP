@@ -91,8 +91,36 @@ private:
 
 	// ---- Scratch Pad & Custom Modules (NiagaraScratchPadOps.cpp) ----
 	TSharedPtr<FJsonObject> HandleCreateNiagaraScratchPadModule(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleDuplicateNiagaraScratchPadModule(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleDeleteNiagaraScratchPadModule(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleRenameNiagaraScratchPadModule(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleListNiagaraScratchPadModules(const TSharedPtr<FJsonObject>& Params);
 	TSharedPtr<FJsonObject> HandleSetNiagaraScratchPadHlsl(const TSharedPtr<FJsonObject>& Params);
 	TSharedPtr<FJsonObject> HandleCreateNiagaraModuleAsset(const TSharedPtr<FJsonObject>& Params);
+
+	// ---- Custom HLSL pin management (NiagaraScratchPadOps.cpp) ----
+	TSharedPtr<FJsonObject> HandleAddNiagaraCustomHlslInput(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleAddNiagaraCustomHlslOutput(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleRenameNiagaraCustomHlslPin(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleRemoveNiagaraCustomHlslPin(const TSharedPtr<FJsonObject>& Params);
+
+	// ---- Node discovery & schema introspection (NiagaraNodeDiscovery.cpp) ----
+	TSharedPtr<FJsonObject> HandleListNiagaraNodeTypes(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleGetNiagaraNodeTypeInfo(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleSearchNiagaraFunctions(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleGetNiagaraSchemaActions(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleDescribeNiagaraType(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleGetNiagaraDataInterfaceSchema(const TSharedPtr<FJsonObject>& Params);
+
+	// ---- Pin operations & parameter enumeration (NiagaraPinOps.cpp) ----
+	TSharedPtr<FJsonObject> HandleListNiagaraAvailableParameters(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleAddNiagaraMapGetPin(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleAddNiagaraMapSetPin(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleAddNiagaraNodePin(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleRenameNiagaraNodePin(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleRemoveNiagaraNodePin(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleConnectNiagaraPins(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleDisconnectNiagaraPins(const TSharedPtr<FJsonObject>& Params);
 
 	// ---- Events & Simulation Stages (NiagaraEventOps.cpp) ----
 	TSharedPtr<FJsonObject> HandleAddNiagaraEventHandler(const TSharedPtr<FJsonObject>& Params);

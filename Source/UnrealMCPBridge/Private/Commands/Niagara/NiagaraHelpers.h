@@ -84,6 +84,36 @@ namespace NiagaraHelpers
 	 */
 	void CompileAndSync(UNiagaraSystem* System, bool bForce = false);
 
+	// ---- Scratch Pad transient-proxy helpers ----
+
+	/**
+	 * Locate a scratch pad script on a system by case-insensitive name.
+	 * Returns the asset-owned UNiagaraScript in System->ScratchPadScripts.
+	 */
+	UNiagaraScript* FindScratchPadScript(UNiagaraSystem* System, const FString& ModuleName);
+
+	/**
+	 * Collect BOTH the asset script and (if the Niagara editor is open) the
+	 * transient edit-copy script that the user actually sees in the scratch pad.
+	 * Mirrors how the material MCP resolves UMaterial/PreviewMaterial pairs.
+	 *
+	 * When the system is not open in an editor, returns a single-element list
+	 * with just the asset script. When it IS open, returns [original, edit_copy]
+	 * so callers can apply their mutation to both and keep them in sync without
+	 * requiring the user to close/reopen the effect.
+	 */
+	void GetScratchPadScriptPair(
+		UNiagaraSystem* System,
+		const FString& ModuleName,
+		TArray<UNiagaraScript*>& OutScripts);
+
+	/**
+	 * Notify the Niagara editor (if open) that a scratch pad script graph changed
+	 * — refreshes the view model so the change appears live. Safe to call even
+	 * when no editor is open.
+	 */
+	void NotifyScratchPadScriptChanged(UNiagaraSystem* System, const FString& ModuleName);
+
 	// ---- JSON Serialization ----
 
 	/** Serialize an emitter handle to a JSON object for API responses. */

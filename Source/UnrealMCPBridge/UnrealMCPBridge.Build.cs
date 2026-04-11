@@ -30,7 +30,12 @@ public class UnrealMCPBridge : ModuleRules
 				System.IO.Path.Combine(ModuleDirectory, "Private/Commands/Material"),
 				System.IO.Path.Combine(ModuleDirectory, "Private/Commands/Profiling"),
 				System.IO.Path.Combine(ModuleDirectory, "Private/Commands/Niagara"),
-				System.IO.Path.Combine(ModuleDirectory, "Private/Commands/StateTree")
+				System.IO.Path.Combine(ModuleDirectory, "Private/Commands/StateTree"),
+				// Niagara editor private headers — we need NiagaraNodeParameterMapGet/Set
+				// and NiagaraParameterMapHistory, which live under Private/ despite being
+				// referenced by several public headers. UBT lets a downstream module see
+				// an upstream module's Private path when we list it here explicitly.
+				System.IO.Path.Combine(EngineDirectory, "Plugins/FX/Niagara/Source/NiagaraEditor/Private")
 			}
 		);
 

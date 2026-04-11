@@ -2,6 +2,8 @@
 #include "Commands/EpicUnrealMCPNiagaraCommands.h"
 #include "Commands/EpicUnrealMCPCommonUtils.h"
 #include "NiagaraHelpers.h"
+#include "NiagaraPropertyIntrospection.h"
+#include "NiagaraTypeHelpers.h"
 
 #include "NiagaraSystem.h"
 #include "NiagaraEmitter.h"
@@ -386,78 +388,28 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleAddNiagaraModule(
 	FScopedTransaction Transaction(
 		NSLOCTEXT("UnrealMCPBridge", "AddNiagaraModule", "Add Niagara Module"));
 
-	// Create function call node for the module
-	UNiagaraNodeFunctionCall* NewNode = NewObject<UNiagaraNodeFunctionCall>(Graph);
-	NewNode->FunctionScript = ModuleScript;
-	NewNode->CreateNewGuid();
-	NewNode->PostPlacedNewNode();
-	NewNode->AllocateDefaultPins();
-	Graph->AddNode(NewNode, false, false);
+	// Use the canonical Niagara stack-graph helper instead of manually
+	// allocating the function call node. AddScriptModuleToStack handles:
+	//   * function call node creation with the right outer
+	//   * full signature resolution (so per-Module.* input pins appear)
+	//   * stack chain insertion / append at the requested index
+	//   * suggested name + version handling
+	// This is the same path the editor takes when you drag a module onto an
+	// emitter stack — without it, AllocateDefaultPins gives you only the
+	// generic InputMap pin and Module.* inputs never become configurable.
+	FString SuggestedName;
+	Params->TryGetStringField(TEXT("suggested_name"), SuggestedName);
+	UNiagaraNodeFunctionCall* NewNode = FNiagaraStackGraphUtilities::AddScriptModuleToStack(
+		ModuleScript,
+		*OutputNode,
+		TargetIndex,
+		SuggestedName,
+		FGuid());
 
-	// Locate the parameter map pins on the new node
-	UEdGraphPin* ModuleOutputPin = FindFirstPin(NewNode, EGPD_Output);
-	UEdGraphPin* ModuleInputPin = FindFirstPin(NewNode, EGPD_Input);
-
-	if (!ModuleOutputPin)
+	if (!NewNode)
 	{
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
-			TEXT("New module node has no output pin"));
-	}
-
-	// Find the output node's input pin
-	UEdGraphPin* OutputNodeInputPin = FindFirstPin(OutputNode, EGPD_Input);
-	if (!OutputNodeInputPin)
-	{
-		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
-			TEXT("Output node has no input pin to wire modules into"));
-	}
-
-	// Collect the existing chain for index-based insertion
-	TArray<UNiagaraNodeFunctionCall*> ExistingChain;
-	CollectModuleChain(OutputNode, ExistingChain);
-
-	if (TargetIndex >= 0 && TargetIndex < ExistingChain.Num())
-	{
-		// Insert at a specific position by splicing in between nodes.
-		UNiagaraNodeFunctionCall* NodeAtTarget = ExistingChain[TargetIndex];
-
-		UEdGraphPin* TargetNodeInput = FindFirstPin(NodeAtTarget, EGPD_Input);
-		if (TargetNodeInput && TargetNodeInput->LinkedTo.Num() > 0)
-		{
-			UEdGraphPin* PreviousOutput = TargetNodeInput->LinkedTo[0];
-			TargetNodeInput->BreakAllPinLinks();
-
-			// Previous -> NewModule -> NodeAtTarget
-			if (ModuleInputPin && PreviousOutput)
-			{
-				ModuleInputPin->MakeLinkTo(PreviousOutput);
-			}
-			ModuleOutputPin->MakeLinkTo(TargetNodeInput);
-		}
-		else
-		{
-			// Target is the first node in the chain -- wire new module before it
-			if (TargetNodeInput)
-			{
-				ModuleOutputPin->MakeLinkTo(TargetNodeInput);
-			}
-		}
-	}
-	else
-	{
-		// Append to end (closest to output node)
-		if (OutputNodeInputPin->LinkedTo.Num() > 0)
-		{
-			UEdGraphPin* PreviousOutput = OutputNodeInputPin->LinkedTo[0];
-			OutputNodeInputPin->BreakAllPinLinks();
-
-			if (ModuleInputPin && PreviousOutput)
-			{
-				ModuleInputPin->MakeLinkTo(PreviousOutput);
-			}
-		}
-
-		ModuleOutputPin->MakeLinkTo(OutputNodeInputPin);
+			TEXT("FNiagaraStackGraphUtilities::AddScriptModuleToStack returned null"));
 	}
 
 	Graph->NotifyGraphChanged();
@@ -469,6 +421,17 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleAddNiagaraModule(
 	Data->SetStringField(TEXT("module_name"), NewNode->GetFunctionName());
 	Data->SetStringField(TEXT("module_path"), ModulePath);
 	Data->SetStringField(TEXT("script_usage"), ScriptUsageStr);
+
+	// Report what inputs the new function call node exposes — useful for
+	// confirming Module.* parameters are visible to set_niagara_module_input.
+	TArray<TSharedPtr<FJsonValue>> InputPinNames;
+	for (UEdGraphPin* Pin : NewNode->Pins)
+	{
+		if (!Pin || Pin->Direction != EGPD_Input) continue;
+		if (Pin->PinType.PinCategory == UEdGraphSchema_Niagara::PinCategoryMisc) continue;
+		InputPinNames.Add(MakeShared<FJsonValueString>(Pin->PinName.ToString()));
+	}
+	Data->SetArrayField(TEXT("input_pins"), InputPinNames);
 
 	return FEpicUnrealMCPCommonUtils::CreateSuccessResponse(Data);
 #else
@@ -997,14 +960,93 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleGetNiagaraModuleInp
 		InputObj->SetStringField(TEXT("type"), PinCategory);
 		InputObj->SetStringField(TEXT("default_value"), Pin->DefaultValue);
 		InputObj->SetBoolField(TEXT("is_connected"), Pin->LinkedTo.Num() > 0);
+		InputObj->SetStringField(TEXT("source"), TEXT("function_call_pin"));
 
 		if (Pin->PinType.PinSubCategoryObject.IsValid())
 		{
-			InputObj->SetStringField(TEXT("sub_type"),
-				Pin->PinType.PinSubCategoryObject->GetName());
+			UObject* SubObj = Pin->PinType.PinSubCategoryObject.Get();
+			InputObj->SetStringField(TEXT("sub_type"), SubObj->GetName());
+			InputObj->SetStringField(TEXT("sub_type_path"), SubObj->GetPathName());
+
+			// Generic type schema via introspector — handles enum, struct, DI,
+			// nested fields, every property kind. Replaces the old hand-rolled
+			// "if FEnum" branch with a single recursive walker that returns
+			// the full schema regardless of type.
+			if (UEnum* EnumPtr = Cast<UEnum>(SubObj))
+			{
+				InputObj->SetObjectField(TEXT("type_schema"),
+					NiagaraIntrospection::SerializeEnum(EnumPtr));
+				if (!Pin->DefaultValue.IsEmpty())
+				{
+					const int64 CurrentVal = EnumPtr->GetValueByName(FName(*Pin->DefaultValue));
+					if (CurrentVal != INDEX_NONE)
+					{
+						InputObj->SetStringField(TEXT("default_value_display"),
+							EnumPtr->GetDisplayNameTextByValue(CurrentVal).ToString());
+					}
+				}
+			}
+			else if (UScriptStruct* StructPtr = Cast<UScriptStruct>(SubObj))
+			{
+				InputObj->SetObjectField(TEXT("type_schema"),
+					NiagaraIntrospection::SerializeStructFields(StructPtr));
+			}
+			else if (UClass* ClassPtr = Cast<UClass>(SubObj))
+			{
+				if (ClassPtr->IsChildOf(UNiagaraDataInterface::StaticClass()))
+				{
+					InputObj->SetObjectField(TEXT("type_schema"),
+						NiagaraIntrospection::SerializeDataInterfaceClass(ClassPtr));
+				}
+			}
 		}
 
 		InputsArray.Add(MakeShared<FJsonValueObject>(InputObj));
+	}
+
+	// ---- Second pass: parameter-map module inputs (scratch pad modules) ----
+	// Direct function-call pins only cover legacy / direct-pin modules. Modern
+	// parameter-map-style modules (any scratch pad module created by the MCP
+	// flow) declare their Module.* inputs via Map Get reads inside the called
+	// script. The canonical Niagara API to enumerate these is
+	// FNiagaraStackGraphUtilities::GetStackFunctionInputs — same call used by
+	// the editor's stack UI to populate module input fields. Walking it here
+	// means scratch pad inputs (e.g. Module.Boost) finally show up via MCP.
+	{
+		TArray<FNiagaraVariable> StackInputs;
+		FCompileConstantResolver ConstantResolver(System, Usage);
+		FNiagaraStackGraphUtilities::GetStackFunctionInputs(
+			*ModuleNode,
+			StackInputs,
+			ConstantResolver,
+			FNiagaraStackGraphUtilities::ENiagaraGetStackFunctionInputPinsOptions::ModuleInputsOnly);
+
+		const FString ModulePrefix(TEXT("Module."));
+		for (const FNiagaraVariable& Var : StackInputs)
+		{
+			const FString FullName = Var.GetName().ToString();
+			FString DisplayName = FullName;
+			if (DisplayName.StartsWith(ModulePrefix))
+			{
+				DisplayName.RightChopInline(ModulePrefix.Len());
+			}
+
+			if (!InputFilter.IsEmpty() &&
+				!DisplayName.Contains(InputFilter, ESearchCase::IgnoreCase) &&
+				!FullName.Contains(InputFilter, ESearchCase::IgnoreCase))
+			{
+				continue;
+			}
+
+			auto InputObj = MakeShared<FJsonObject>();
+			InputObj->SetStringField(TEXT("name"), DisplayName);
+			InputObj->SetStringField(TEXT("aliased_name"), FullName);
+			InputObj->SetStringField(TEXT("type"), Var.GetType().GetName());
+			InputObj->SetStringField(TEXT("source"), TEXT("parameter_map_input"));
+			InputObj->SetObjectField(TEXT("type_schema"),
+				NiagaraIntrospection::SerializeNiagaraType(Var.GetType()));
+			InputsArray.Add(MakeShared<FJsonValueObject>(InputObj));
+		}
 	}
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
@@ -1212,6 +1254,51 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleSetNiagaraModuleInp
 	{
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
 			TEXT("Unsupported value type. Expected: number, boolean, string, object, or array"));
+	}
+
+	// If the pin is enum-typed, validate the supplied value against the enum's
+	// known entries before assigning. Without this, an unknown string is silently
+	// stored as the pin's DefaultValue and Niagara ignores it (the user thinks
+	// the change took effect when it didn't).
+	//
+	// Accepts three forms for caller convenience:
+	//   - internal short name ("NewEnumerator0")
+	//   - full name           ("ENiagara_EmitterStateOptions::NewEnumerator0")
+	//   - display name        ("Infinite")
+	if (UEnum* EnumPtr = Cast<UEnum>(InputPin->PinType.PinSubCategoryObject.Get()))
+	{
+		int64 ResolvedValue = EnumPtr->GetValueByNameString(ValueStr);
+		if (ResolvedValue == INDEX_NONE)
+		{
+			// Try matching against the display name (user-friendly form)
+			for (int32 i = 0; i < EnumPtr->NumEnums(); ++i)
+			{
+				if (EnumPtr->GetDisplayNameTextByIndex(i).ToString().Equals(ValueStr, ESearchCase::IgnoreCase))
+				{
+					ResolvedValue = EnumPtr->GetValueByIndex(i);
+					break;
+				}
+			}
+		}
+		if (ResolvedValue == INDEX_NONE)
+		{
+			TArray<FString> ValidEntries;
+			for (int32 i = 0; i < EnumPtr->NumEnums(); ++i)
+			{
+				const FString ShortName = EnumPtr->GetNameStringByIndex(i);
+				if (ShortName.EndsWith(TEXT("_MAX"))) continue;
+				if (EnumPtr->HasMetaData(TEXT("Hidden"), i)) continue;
+				const FString DisplayName = EnumPtr->GetDisplayNameTextByIndex(i).ToString();
+				ValidEntries.Add(FString::Printf(TEXT("%s ('%s')"), *ShortName, *DisplayName));
+			}
+			return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+				FString::Printf(
+					TEXT("Enum value '%s' is not valid for input '%s' (enum: %s). Valid entries: %s"),
+					*ValueStr, *InputName, *EnumPtr->GetName(),
+					*FString::Join(ValidEntries, TEXT(", "))));
+		}
+		// Niagara stores the enum default value as the short entry name.
+		ValueStr = EnumPtr->GetNameStringByValue(ResolvedValue);
 	}
 
 	InputPin->DefaultValue = ValueStr;
@@ -1734,11 +1821,81 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleSetNiagaraDynamicIn
 		Data->SetStringField(TEXT("expression"), Expression);
 		Data->SetBoolField(TEXT("dynamic_input_created"), true);
 	}
+	// ---- Generic script-backed dynamic input ----
+	// Accepts an arbitrary dynamic input script asset path; works for any
+	// dynamic input script not covered by the dedicated helpers above.
+	else if (LowerType == TEXT("script") || LowerType == TEXT("asset"))
+	{
+		FString ScriptPath;
+		if (!Params->TryGetStringField(TEXT("dynamic_input_script_path"), ScriptPath))
+		{
+			return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+				TEXT("Missing 'dynamic_input_script_path' for script-backed dynamic input"));
+		}
+
+		UNiagaraScript* DynamicInputScript = LoadObject<UNiagaraScript>(nullptr, *ScriptPath);
+		if (!DynamicInputScript)
+		{
+			return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+				FString::Printf(TEXT("Failed to load dynamic input script '%s'"), *ScriptPath));
+		}
+		if (DynamicInputScript->GetUsage() != ENiagaraScriptUsage::DynamicInput)
+		{
+			return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+				TEXT("Script is not a DynamicInput usage script"));
+		}
+
+		// Resolve the module input's declared type from its pin
+		const UEdGraphSchema_Niagara* NiagaraSchema = GetDefault<UEdGraphSchema_Niagara>();
+		FNiagaraTypeDefinition InputType = FNiagaraTypeDefinition::GetFloatDef();
+		for (UEdGraphPin* Pin : ModuleNode->Pins)
+		{
+			if (Pin->Direction == EGPD_Input &&
+				Pin->PinName.ToString().Equals(InputName, ESearchCase::IgnoreCase))
+			{
+				InputType = NiagaraSchema->PinToTypeDefinition(Pin);
+				break;
+			}
+		}
+
+		UEdGraphPin& OverridePin = FNiagaraStackGraphUtilities::GetOrCreateStackFunctionInputOverridePin(
+			*ModuleNode, AliasedHandle, InputType, FGuid(), FGuid());
+		if (OverridePin.LinkedTo.Num() > 0)
+		{
+			RemoveOverridePinConnections(OverridePin, Graph);
+		}
+
+		UNiagaraNodeFunctionCall* DynamicInputNode = nullptr;
+		FString SuggestedName;
+		Params->TryGetStringField(TEXT("suggested_name"), SuggestedName);
+		FNiagaraStackGraphUtilities::SetDynamicInputForFunctionInput(
+			OverridePin, DynamicInputScript, DynamicInputNode, FGuid(), SuggestedName, FGuid());
+
+		// Optional: apply default values to the dynamic input's own pins
+		// Shape: { "pin_name": "value_as_string", ... }
+		const TSharedPtr<FJsonObject>* DefaultsObj = nullptr;
+		if (DynamicInputNode && Params->TryGetObjectField(TEXT("pin_defaults"), DefaultsObj))
+		{
+			for (UEdGraphPin* DIPin : DynamicInputNode->Pins)
+			{
+				if (!DIPin || DIPin->Direction != EGPD_Input) continue;
+				FString DefaultStr;
+				if ((*DefaultsObj)->TryGetStringField(DIPin->PinName.ToString(), DefaultStr))
+				{
+					DIPin->DefaultValue = DefaultStr;
+				}
+			}
+		}
+
+		Data->SetStringField(TEXT("script_path"), DynamicInputScript->GetPathName());
+		Data->SetStringField(TEXT("input_type"), InputType.GetName());
+		Data->SetBoolField(TEXT("dynamic_input_created"), DynamicInputNode != nullptr);
+	}
 	else
 	{
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
 			FString::Printf(
-				TEXT("Unknown dynamic_input_type: '%s'. Supported: random_range, uniform_random, parameter_link, custom_expression"),
+				TEXT("Unknown dynamic_input_type: '%s'. Supported: random_range, uniform_random, parameter_link, custom_expression, script"),
 				*DynamicInputType));
 	}
 

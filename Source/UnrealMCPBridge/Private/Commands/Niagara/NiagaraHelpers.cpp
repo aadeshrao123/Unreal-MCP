@@ -16,6 +16,10 @@
 
 #if WITH_EDITORONLY_DATA
 #include "NiagaraSystemEditorData.h"
+#include "NiagaraEditorModule.h"
+#include "ViewModels/NiagaraSystemViewModel.h"
+#include "ViewModels/NiagaraScratchPadViewModel.h"
+#include "ViewModels/NiagaraScratchPadScriptViewModel.h"
 #endif
 
 #include "Editor.h"
@@ -180,6 +184,19 @@ ENiagaraScriptUsage NiagaraHelpers::ParseScriptUsage(const FString& Usage, bool&
 	{
 		return ENiagaraScriptUsage::SystemUpdateScript;
 	}
+	if (Usage.Equals(TEXT("module"), ESearchCase::IgnoreCase))
+	{
+		return ENiagaraScriptUsage::Module;
+	}
+	if (Usage.Equals(TEXT("dynamic_input"), ESearchCase::IgnoreCase) ||
+		Usage.Equals(TEXT("dynamicinput"), ESearchCase::IgnoreCase))
+	{
+		return ENiagaraScriptUsage::DynamicInput;
+	}
+	if (Usage.Equals(TEXT("function"), ESearchCase::IgnoreCase))
+	{
+		return ENiagaraScriptUsage::Function;
+	}
 
 	bOutSuccess = false;
 	return ENiagaraScriptUsage::ParticleUpdateScript;
@@ -201,6 +218,12 @@ FString NiagaraHelpers::ScriptUsageToString(ENiagaraScriptUsage Usage)
 		return TEXT("system_spawn");
 	case ENiagaraScriptUsage::SystemUpdateScript:
 		return TEXT("system_update");
+	case ENiagaraScriptUsage::Module:
+		return TEXT("module");
+	case ENiagaraScriptUsage::DynamicInput:
+		return TEXT("dynamic_input");
+	case ENiagaraScriptUsage::Function:
+		return TEXT("function");
 	default:
 		return TEXT("unknown");
 	}
@@ -379,6 +402,126 @@ void NiagaraHelpers::CompileAndSync(UNiagaraSystem* System, bool bForce)
 	}
 
 	System->PostEditChange();
+}
+
+// ---------------------------------------------------------------------------
+// Scratch Pad transient-proxy helpers
+//
+// The Niagara editor works like the Material editor: when a system is opened,
+// UNiagaraScratchPadViewModel duplicates every UNiagaraScript in
+// System->ScratchPadScripts into a transient "edit copy" that's what the user
+// actually sees and edits in the graph. Writes to the asset script do NOT
+// propagate to the edit copy until the user closes and reopens the system.
+//
+// To make MCP edits visible live (same approach as material PreviewMaterial),
+// we write to BOTH scripts: the asset script AND the edit copy if the editor
+// is currently open.
+// ---------------------------------------------------------------------------
+
+UNiagaraScript* NiagaraHelpers::FindScratchPadScript(UNiagaraSystem* System, const FString& ModuleName)
+{
+	if (!System)
+	{
+		return nullptr;
+	}
+	for (UNiagaraScript* Script : System->ScratchPadScripts)
+	{
+		if (Script && Script->GetName().Equals(ModuleName, ESearchCase::IgnoreCase))
+		{
+			return Script;
+		}
+	}
+	return nullptr;
+}
+
+void NiagaraHelpers::GetScratchPadScriptPair(
+	UNiagaraSystem* System,
+	const FString& ModuleName,
+	TArray<UNiagaraScript*>& OutScripts)
+{
+	OutScripts.Reset();
+
+	UNiagaraScript* Original = FindScratchPadScript(System, ModuleName);
+	if (!Original)
+	{
+		return;
+	}
+	OutScripts.Add(Original);
+
+#if WITH_EDITORONLY_DATA
+	FNiagaraEditorModule& NiagaraEditor = FNiagaraEditorModule::Get();
+	TSharedPtr<FNiagaraSystemViewModel> SystemVM = NiagaraEditor.GetExistingViewModelForSystem(System);
+	if (!SystemVM.IsValid())
+	{
+		return; // Editor not open — only the asset script needs updating
+	}
+
+	UNiagaraScratchPadViewModel* ScratchVM = SystemVM->GetScriptScratchPadViewModel();
+	if (!ScratchVM)
+	{
+		return;
+	}
+
+	// Look up the script VM by the ORIGINAL script pointer first, then fall back
+	// to name lookup (matches GetViewModelForScript(FName) overload).
+	TSharedPtr<FNiagaraScratchPadScriptViewModel> ScriptVM = ScratchVM->GetViewModelForScript(Original);
+	if (!ScriptVM.IsValid())
+	{
+		ScriptVM = ScratchVM->GetViewModelForScript(FName(*ModuleName));
+	}
+	if (!ScriptVM.IsValid())
+	{
+		return;
+	}
+
+	const FVersionedNiagaraScript& EditRef = ScriptVM->GetEditScript();
+	if (UNiagaraScript* EditCopy = EditRef.Script)
+	{
+		if (EditCopy != Original)
+		{
+			OutScripts.Add(EditCopy);
+		}
+	}
+#endif
+}
+
+void NiagaraHelpers::NotifyScratchPadScriptChanged(UNiagaraSystem* System, const FString& ModuleName)
+{
+	if (!System)
+	{
+		return;
+	}
+
+#if WITH_EDITORONLY_DATA
+	FNiagaraEditorModule& NiagaraEditor = FNiagaraEditorModule::Get();
+	TSharedPtr<FNiagaraSystemViewModel> SystemVM = NiagaraEditor.GetExistingViewModelForSystem(System);
+	if (!SystemVM.IsValid())
+	{
+		return;
+	}
+
+	UNiagaraScratchPadViewModel* ScratchVM = SystemVM->GetScriptScratchPadViewModel();
+	if (!ScratchVM)
+	{
+		return;
+	}
+
+	// Refresh the scratch pad panel so name / pin list visuals rebuild.
+	ScratchVM->RefreshScriptViewModels();
+
+	// CRITICAL: ApplyScratchPadChanges is what the editor's "Apply Scratch"
+	// toolbar button calls. It copies every script's EditScript content back
+	// to its OriginalScript (System->ScratchPadScripts[i]) and recompiles
+	// every emitter that references the scratch pad script. Without this,
+	// new Module.* inputs added via MCP commands stay isolated in the edit
+	// copy and the emitter stack never sees them — even after our compile +
+	// dirty + Modify chain runs.
+	ScratchVM->ApplyScratchPadChanges();
+
+	// Tell the system view model to refresh its stack / viewport so the
+	// compiled change is visible without requiring close+reopen.
+	SystemVM->RefreshAll();
+#endif
 }
 
 // ---------------------------------------------------------------------------
