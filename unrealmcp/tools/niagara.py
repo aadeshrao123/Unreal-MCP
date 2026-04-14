@@ -2600,12 +2600,18 @@ def connect_niagara_pins(
         "from_pin": from_pin,
         "to_pin": to_pin,
     }
-    if from_node_class is not None: params["from_node_class"] = from_node_class
-    if from_node_index is not None: params["from_node_index"] = from_node_index
-    if from_node_id is not None:    params["from_node_id"] = from_node_id
-    if to_node_class is not None:   params["to_node_class"] = to_node_class
-    if to_node_index is not None:   params["to_node_index"] = to_node_index
-    if to_node_id is not None:      params["to_node_id"] = to_node_id
+    if from_node_class is not None:
+        params["from_node_class"] = from_node_class
+    if from_node_index is not None:
+        params["from_node_index"] = from_node_index
+    if from_node_id is not None:
+        params["from_node_id"] = from_node_id
+    if to_node_class is not None:
+        params["to_node_class"] = to_node_class
+    if to_node_index is not None:
+        params["to_node_index"] = to_node_index
+    if to_node_id is not None:
+        params["to_node_id"] = to_node_id
     return _call("connect_niagara_pins", params)
 
 
@@ -2624,7 +2630,10 @@ def disconnect_niagara_pins(
         "module_name": module_name,
         "pin_name": pin_name,
     }
-    if node_class is not None: params["node_class"] = node_class
-    if node_index is not None: params["node_index"] = node_index
-    if node_id is not None:    params["node_id"] = node_id
+    if node_class is not None:
+        params["node_class"] = node_class
+    if node_index is not None:
+        params["node_index"] = node_index
+    if node_id is not None:
+        params["node_id"] = node_id
     return _call("disconnect_niagara_pins", params)
