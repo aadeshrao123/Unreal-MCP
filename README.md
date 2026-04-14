@@ -1,6 +1,6 @@
 # UnrealMCP — AI Bridge for Unreal Engine 5
 
-Control Unreal Engine 5 editor from AI coding assistants (Claude Code, Cursor, Windsurf, etc.). Create materials, blueprints, Niagara VFX, StateTrees, spawn actors, manage data tables, profile performance, and more — **238 commands** across 13 categories, all without leaving your terminal.
+Control Unreal Engine 5 editor from AI coding assistants (Claude Code, Cursor, Windsurf, etc.). Create materials, blueprints, Niagara VFX, StateTrees, spawn actors, manage data tables, profile performance, and more — **280 commands** across 13 categories, all without leaving your terminal.
 
 **Two ways to use it:**
 
@@ -55,7 +55,7 @@ pip install unrealmcp
                     │                                          │
                     │   C++ Plugin (UnrealMCPBridge)           │
                     │   TCP server on localhost:55557           │
-                    │   238 commands: materials, blueprints,   │
+                    │   280 commands: materials, blueprints,   │
                     │   niagara, statetree, actors, data       │
                     │   tables, profiling, and more            │
                     └──────────────┬───────────────────────────┘
@@ -72,7 +72,7 @@ pip install unrealmcp
           └───────────────────┘              └────────────────────┘
 ```
 
-The C++ plugin runs inside the editor and exposes 238 commands over TCP. The CLI and MCP server are two different front doors to the same plugin.
+The C++ plugin runs inside the editor and exposes 280 commands over TCP. The CLI and MCP server are two different front doors to the same plugin.
 
 ---
 
@@ -439,7 +439,7 @@ The script asks where to create the MCP config:
 
 ---
 
-## All 238 Commands
+## All 280 Commands
 
 | Category | Count | Highlights |
 |----------|------:|-----------|
@@ -452,7 +452,7 @@ The script asks where to create the MCP config:
 | [Actors & Level](#actors--level-19) | 19 | spawn, transform, properties, screenshot |
 | [Enhanced Input](#enhanced-input-21) | 21 | actions, mapping contexts, triggers, modifiers |
 | [Widgets — UMG](#widgets--umg-11) | 11 | widget tree, add/move/rename, slot props |
-| [**Niagara VFX**](#niagara-vfx-54-new) | **54** | systems, emitters, modules, renderers, scratch pad, parameters |
+| [**Niagara VFX**](#niagara-vfx-96) | **96** | systems, emitters, stack bindings (nested), scratch pad authoring, graph CRUD, DI member functions, source-menu discovery |
 | [**StateTree**](#statetree-33-new) | **33** | states, tasks, evaluators, transitions, conditions, bindings |
 | [Performance Profiling](#performance-profiling-3) | 3 | record .utrace + smart analysis (diagnose/spikes/flame) |
 | [Debug](#debug-2) | 2 | token tracking, debug toggle |
@@ -606,9 +606,9 @@ The script asks where to create the MCP config:
 | `get/set_slot_properties` | Layout slot properties |
 | `list_widget_types` | Available widget classes |
 
-### Niagara VFX (54, NEW)
+### Niagara VFX (96)
 
-Full coverage of the Niagara editor — create systems from templates, add and configure emitters, manage modules and renderers, write scratch pad HLSL, and spawn effects in the level. Built on Niagara's ViewModel API for safe asset modification.
+End-to-end Niagara authoring — read the full stack, mutate any binding (top-level or nested), author scratch-pad dynamic inputs from scratch, spawn arbitrary graph nodes including data-interface member functions, and discover every valid option the editor's dropdowns expose. Built on Niagara's exported ViewModel / Stack Graph APIs with safe replication of non-exported helpers.
 
 #### Systems
 | Command | Description |
@@ -643,10 +643,17 @@ Full coverage of the Niagara editor — create systems from templates, add and c
 | `set_niagara_module_enabled` | Enable/disable a module |
 | `reorder_niagara_module` | Reorder within stack |
 | `get_niagara_module_inputs` | Inspect module inputs with current values |
-| `set_niagara_module_input` | Set static value on a module input |
-| `set_niagara_dynamic_input` | Replace input with a dynamic input function |
+| `set_niagara_module_input` | Set literal value (auto-routes Module.* inputs to rapid-iteration; supports nested dot-paths like `"Spawn Count.int32001"`) |
+| `set_niagara_dynamic_input` | Replace input with a dynamic input function (nested-path aware) |
 | `set_niagara_curve` | Set curve points on a curve input |
 | `get_niagara_module_versions` | List script versions |
+
+#### Stack Input Binding Loop
+| Command | Description |
+|---------|-------------|
+| `get_niagara_module_input_binding` | Resolve mode (Default/Local/Linked/Dynamic/Data/Expression) + target + **recursive children** for every input in one call |
+| `clear_niagara_module_input` | Reset an input (or nested path) to default — equivalent to "Reset to Default" in the stack UI |
+| `list_niagara_input_source_menu` | Reproduces the editor's source dropdown — engine dynamic-input assets + scratch-pad DIs + link parameters grouped by namespace |
 
 #### Parameters & Bindings
 | Command | Description |
@@ -655,26 +662,80 @@ Full coverage of the Niagara editor — create systems from templates, add and c
 | `add_niagara_user_parameter` | Add a User parameter |
 | `set_niagara_user_parameter` | Set a User parameter value |
 | `remove_niagara_user_parameter` | Remove a User parameter |
-| `link_niagara_parameter` | Bind module input to a parameter |
+| `link_niagara_parameter` | Bind module input to a parameter (supports nested dot-paths) |
 | `get_niagara_rapid_iteration_parameters` | RI param introspection |
 | `set_niagara_rapid_iteration_parameter` | Set RI param value |
+| `list_niagara_available_parameters` | Enumerate well-known + user + scratch-pad-scoped parameters |
 
 #### Renderers
 | Command | Description |
 |---------|-------------|
 | `add_niagara_renderer` | Add Sprite/Mesh/Ribbon/Light renderer |
 | `remove_niagara_renderer` | Remove a renderer |
-| `get_niagara_renderer_info` | Renderer summary |
+| `get_niagara_renderer_info` | Renderer summary with per-binding detail (binding_name + bound_variable + type + dataset_variable) |
 | `get_niagara_renderer_properties` | Full renderer property dump |
 | `set_niagara_renderer_property` | Set renderer property |
 | `set_niagara_renderer_binding` | Bind renderer attribute to particle data |
 
-#### Scratch Pad & Custom Modules
+#### Scratch Pad — CRUD & Apply
 | Command | Description |
 |---------|-------------|
-| `create_niagara_scratch_pad_module` | Create per-emitter scratch module |
-| `set_niagara_scratch_pad_hlsl` | Write HLSL into scratch pad |
-| `create_niagara_module_asset` | Create reusable Niagara Module Script asset |
+| `create_niagara_scratch_pad_module` | Create per-emitter scratch module (module / dynamic_input / function) |
+| `list_niagara_scratch_pad_modules` | List scratch pads on a system |
+| `duplicate_niagara_scratch_pad_module` | Duplicate with new name |
+| `rename_niagara_scratch_pad_module` | Rename in-place |
+| `delete_niagara_scratch_pad_module` | Remove from system |
+| `apply_niagara_scratch_pad` | Commit edit-copy → asset (Apply button) |
+| `apply_and_save_niagara_scratch_pad` | Apply + save asset (Apply & Save button) |
+| `create_niagara_module_asset` | Create reusable standalone Niagara Module Script asset |
+
+#### Script Properties (Details Panel)
+| Command | Description |
+|---------|-------------|
+| `get_niagara_script_properties` | Read Category, Description, Keywords, ModuleUsageBitmask, ProvidedDependencies, RequiredDependencies, LibraryVisibility, bDeprecated, bExperimental, NumericOutputTypeSelectionMode, ScriptMetaData, ConversionUtility |
+| `set_niagara_script_properties` | Batch-set any subset (supports `TArray<FName>` like ProvidedDependencies and `TArray<FNiagaraModuleDependency>`) |
+
+#### Script Parameters (Input / Output)
+| Command | Description |
+|---------|-------------|
+| `list_niagara_script_parameters` | Inputs + outputs on a scratch pad / standalone script |
+| `add_niagara_script_parameter` | Add input or output parameter with any registered type (incl. data interfaces) |
+| `remove_niagara_script_parameter` | Remove — **cascades to Map Get / Map Set pin cleanup automatically** |
+| `rename_niagara_script_parameter` | Rename across asset + edit-copy graphs |
+
+#### Graph Introspection
+| Command | Description |
+|---------|-------------|
+| `get_niagara_graph_nodes` | List every node with `verbosity` (summary/connections/full) + `type_filter` + `name_filter`. Three resolver modes: scratch pad, emitter stack graph, standalone script |
+| `get_niagara_node_info` | Deep single-node inspect by `node_index` / `node_class` / `node_id` with pin layout, links, and type-specific fields (`op_name`, `function_script`, `hlsl_preview`, `input_name`/type) |
+| `trace_niagara_connection` | BFS upstream/downstream with `pin_name` filter — see the dependency chain without dumping the whole graph |
+| `validate_niagara_graph` | Classify orphaned / dead-end / missing-input nodes (skips `+Add` placeholders) |
+
+#### Graph Node CRUD
+| Command | Description |
+|---------|-------------|
+| `add_niagara_graph_node` | Spawn Op / FunctionCall / **DataInterfaceFunction** / ParameterMapGet / ParameterMapSet / Reroute / Input node. DI member functions (e.g. `Array.Length`) use `UNiagaraDataInterface::GetFunctionSignatures` — same path as the right-click "Functions" submenu |
+| `delete_niagara_graph_node` | Delete by index or GUID, mirrors on asset + edit-copy |
+
+#### Pin Management
+| Command | Description |
+|---------|-------------|
+| `add_niagara_map_get_pin` | Add a typed output pin to a Map Get (e.g. `Module.MyParam` as Vector) |
+| `add_niagara_map_set_pin` | Add a typed input pin to a Map Set (e.g. `Particles.Velocity`) |
+| `add_niagara_node_pin` | Add a pin to any UNiagaraNodeWithDynamicPins-derived node |
+| `rename_niagara_node_pin` | Rename a pin on a dynamic-pin node |
+| `remove_niagara_node_pin` | Remove a dynamic pin |
+| `connect_niagara_pins` | Wire two pins with UEdGraphSchema_Niagara::TryCreateConnection validation |
+| `disconnect_niagara_pins` | Break a pin connection |
+
+#### Custom HLSL
+| Command | Description |
+|---------|-------------|
+| `set_niagara_scratch_pad_hlsl` | Write HLSL source into the scratch pad's Custom HLSL node (creates pins as needed) |
+| `add_niagara_custom_hlsl_input` | Add an input pin to a Custom HLSL node |
+| `add_niagara_custom_hlsl_output` | Add an output pin to a Custom HLSL node |
+| `rename_niagara_custom_hlsl_pin` | Rename a pin (also rewrites `{PinName}` references in the HLSL body) |
+| `remove_niagara_custom_hlsl_pin` | Remove a pin |
 
 #### Events & Simulation Stages
 | Command | Description |
@@ -691,13 +752,22 @@ Full coverage of the Niagara editor — create systems from templates, add and c
 | `add_niagara_component` | Add NiagaraComponent to a Blueprint |
 | `get_niagara_actors` | Find spawned Niagara actors |
 
-#### Discovery
+#### Discovery (zero-guess authoring)
 | Command | Description |
 |---------|-------------|
-| `list_niagara_modules` | List all available Niagara module scripts |
-| `list_niagara_emitter_templates` | List emitter templates |
+| `list_niagara_modules` | All available Niagara module scripts |
+| `list_niagara_emitter_templates` | Emitter templates |
 | `list_niagara_data_interfaces` | Available data interfaces (DI_*) |
+| `list_niagara_data_interface_functions` | **Member functions on a DI class** (Array.Length, Array.Get, etc.) — pass result to `add_niagara_graph_node(node_type="DataInterfaceFunction")` |
 | `list_niagara_parameter_types` | Parameter type registry |
+| `list_niagara_node_types` | Spawnable node classes with pin schema |
+| `get_niagara_node_type_info` | Pin schema for a node class or script asset |
+| `search_niagara_functions` | Find Niagara script assets by usage + name |
+| `get_niagara_schema_actions` | Full graph right-click menu — same source the editor uses. Returns `op_name` / `function_script` / `input_name` for direct use with `add_niagara_graph_node` |
+| `describe_niagara_type` | Type query — `FNiagaraTypeRegistry` types + **UEnum / UScriptStruct reflection fallback** for script-property enums and custom types |
+| `get_niagara_data_interface_schema` | Walk a DI class's editable property schema |
+| `find_niagara_scratch_pad_usage` | Reverse lookup — where is this scratch pad referenced? |
+| `resolve_niagara_built_in_dynamic_input` | AssetRegistry scan for engine-shipped DI scripts (no more hardcoded paths) |
 
 ### StateTree (33, NEW)
 
@@ -853,7 +923,7 @@ Each editor picks a unique port automatically. The CLI and MCP server read the p
 Plugins/UnrealMCP/
 ├── UnrealMCP.uplugin              # Plugin manifest
 ├── cli/                            # Go CLI source (ue-cli)
-│   ├── cmd/                        # Command definitions (238 commands)
+│   ├── cmd/                        # Command definitions (280 commands)
 │   ├── internal/bridge/            # TCP client
 │   ├── internal/project/           # Plugin embedding & project detection
 │   └── npm/                        # npm package wrapper
