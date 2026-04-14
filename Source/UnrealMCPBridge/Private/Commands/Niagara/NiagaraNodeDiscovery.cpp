@@ -19,10 +19,15 @@
 
 #if WITH_EDITORONLY_DATA
 #include "NiagaraNodeCustomHlsl.h"
+#include "NiagaraNodeOp.h"
+#include "NiagaraNodeParameterMapGet.h"
+#include "NiagaraNodeParameterMapSet.h"
+#include "NiagaraNodeInput.h"
 #include "EdGraphSchema_Niagara.h"
 #include "NiagaraActions.h"
 #include "ViewModels/Stack/NiagaraStackGraphUtilities.h"
 #include "NiagaraEmitterHandle.h"
+#include "EdGraph/EdGraphPin.h"
 #endif
 
 #include "AssetRegistry/AssetRegistryModule.h"
@@ -618,9 +623,68 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleGetNiagaraSchemaAct
 		if (!Category.IsEmpty()) J->SetStringField(TEXT("category"), Category);
 		if (!Tooltip.IsEmpty())  J->SetStringField(TEXT("tooltip"), Tooltip);
 		if (!Keywords.IsEmpty()) J->SetStringField(TEXT("keywords"), Keywords);
+
+		// Extract template-specific fields so callers of add_niagara_graph_node
+		// can pass the exact values the editor would use — zero guessing. For
+		// each supported node_type, expose the parameter it takes:
+		//   UNiagaraNodeOp            -> op_name  (matches add_niagara_graph_node 'op_name')
+		//   UNiagaraNodeFunctionCall  -> function_script  (path to referenced script)
+		//   UNiagaraNodeInput         -> input_name + input_type
+		//   All templates             -> pin schema (name + type + direction)
 		if (UEdGraphNode* Template = Action->WeakNodeTemplate.Get())
 		{
 			J->SetStringField(TEXT("template_class"), Template->GetClass()->GetName());
+
+			FString ShortClass = Template->GetClass()->GetName();
+			ShortClass.RemoveFromStart(TEXT("NiagaraNode"));
+			J->SetStringField(TEXT("node_type"), ShortClass);
+
+			if (UNiagaraNodeOp* OpTmpl = Cast<UNiagaraNodeOp>(Template))
+			{
+				J->SetStringField(TEXT("op_name"), OpTmpl->OpName.ToString());
+			}
+			else if (UNiagaraNodeFunctionCall* FnTmpl = Cast<UNiagaraNodeFunctionCall>(Template))
+			{
+				if (FnTmpl->FunctionScript)
+				{
+					J->SetStringField(TEXT("function_script"),
+						FnTmpl->FunctionScript->GetPathName());
+				}
+				J->SetStringField(TEXT("function_display_name"), FnTmpl->GetFunctionName());
+			}
+			else if (UNiagaraNodeInput* InTmpl = Cast<UNiagaraNodeInput>(Template))
+			{
+				J->SetStringField(TEXT("input_name"), InTmpl->Input.GetName().ToString());
+				J->SetStringField(TEXT("input_type"), InTmpl->Input.GetType().GetName());
+			}
+
+			// Pin schema for every template — tells the caller which pins
+			// will be exposed after add_niagara_graph_node runs.
+			TArray<TSharedPtr<FJsonValue>> Inputs, Outputs;
+			for (UEdGraphPin* Pin : Template->Pins)
+			{
+				if (!Pin || Pin->PinName == NAME_None) continue;
+				auto PinObj = MakeShared<FJsonObject>();
+				PinObj->SetStringField(TEXT("name"), Pin->PinName.ToString());
+				const FNiagaraTypeDefinition TypeDef =
+					UEdGraphSchema_Niagara::PinTypeToTypeDefinition(Pin->PinType);
+				PinObj->SetStringField(TEXT("type"),
+					TypeDef.IsValid() ? TypeDef.GetName() : Pin->PinType.PinCategory.ToString());
+				if (!Pin->DefaultValue.IsEmpty())
+				{
+					PinObj->SetStringField(TEXT("default"), Pin->DefaultValue);
+				}
+				if (Pin->Direction == EGPD_Input)
+				{
+					Inputs.Add(MakeShared<FJsonValueObject>(PinObj));
+				}
+				else
+				{
+					Outputs.Add(MakeShared<FJsonValueObject>(PinObj));
+				}
+			}
+			if (Inputs.Num() > 0)  J->SetArrayField(TEXT("inputs"), Inputs);
+			if (Outputs.Num() > 0) J->SetArrayField(TEXT("outputs"), Outputs);
 		}
 		Results.Add(MakeShared<FJsonValueObject>(J));
 	}
@@ -655,17 +719,44 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleDescribeNiagaraType
 	}
 
 	FNiagaraTypeDefinition TypeDef;
-	if (!NiagaraIntrospection::ResolveTypeName(TypeName, TypeDef))
+	if (NiagaraIntrospection::ResolveTypeName(TypeName, TypeDef))
 	{
-		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
-			FString::Printf(TEXT("Unknown Niagara type '%s'"), *TypeName));
+		auto Result = MakeShared<FJsonObject>();
+		Result->SetBoolField(TEXT("success"), true);
+		Result->SetStringField(TEXT("type"), TypeName);
+		Result->SetObjectField(TEXT("schema"), NiagaraIntrospection::SerializeNiagaraType(TypeDef));
+		return Result;
 	}
 
-	auto Result = MakeShared<FJsonObject>();
-	Result->SetBoolField(TEXT("success"), true);
-	Result->SetStringField(TEXT("type"), TypeName);
-	Result->SetObjectField(TEXT("schema"), NiagaraIntrospection::SerializeNiagaraType(TypeDef));
-	return Result;
+	// Fallback: the type isn't a registered FNiagaraTypeDefinition (which
+	// only covers types usable as Niagara pins), but it might be a plain
+	// UEnum or UScriptStruct the caller wants schema for — e.g. script
+	// property enums like ENiagaraScriptLibraryVisibility or any custom
+	// project enum. Use direct reflection via FindFirstObjectSafe.
+	if (UEnum* Enum = FindFirstObjectSafe<UEnum>(*TypeName, EFindFirstObjectOptions::ExactClass))
+	{
+		auto Result = MakeShared<FJsonObject>();
+		Result->SetBoolField(TEXT("success"), true);
+		Result->SetStringField(TEXT("type"), TypeName);
+		Result->SetStringField(TEXT("resolved_as"), TEXT("uenum_reflection"));
+		Result->SetObjectField(TEXT("schema"), NiagaraIntrospection::SerializeEnum(Enum));
+		return Result;
+	}
+	if (UScriptStruct* Struct = FindFirstObjectSafe<UScriptStruct>(*TypeName, EFindFirstObjectOptions::ExactClass))
+	{
+		auto Result = MakeShared<FJsonObject>();
+		Result->SetBoolField(TEXT("success"), true);
+		Result->SetStringField(TEXT("type"), TypeName);
+		Result->SetStringField(TEXT("resolved_as"), TEXT("uscriptstruct_reflection"));
+		Result->SetObjectField(TEXT("schema"),
+			NiagaraIntrospection::SerializeStructFields(Struct, nullptr, FString(), true, 0));
+		return Result;
+	}
+
+	return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+		FString::Printf(
+			TEXT("Unknown type '%s' — not in FNiagaraTypeRegistry, not a findable UEnum/UScriptStruct. For custom enums, pass the exact UEnum name (e.g. ENiagaraScriptLibraryVisibility)."),
+			*TypeName));
 #else
 	return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Editor-only operation"));
 #endif

@@ -21,6 +21,9 @@
 
 #include "EdGraph/EdGraphPin.h"
 #include "ScopedTransaction.h"
+#include "NiagaraEditorUtilities.h"
+#include "AssetRegistry/AssetData.h"
+#include "NiagaraStackPathResolver.h"
 
 #if WITH_EDITORONLY_DATA
 #include "NiagaraSystemEditorData.h"
@@ -884,6 +887,9 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleGetNiagaraModuleInp
 	FString InputFilter;
 	Params->TryGetStringField(TEXT("input_filter"), InputFilter);
 
+	bool bIncludeSchema = false;
+	Params->TryGetBoolField(TEXT("include_schema"), bIncludeSchema);
+
 	bool bUsageOk = false;
 	ENiagaraScriptUsage Usage = NiagaraHelpers::ParseScriptUsage(ScriptUsageStr, bUsageOk);
 	if (!bUsageOk)
@@ -974,8 +980,12 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleGetNiagaraModuleInp
 			// the full schema regardless of type.
 			if (UEnum* EnumPtr = Cast<UEnum>(SubObj))
 			{
-				InputObj->SetObjectField(TEXT("type_schema"),
-					NiagaraIntrospection::SerializeEnum(EnumPtr));
+				if (bIncludeSchema)
+				{
+					InputObj->SetObjectField(TEXT("type_schema"),
+						NiagaraIntrospection::SerializeEnum(EnumPtr));
+				}
+				
 				if (!Pin->DefaultValue.IsEmpty())
 				{
 					const int64 CurrentVal = EnumPtr->GetValueByName(FName(*Pin->DefaultValue));
@@ -988,12 +998,15 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleGetNiagaraModuleInp
 			}
 			else if (UScriptStruct* StructPtr = Cast<UScriptStruct>(SubObj))
 			{
-				InputObj->SetObjectField(TEXT("type_schema"),
-					NiagaraIntrospection::SerializeStructFields(StructPtr));
+				if (bIncludeSchema)
+				{
+					InputObj->SetObjectField(TEXT("type_schema"),
+						NiagaraIntrospection::SerializeStructFields(StructPtr));
+				}
 			}
 			else if (UClass* ClassPtr = Cast<UClass>(SubObj))
 			{
-				if (ClassPtr->IsChildOf(UNiagaraDataInterface::StaticClass()))
+				if (bIncludeSchema && ClassPtr->IsChildOf(UNiagaraDataInterface::StaticClass()))
 				{
 					InputObj->SetObjectField(TEXT("type_schema"),
 						NiagaraIntrospection::SerializeDataInterfaceClass(ClassPtr));
@@ -1043,8 +1056,13 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleGetNiagaraModuleInp
 			InputObj->SetStringField(TEXT("aliased_name"), FullName);
 			InputObj->SetStringField(TEXT("type"), Var.GetType().GetName());
 			InputObj->SetStringField(TEXT("source"), TEXT("parameter_map_input"));
-			InputObj->SetObjectField(TEXT("type_schema"),
-				NiagaraIntrospection::SerializeNiagaraType(Var.GetType()));
+			
+			if (bIncludeSchema)
+			{
+				InputObj->SetObjectField(TEXT("type_schema"),
+					NiagaraIntrospection::SerializeNiagaraType(Var.GetType()));
+			}
+			
 			InputsArray.Add(MakeShared<FJsonValueObject>(InputObj));
 		}
 	}
@@ -1150,6 +1168,89 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleSetNiagaraModuleInp
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FindError);
 	}
 
+	// Nested-path literal setter (Gap #16 fix): when the input_name contains
+	// dot segments like "Spawn Count.int32001", we can't route through the
+	// rapid-iteration store — that aliasing only exists for top-level
+	// stack inputs. Instead, descend to the leaf dynamic-input call and
+	// write the value directly to the override pin's DefaultValue (or
+	// create the pin if missing). This is what the editor does when you
+	// type a literal into a nested dynamic input's input field.
+	if (InputName.Contains(TEXT(".")))
+	{
+		FString LeafName, DescentError;
+		UNiagaraNodeFunctionCall* LeafCall =
+			NiagaraStackPath::DescendNestedPath(*ModuleNode, InputName, LeafName, DescentError);
+		if (!LeafCall)
+		{
+			return FEpicUnrealMCPCommonUtils::CreateErrorResponse(DescentError);
+		}
+
+		// Resolve the leaf input's type via GetStackFunctionInputs.
+		TArray<FNiagaraVariable> LeafInputs;
+		TSet<FNiagaraVariable> LeafHidden;
+		FCompileConstantResolver Resolver;
+		FNiagaraStackGraphUtilities::GetStackFunctionInputs(
+			*LeafCall, LeafInputs, LeafHidden, Resolver,
+			FNiagaraStackGraphUtilities::ENiagaraGetStackFunctionInputPinsOptions::AllInputs,
+			/*bIgnoreDisabled=*/true);
+
+		FNiagaraTypeDefinition LeafType;
+		const FString ModulePrefixed = FString::Printf(TEXT("Module.%s"), *LeafName);
+		for (const FNiagaraVariable& V : LeafInputs)
+		{
+			if (V.GetName().ToString().Equals(ModulePrefixed, ESearchCase::IgnoreCase))
+			{
+				LeafType = V.GetType();
+				break;
+			}
+		}
+		if (!LeafType.IsValid())
+		{
+			return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+				FString::Printf(TEXT("Leaf input '%s' not found on dynamic input"), *LeafName));
+		}
+
+		const FNiagaraParameterHandle Aliased =
+			FNiagaraParameterHandle::CreateAliasedModuleParameterHandle(
+				FNiagaraParameterHandle(FName(*ModulePrefixed)), LeafCall);
+
+		// Get-or-create the override pin so the value sticks even if no
+		// override existed before.
+		UEdGraphPin& OverridePin =
+			FNiagaraStackGraphUtilities::GetOrCreateStackFunctionInputOverridePin(
+				*LeafCall, Aliased, LeafType, FGuid(), FGuid());
+
+		FString ValueStr;
+		Params->TryGetStringField(TEXT("value"), ValueStr);
+		if (ValueStr.IsEmpty())
+		{
+			TSharedPtr<FJsonValue> RawVal = Params->TryGetField(TEXT("value"));
+			if (RawVal.IsValid()) RawVal->TryGetString(ValueStr);
+		}
+
+		LeafCall->Modify();
+		OverridePin.GetOwningNode()->Modify();
+		OverridePin.Modify();
+		OverridePin.BreakAllPinLinks();
+		OverridePin.DefaultValue = ValueStr;
+		LeafCall->GetGraph()->NotifyGraphChanged();
+		if (UNiagaraScript* OwningScript = EmitterData->GetScript(Usage, FGuid()))
+		{
+			OwningScript->MarkPackageDirty();
+			OwningScript->PostEditChange();
+		}
+		NiagaraHelpers::CompileAndSync(System, false);
+
+		auto R = MakeShared<FJsonObject>();
+		R->SetBoolField(TEXT("success"), true);
+		R->SetStringField(TEXT("input_name"), InputName);
+		R->SetStringField(TEXT("leaf_name"), LeafName);
+		R->SetStringField(TEXT("value"), ValueStr);
+		R->SetStringField(TEXT("type"), LeafType.GetName());
+		R->SetStringField(TEXT("path"), TEXT("nested_override_pin_default"));
+		return R;
+	}
+
 	// Find the input pin
 	UEdGraphPin* InputPin = nullptr;
 	for (UEdGraphPin* Pin : ModuleNode->Pins)
@@ -1164,31 +1265,15 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleSetNiagaraModuleInp
 
 	if (!InputPin)
 	{
-		// Build list of available inputs for error message
-		FString AvailableInputs;
-		for (UEdGraphPin* Pin : ModuleNode->Pins)
-		{
-			if (Pin->Direction != EGPD_Input)
-			{
-				continue;
-			}
-
-			FString Category = Pin->PinType.PinCategory.ToString();
-			if (Category.Equals(TEXT("Misc"), ESearchCase::IgnoreCase))
-			{
-				continue;
-			}
-
-			if (!AvailableInputs.IsEmpty())
-			{
-				AvailableInputs += TEXT(", ");
-			}
-			AvailableInputs += Pin->PinName.ToString();
-		}
-
-		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
-			FString::Printf(TEXT("Input '%s' not found on module '%s'. Available: %s"),
-				*InputName, *ModuleName, *AvailableInputs));
+		// No direct function-call pin. The input is parameter_map_input source
+		// (Module.* aliased), routed through rapid iteration. Gap #14 fix:
+		// transparently delegate to HandleSetNiagaraRapidIterationParameter,
+		// which takes the same param shape and writes the value into the
+		// emitter's RapidIterationParameters store. This means
+		// set_niagara_module_input now handles BOTH input source types — the
+		// caller doesn't need to know whether an input is function_call_pin
+		// or parameter_map_input.
+		return HandleSetNiagaraRapidIterationParameter(Params);
 	}
 
 	FScopedTransaction Transaction(
@@ -1408,11 +1493,24 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleSetNiagaraDynamicIn
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FindError);
 	}
 
-	// Create the parameter handle for the input
+	// Nested-path resolution (Gap #10): "Spawn Count.Position Array" descends
+	// through dynamic-input chains so the new binding lands on the leaf
+	// input, not the outer module's input.
+	FString LeafInputName;
+	FString DescentError;
+	UNiagaraNodeFunctionCall* TargetCall =
+		NiagaraStackPath::DescendNestedPath(*ModuleNode, InputName, LeafInputName, DescentError);
+	if (!TargetCall)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(DescentError);
+	}
+
+	// Create the parameter handle for the (possibly leaf) input
 	FNiagaraParameterHandle InputHandle =
-		FNiagaraParameterHandle::CreateModuleParameterHandle(FName(*InputName));
+		FNiagaraParameterHandle::CreateModuleParameterHandle(FName(*LeafInputName));
 	FNiagaraParameterHandle AliasedHandle =
-		FNiagaraParameterHandle::CreateAliasedModuleParameterHandle(InputHandle, ModuleNode);
+		FNiagaraParameterHandle::CreateAliasedModuleParameterHandle(InputHandle, TargetCall);
+	ModuleNode = TargetCall; // remainder of handler operates on the leaf call
 
 	TSharedPtr<FJsonObject> Data = MakeShared<FJsonObject>();
 	Data->SetStringField(TEXT("module_name"), ModuleName);
@@ -1465,6 +1563,10 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleSetNiagaraDynamicIn
 			}
 		}
 
+		// First try the canonical engine path; fall back to asset-registry
+		// search filtered by DynamicInput usage + name pattern. Template
+		// paths aren't stable across UE versions / plugin layouts, so we
+		// rely on AssetRegistry as the authoritative source. Gap #11 fix.
 		FString RandomScriptPath = bIsVector
 			? TEXT("/Niagara/Modules/DynamicInputs/UniformRangedVector.UniformRangedVector")
 			: TEXT("/Niagara/Modules/DynamicInputs/UniformRangedFloat.UniformRangedFloat");
@@ -1472,8 +1574,40 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleSetNiagaraDynamicIn
 		UNiagaraScript* DynamicInputScript = LoadObject<UNiagaraScript>(nullptr, *RandomScriptPath);
 		if (!DynamicInputScript)
 		{
-			return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
-				FString::Printf(TEXT("Failed to load dynamic input script: %s"), *RandomScriptPath));
+			FNiagaraEditorUtilities::FGetFilteredScriptAssetsOptions Opts;
+			Opts.ScriptUsageToInclude = ENiagaraScriptUsage::DynamicInput;
+			Opts.bIncludeDeprecatedScripts = false;
+
+			TArray<FAssetData> DIAssets;
+			FNiagaraEditorUtilities::GetFilteredScriptAssets(Opts, DIAssets);
+
+			const TCHAR* WantSubstr = bIsVector ? TEXT("UniformRangedVector") : TEXT("UniformRangedFloat");
+			const TCHAR* FallbackSubstr = bIsVector ? TEXT("RangedVector") : TEXT("RangedFloat");
+
+			auto TryResolve = [&](const TCHAR* Substr) -> UNiagaraScript*
+			{
+				for (const FAssetData& Asset : DIAssets)
+				{
+					if (Asset.AssetName.ToString().Contains(Substr, ESearchCase::IgnoreCase))
+					{
+						if (UNiagaraScript* Loaded = Cast<UNiagaraScript>(Asset.GetAsset()))
+						{
+							return Loaded;
+						}
+					}
+				}
+				return nullptr;
+			};
+
+			DynamicInputScript = TryResolve(WantSubstr);
+			if (!DynamicInputScript) DynamicInputScript = TryResolve(FallbackSubstr);
+
+			if (!DynamicInputScript)
+			{
+				return FEpicUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+					TEXT("No dynamic-input template found for %s. Use resolve_niagara_built_in_dynamic_input with name_filter='Random' to discover available templates."),
+					WantSubstr));
+			}
 		}
 
 		FNiagaraTypeDefinition InputType = bIsVector

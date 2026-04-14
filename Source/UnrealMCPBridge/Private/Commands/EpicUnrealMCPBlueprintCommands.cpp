@@ -789,6 +789,19 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleGetAvailableMater
 		bIncludeEngineMaterials = Params->GetBoolField(TEXT("include_engine_materials"));
 	}
 
+	FString NameFilter;
+	Params->TryGetStringField(TEXT("filter"), NameFilter);
+
+	int32 MaxResults = 100;
+	if (Params->HasField(TEXT("max_results")))
+	{
+		double MaxResultsD = 100;
+		if (Params->TryGetNumberField(TEXT("max_results"), MaxResultsD))
+		{
+			MaxResults = static_cast<int32>(MaxResultsD);
+		}
+	}
+
 	FAssetRegistryModule& AssetRegistryModule =
 		FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
 	IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
@@ -866,6 +879,16 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPBlueprintCommands::HandleGetAvailableMater
 	TArray<TSharedPtr<FJsonValue>> MaterialArray;
 	for (const FAssetData& AssetData : AssetDataArray)
 	{
+		if (MaxResults > 0 && MaterialArray.Num() >= MaxResults)
+		{
+			break;
+		}
+
+		if (!NameFilter.IsEmpty() && !AssetData.AssetName.ToString().Contains(NameFilter, ESearchCase::IgnoreCase))
+		{
+			continue;
+		}
+
 		TSharedPtr<FJsonObject> MaterialObj = MakeShared<FJsonObject>();
 		MaterialObj->SetStringField(TEXT("name"), AssetData.AssetName.ToString());
 		MaterialObj->SetStringField(TEXT("path"), AssetData.GetObjectPathString());

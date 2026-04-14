@@ -153,12 +153,28 @@ def set_mesh_material_color(
 
 
 @mcp.tool()
-def get_available_materials(search_path: str = "/Game/", include_engine_materials: bool = True) -> str:
-    """List materials that can be applied to objects."""
-    return _call("get_available_materials", {
+def get_available_materials(
+    search_path: str = "/Game/",
+    include_engine_materials: bool = True,
+    filter: str | None = None,
+    max_results: int = 100,
+) -> str:
+    """List materials that can be applied to objects.
+
+    Args:
+        search_path: Content Browser root to scan (e.g. "/Game/Weapons/")
+        include_engine_materials: Include /Engine/ materials in results
+        filter: Case-insensitive substring match on material asset name
+        max_results: Cap on returned entries. 0 = unlimited (use sparingly)
+    """
+    params: dict = {
         "search_path": search_path,
         "include_engine_materials": include_engine_materials,
-    })
+        "max_results": max_results,
+    }
+    if filter is not None:
+        params["filter"] = filter
+    return _call("get_available_materials", params)
 
 
 @mcp.tool()

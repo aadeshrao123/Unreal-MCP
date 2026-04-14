@@ -91,18 +91,48 @@ static TSharedPtr<FJsonObject> RendererToJson(UNiagaraRendererProperties* Render
 		Obj->SetStringField(TEXT("type"), Renderer->GetClass()->GetName());
 	}
 
-	// Serialize attribute bindings (common ones)
+	// Serialize attribute bindings with full detail — each binding reports
+	// its UPROPERTY name (what set_niagara_renderer_binding accepts),
+	// bound attribute name, type, data-set accessor name, and whether it's
+	// currently explicit / particle / none. Walks the renderer CDO's
+	// FNiagaraVariableAttributeBinding UPROPERTYs by reflection so the
+	// binding's own display name comes through correctly.
 #if WITH_EDITORONLY_DATA
 	TArray<TSharedPtr<FJsonValue>> BindingsArr;
 	const TArray<const FNiagaraVariableAttributeBinding*>& AllBindings = Renderer->GetAttributeBindings();
+
+	// Build a pointer→property-name map via reflection so we can label each
+	// binding with its UPROPERTY name (e.g. "PositionBinding").
+	TMap<const FNiagaraVariableAttributeBinding*, FString> BindingNameMap;
+	for (TFieldIterator<FProperty> It(Renderer->GetClass()); It; ++It)
+	{
+		FStructProperty* SP = CastField<FStructProperty>(*It);
+		if (!SP || !SP->Struct) continue;
+		if (SP->Struct->GetFName() != FName(TEXT("NiagaraVariableAttributeBinding"))) continue;
+		const FNiagaraVariableAttributeBinding* BindPtr =
+			SP->ContainerPtrToValuePtr<FNiagaraVariableAttributeBinding>(Renderer);
+		BindingNameMap.Add(BindPtr, SP->GetName());
+	}
+
 	for (const FNiagaraVariableAttributeBinding* Binding : AllBindings)
 	{
-		if (!Binding)
-		{
-			continue;
-		}
+		if (!Binding) continue;
 		auto BindObj = MakeShared<FJsonObject>();
-		BindObj->SetStringField(TEXT("bound_variable"), Binding->GetParamMapBindableVariable().GetName().ToString());
+		const FNiagaraVariable BoundVar = Binding->GetParamMapBindableVariable();
+		BindObj->SetStringField(TEXT("bound_variable"), BoundVar.GetName().ToString());
+		if (BoundVar.GetType().IsValid())
+		{
+			BindObj->SetStringField(TEXT("bound_variable_type"), BoundVar.GetType().GetName());
+		}
+		if (const FString* Name = BindingNameMap.Find(Binding))
+		{
+			BindObj->SetStringField(TEXT("binding_name"), *Name);
+		}
+		const FNiagaraVariableBase DataSetVar = Binding->GetDataSetBindableVariable();
+		if (DataSetVar.GetName() != NAME_None)
+		{
+			BindObj->SetStringField(TEXT("dataset_variable"), DataSetVar.GetName().ToString());
+		}
 		BindingsArr.Add(MakeShared<FJsonValueObject>(BindObj));
 	}
 	Obj->SetArrayField(TEXT("bindings"), BindingsArr);

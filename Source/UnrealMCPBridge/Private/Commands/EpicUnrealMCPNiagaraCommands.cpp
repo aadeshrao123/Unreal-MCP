@@ -229,6 +229,88 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleCommand(
 		return HandleRemoveNiagaraCustomHlslPin(Params);
 	}
 
+	// ---- Graph introspection (scratch pad / script graphs) ----
+	else if (CommandType == TEXT("get_niagara_graph_nodes"))
+	{
+		return HandleGetNiagaraGraphNodes(Params);
+	}
+	else if (CommandType == TEXT("get_niagara_node_info"))
+	{
+		return HandleGetNiagaraNodeInfo(Params);
+	}
+	else if (CommandType == TEXT("trace_niagara_connection"))
+	{
+		return HandleTraceNiagaraConnection(Params);
+	}
+	else if (CommandType == TEXT("validate_niagara_graph"))
+	{
+		return HandleValidateNiagaraGraph(Params);
+	}
+	else if (CommandType == TEXT("apply_niagara_scratch_pad"))
+	{
+		return HandleApplyNiagaraScratchPad(Params);
+	}
+	else if (CommandType == TEXT("apply_and_save_niagara_scratch_pad"))
+	{
+		return HandleApplyAndSaveNiagaraScratchPad(Params);
+	}
+	else if (CommandType == TEXT("get_niagara_script_properties"))
+	{
+		return HandleGetNiagaraScriptProperties(Params);
+	}
+	else if (CommandType == TEXT("set_niagara_script_properties"))
+	{
+		return HandleSetNiagaraScriptProperties(Params);
+	}
+	else if (CommandType == TEXT("list_niagara_script_parameters"))
+	{
+		return HandleListNiagaraScriptParameters(Params);
+	}
+	else if (CommandType == TEXT("add_niagara_script_parameter"))
+	{
+		return HandleAddNiagaraScriptParameter(Params);
+	}
+	else if (CommandType == TEXT("remove_niagara_script_parameter"))
+	{
+		return HandleRemoveNiagaraScriptParameter(Params);
+	}
+	else if (CommandType == TEXT("rename_niagara_script_parameter"))
+	{
+		return HandleRenameNiagaraScriptParameter(Params);
+	}
+	else if (CommandType == TEXT("add_niagara_graph_node"))
+	{
+		return HandleAddNiagaraGraphNode(Params);
+	}
+	else if (CommandType == TEXT("delete_niagara_graph_node"))
+	{
+		return HandleDeleteNiagaraGraphNode(Params);
+	}
+	else if (CommandType == TEXT("get_niagara_module_input_binding"))
+	{
+		return HandleGetNiagaraModuleInputBinding(Params);
+	}
+	else if (CommandType == TEXT("clear_niagara_module_input"))
+	{
+		return HandleClearNiagaraModuleInput(Params);
+	}
+	else if (CommandType == TEXT("list_niagara_input_source_menu"))
+	{
+		return HandleListNiagaraInputSourceMenu(Params);
+	}
+	else if (CommandType == TEXT("find_niagara_scratch_pad_usage"))
+	{
+		return HandleFindNiagaraScratchPadUsage(Params);
+	}
+	else if (CommandType == TEXT("resolve_niagara_built_in_dynamic_input"))
+	{
+		return HandleResolveNiagaraBuiltInDynamicInput(Params);
+	}
+	else if (CommandType == TEXT("list_niagara_data_interface_functions"))
+	{
+		return HandleListNiagaraDataInterfaceFunctions(Params);
+	}
+
 	// ---- Node discovery & schema introspection ----
 	else if (CommandType == TEXT("list_niagara_node_types"))
 	{

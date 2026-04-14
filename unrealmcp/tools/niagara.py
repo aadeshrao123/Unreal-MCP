@@ -387,6 +387,7 @@ def get_niagara_module_inputs(
     module_name: str,
     script_usage: str,
     input_filter: str | None = None,
+    include_schema: bool = False,
 ) -> str:
     """Get all input parameters for a specific module.
 
@@ -396,12 +397,14 @@ def get_niagara_module_inputs(
         module_name: Name of the module
         script_usage: Stack the module is in
         input_filter: Optional substring filter on input parameter names
+        include_schema: If true, include massive structural type schemas for inputs
     """
     params: dict = {
         "system_path": system_path,
         "emitter_name": emitter_name,
         "module_name": module_name,
         "script_usage": script_usage,
+        "include_schema": include_schema,
     }
     if input_filter is not None:
         params["input_filter"] = input_filter
@@ -579,13 +582,36 @@ def add_niagara_user_parameter(
     parameter_type: str,
     default_value: str | None = None,
 ) -> str:
-    """Add a user parameter to a Niagara System.
+    """Add a user parameter to a Niagara System. Supports every type the editor's
+    User Parameters "+" menu can add — primitives, structs, enums, and Data Interfaces.
+
+    Use list_niagara_parameter_types to discover valid type names before calling.
 
     Args:
         system_path: Path to the Niagara System asset
-        parameter_name: Name for the new parameter
-        parameter_type: Type — Float, Vector, Color, Bool, Int32, Texture2D, StaticMesh, etc.
-        default_value: Optional default value as string
+        parameter_name: Name for the new parameter (auto-prefixed with "User.")
+        parameter_type: Type name. Resolved via NiagaraTypeRegistry, so anything
+            Niagara registered is valid. Examples:
+              - Primitives: "float", "int", "bool", "Vector2", "Vector", "Vector4",
+                "LinearColor", "Quat", "Position", "Matrix"
+              - Niagara structs: "NiagaraID", "NiagaraRandInfo", "NiagaraSpawnInfo"
+              - Enums: "ENiagaraExecutionState", any registered UEnum path
+              - Data Interfaces (bare or prefixed):
+                "ArrayFloat", "ArrayVector", "ArrayVector4", "ArrayInt32",
+                "Curve", "Vector2DCurve", "VectorCurve", "Vector4Curve",
+                "CurlNoise", "Grid2D", "Grid3D", "SkeletalMesh", "StaticMesh",
+                "Texture", "TextureCube", "VolumeTexture", "Texture2DArray",
+                "RenderTarget2D", "SplineComponent", "Camera", "Collision",
+                "PhysicsAsset", "Spline", and any other NiagaraDataInterface subclass
+                including plugin-provided ones.
+        default_value: Optional default. For scalars pass as string or number;
+            for vector/color/struct pass UE-standard text form like "(X=1,Y=2,Z=3)"
+            or "(R=1,G=0.5,B=0,A=1)". Data interfaces use the CDO defaults — use
+            set_niagara_user_parameter afterwards for richer initialization.
+
+    Returns the created parameter with its resolved type name, kind
+    (primitive / struct / enum / data_interface / object), size_bytes, and
+    (for DIs) class_path.
     """
     params: dict = {
         "system_path": system_path,
@@ -1055,15 +1081,30 @@ def list_niagara_data_interfaces(
 @mcp.tool()
 def list_niagara_parameter_types(
     scope: str = "user",
+    kind: str = "all",
     filter: str | None = None,
+    max_results: int = 500,
 ) -> str:
-    """List available Niagara parameter types and their valid scopes.
+    """Live query of FNiagaraTypeRegistry — every type the editor's User Parameters
+    "+" menu can add, including plugin-registered Data Interfaces.
 
     Args:
-        scope: Parameter scope — "user", "system", "emitter", "particle", "all"
-        filter: Optional substring filter on type name
+        scope: Which registry slice to query. "user" (default) = types addable as
+            User.* parameters. Other scopes: "system", "emitter", "particle",
+            "parameter", "payload", "numeric", "index", "all".
+        kind: Filter by classification — "primitive", "struct", "enum",
+            "data_interface", "object", or "all" (default).
+        filter: Case-insensitive substring match on type name. For data interfaces
+            also matches against the short name (without the "NiagaraDataInterface" prefix),
+            so filter="ArrayFloat" finds NiagaraDataInterfaceArrayFloat.
+        max_results: Cap on returned entries (default 500).
+
+    Returns entries with name, kind, size_bytes, plus:
+        - data_interface: class_path, short_name, category, description
+        - enum: enum_path, num_entries
+        - struct: struct_path, description
     """
-    params: dict = {"scope": scope}
+    params: dict = {"scope": scope, "kind": kind, "max_results": max_results}
     if filter is not None:
         params["filter"] = filter
     return _call("list_niagara_parameter_types", params)
@@ -1426,12 +1467,660 @@ def rename_niagara_scratch_pad_module(
 
 
 @mcp.tool()
+def get_niagara_graph_nodes(
+    system_path: str | None = None,
+    module_name: str | None = None,
+    script_path: str | None = None,
+    emitter_name: str | None = None,
+    script_usage: str | None = None,
+    verbosity: str = "connections",
+    type_filter: str | None = None,
+    name_filter: str | None = None,
+) -> str:
+    """Introspect every node inside a Niagara graph.
+
+    Three resolver modes:
+      1. system_path + module_name        — scratch pad module graph
+      2. system_path + emitter_name + script_usage — EMITTER STACK GRAPH
+         (emitter_spawn|emitter_update|particle_spawn|particle_update),
+         where stack modules appear as NiagaraNodeFunctionCall nodes
+      3. script_path                      — standalone UNiagaraScript asset
+
+    Args:
+        system_path: Niagara System asset path
+        module_name: Scratch pad module name (mode 1)
+        emitter_name + script_usage: Emitter stack graph (mode 2)
+        script_path: Standalone script asset (mode 3)
+        verbosity: "summary" | "connections" (default) | "full"
+        type_filter: Case-insensitive substring on short class name
+        name_filter: Case-insensitive substring on node title
+    """
+    params: dict = {"verbosity": verbosity}
+    if system_path:
+        params["system_path"] = system_path
+    if module_name:
+        params["module_name"] = module_name
+    if script_path:
+        params["script_path"] = script_path
+    if emitter_name:
+        params["emitter_name"] = emitter_name
+    if script_usage:
+        params["script_usage"] = script_usage
+    if type_filter:
+        params["type_filter"] = type_filter
+    if name_filter:
+        params["name_filter"] = name_filter
+    return _call("get_niagara_graph_nodes", params)
+
+
+@mcp.tool()
+def get_niagara_node_info(
+    system_path: str | None = None,
+    module_name: str | None = None,
+    script_path: str | None = None,
+    node_index: int | None = None,
+    node_class: str | None = None,
+    node_id: str | None = None,
+) -> str:
+    """Deep inspect a single Niagara node: full pin layout, connections, type-specific detail.
+
+    Provide exactly one of node_index / node_class / node_id.
+
+    Args:
+        system_path + module_name: Resolve scratch pad module (one option)
+        script_path: Resolve standalone script asset (alternative)
+        node_index: Ordinal index into Graph->Nodes (stable per session)
+        node_class: Short ("MapGet") or full ("NiagaraNodeParameterMapGet")
+        node_id: FGuid string matching UEdGraphNode::NodeGuid
+    """
+    params: dict = {}
+    if system_path:
+        params["system_path"] = system_path
+    if module_name:
+        params["module_name"] = module_name
+    if script_path:
+        params["script_path"] = script_path
+    if node_index is not None:
+        params["node_index"] = node_index
+    if node_class:
+        params["node_class"] = node_class
+    if node_id:
+        params["node_id"] = node_id
+    return _call("get_niagara_node_info", params)
+
+
+@mcp.tool()
+def trace_niagara_connection(
+    system_path: str | None = None,
+    module_name: str | None = None,
+    script_path: str | None = None,
+    node_index: int | None = None,
+    node_class: str | None = None,
+    node_id: str | None = None,
+    direction: str = "both",
+    max_depth: int = 8,
+    pin_name: str | None = None,
+) -> str:
+    """Breadth-first trace of connections from a starting node through the graph.
+
+    Answers "what feeds this node?" (upstream) and "where does this node's
+    output go?" (downstream). Each visited node reports its depth, so the
+    dependency chain is visible without dumping the whole graph.
+
+    Args:
+        system_path + module_name OR script_path: Graph resolver
+        node_index / node_class / node_id: Starting node identifier
+        direction: "upstream" | "downstream" | "both" (default)
+        max_depth: Max BFS depth (default 8)
+        pin_name: Optional starting-pin filter — only walk links on pins whose
+                  name contains this substring (e.g. "Vector Array")
+    """
+    params: dict = {"direction": direction, "max_depth": max_depth}
+    if system_path:
+        params["system_path"] = system_path
+    if module_name:
+        params["module_name"] = module_name
+    if script_path:
+        params["script_path"] = script_path
+    if node_index is not None:
+        params["node_index"] = node_index
+    if node_class:
+        params["node_class"] = node_class
+    if node_id:
+        params["node_id"] = node_id
+    if pin_name:
+        params["pin_name"] = pin_name
+    return _call("trace_niagara_connection", params)
+
+
+@mcp.tool()
+def validate_niagara_graph(
+    system_path: str | None = None,
+    module_name: str | None = None,
+    script_path: str | None = None,
+) -> str:
+    """Classify orphaned, dead-end, and missing-input nodes in a Niagara graph.
+
+    Returns three arrays:
+      orphaned       — nodes with no incoming or outgoing links (excl. anchors)
+      dead_ends      — non-anchor nodes with inputs connected but no outputs consumed
+      missing_inputs — nodes whose input pins have no link and no default value
+    """
+    params: dict = {}
+    if system_path:
+        params["system_path"] = system_path
+    if module_name:
+        params["module_name"] = module_name
+    if script_path:
+        params["script_path"] = script_path
+    return _call("validate_niagara_graph", params)
+
+
+@mcp.tool()
 def list_niagara_scratch_pad_modules(system_path: str) -> str:
     """List all scratch pad modules on a Niagara System.
 
     Returns name, path, usage, node counts, and custom HLSL node count per script.
     """
     return _call("list_niagara_scratch_pad_modules", {"system_path": system_path})
+
+
+@mcp.tool()
+def apply_niagara_scratch_pad(system_path: str, module_name: str) -> str:
+    """Commit a scratch pad module's edit-copy to the original script (Apply button).
+
+    Mirrors FNiagaraScratchPadScriptViewModel::ApplyChanges. Requires the
+    Niagara System to be open in the editor so the view model exists.
+    """
+    return _call("apply_niagara_scratch_pad", {
+        "system_path": system_path,
+        "module_name": module_name,
+    })
+
+
+@mcp.tool()
+def apply_and_save_niagara_scratch_pad(system_path: str, module_name: str) -> str:
+    """Apply a scratch pad module's edit-copy AND save the asset (Apply & Save button).
+
+    Mirrors FNiagaraScratchPadScriptViewModel::ApplyChangesAndSave.
+    """
+    return _call("apply_and_save_niagara_scratch_pad", {
+        "system_path": system_path,
+        "module_name": module_name,
+    })
+
+
+@mcp.tool()
+def get_niagara_script_properties(
+    system_path: str | None = None,
+    module_name: str | None = None,
+    script_path: str | None = None,
+) -> str:
+    """Read the details-panel properties of a Niagara script.
+
+    Returns Category, Description, Keywords, ModuleUsageBitmask,
+    ProvidedDependencies, RequiredDependencies, LibraryVisibility,
+    bDeprecated, DeprecationMessage, bExperimental, ExperimentalMessage,
+    NumericOutputTypeSelectionMode, ScriptMetaData, ConversionUtility.
+
+    All properties live on FVersionedNiagaraScriptData; output shape matches
+    NiagaraIntrospection::SerializeProperty (kind + value + schema fields).
+    """
+    params: dict = {}
+    if system_path:
+        params["system_path"] = system_path
+    if module_name:
+        params["module_name"] = module_name
+    if script_path:
+        params["script_path"] = script_path
+    return _call("get_niagara_script_properties", params)
+
+
+@mcp.tool()
+def set_niagara_script_properties(
+    properties: dict,
+    system_path: str | None = None,
+    module_name: str | None = None,
+    script_path: str | None = None,
+) -> str:
+    """Batch-set details-panel properties on a Niagara script.
+
+    Args:
+        properties: Dict of property name -> value. Supported:
+            Category (str), Description (str), Keywords (str),
+            ModuleUsageBitmask (int), ProvidedDependencies (list[str]),
+            RequiredDependencies (list[dict]), LibraryVisibility (str enum),
+            bDeprecated (bool), DeprecationMessage (str),
+            bExperimental (bool), ExperimentalMessage (str).
+        system_path + module_name: Resolve scratch pad module
+        script_path: OR resolve standalone script asset
+
+    ModuleUsageBitmask combines ENiagaraScriptUsage values; e.g. particle
+    spawn + update = (1<<3) | (1<<4).
+    """
+    params: dict = {"properties": properties}
+    if system_path:
+        params["system_path"] = system_path
+    if module_name:
+        params["module_name"] = module_name
+    if script_path:
+        params["script_path"] = script_path
+    return _call("set_niagara_script_properties", params)
+
+
+@mcp.tool()
+def list_niagara_script_parameters(
+    system_path: str | None = None,
+    module_name: str | None = None,
+    script_path: str | None = None,
+) -> str:
+    """List input + output parameters of a Niagara script.
+
+    Outputs come from UNiagaraNodeOutput::Outputs (the Output Dynamic Input
+    node for dynamic inputs, or Output Module for modules).
+    Inputs come from graph script variable metadata filtered to
+    Module.* / Input.* / User.* namespaces.
+
+    Useful for discovering what an "Add Parameter" dropdown would show or
+    for diff-auditing a graph before/after mutation.
+    """
+    params: dict = {}
+    if system_path:
+        params["system_path"] = system_path
+    if module_name:
+        params["module_name"] = module_name
+    if script_path:
+        params["script_path"] = script_path
+    return _call("list_niagara_script_parameters", params)
+
+
+@mcp.tool()
+def add_niagara_script_parameter(
+    name: str,
+    type: str,
+    direction: str = "output",
+    system_path: str | None = None,
+    module_name: str | None = None,
+    script_path: str | None = None,
+) -> str:
+    """Add an input or output parameter to a Niagara script.
+
+    For a dynamic input, "output" adds a new entry to the Output Dynamic
+    Input node (screenshot 5's "Add Parameter" dropdown). Type must be a
+    name registered in FNiagaraTypeRegistry — use list_niagara_parameter_types
+    to discover valid options (e.g. "float", "Vector", "LinearColor", "Quat",
+    "Position", "NiagaraID", "Matrix").
+
+    Args:
+        name: Parameter name (input names without namespace prefix become Module.<name>)
+        type: Niagara type name
+        direction: "output" (default — appends to output node) | "input"
+    """
+    params: dict = {"name": name, "type": type, "direction": direction}
+    if system_path:
+        params["system_path"] = system_path
+    if module_name:
+        params["module_name"] = module_name
+    if script_path:
+        params["script_path"] = script_path
+    return _call("add_niagara_script_parameter", params)
+
+
+@mcp.tool()
+def remove_niagara_script_parameter(
+    name: str,
+    direction: str = "output",
+    system_path: str | None = None,
+    module_name: str | None = None,
+    script_path: str | None = None,
+) -> str:
+    """Remove a named input or output parameter from a Niagara script."""
+    params: dict = {"name": name, "direction": direction}
+    if system_path:
+        params["system_path"] = system_path
+    if module_name:
+        params["module_name"] = module_name
+    if script_path:
+        params["script_path"] = script_path
+    return _call("remove_niagara_script_parameter", params)
+
+
+@mcp.tool()
+def rename_niagara_script_parameter(
+    old_name: str,
+    new_name: str,
+    direction: str = "output",
+    system_path: str | None = None,
+    module_name: str | None = None,
+    script_path: str | None = None,
+) -> str:
+    """Rename a script parameter in-place across both asset and edit-copy graphs."""
+    params: dict = {"old_name": old_name, "new_name": new_name, "direction": direction}
+    if system_path:
+        params["system_path"] = system_path
+    if module_name:
+        params["module_name"] = module_name
+    if script_path:
+        params["script_path"] = script_path
+    return _call("rename_niagara_script_parameter", params)
+
+
+@mcp.tool()
+def add_niagara_graph_node(
+    node_type: str,
+    system_path: str | None = None,
+    module_name: str | None = None,
+    script_path: str | None = None,
+    pos_x: int = 0,
+    pos_y: int = 0,
+    op_name: str | None = None,
+    function_script: str | None = None,
+    input_name: str | None = None,
+    input_type: str | None = None,
+    di_class: str | None = None,
+    function_name: str | None = None,
+) -> str:
+    """Create a new node inside a Niagara scratch-pad / dynamic-input / module graph.
+
+    Mirrors the node-creation pattern used by the Niagara editor schema actions
+    (FGraphNodeCreator + AllocateDefaultPins + NotifyGraphChanged). Spawns on
+    both asset and edit-copy graphs when a system is open.
+
+    Args:
+        node_type: One of "Op", "FunctionCall", "DataInterfaceFunction",
+                   "ParameterMapGet", "ParameterMapSet", "Reroute", "Input"
+        pos_x, pos_y: Graph position
+        op_name: (node_type=Op) — discover via get_niagara_schema_actions
+                 (e.g. "Numeric::Add", "Numeric::Mul", "Numeric::Length")
+        function_script: (node_type=FunctionCall) UNiagaraScript asset path
+        input_name + input_type: (node_type=Input) variable name + Niagara type
+        di_class + function_name: (node_type=DataInterfaceFunction) — wraps a
+                 data-interface member function. Discover via
+                 list_niagara_data_interface_functions. Examples:
+                 di_class="NiagaraDataInterfaceArrayPosition", function_name="Length"
+
+    Use list_niagara_script_parameters after to verify the pin layout.
+    """
+    params: dict = {"node_type": node_type, "pos_x": pos_x, "pos_y": pos_y}
+    if system_path:
+        params["system_path"] = system_path
+    if module_name:
+        params["module_name"] = module_name
+    if script_path:
+        params["script_path"] = script_path
+    if op_name:
+        params["op_name"] = op_name
+    if function_script:
+        params["function_script"] = function_script
+    if input_name:
+        params["input_name"] = input_name
+    if input_type:
+        params["input_type"] = input_type
+    if di_class:
+        params["di_class"] = di_class
+    if function_name:
+        params["function_name"] = function_name
+    return _call("add_niagara_graph_node", params)
+
+
+@mcp.tool()
+def list_niagara_data_interface_functions(
+    di_class: str,
+    filter: str | None = None,
+    include_pins: bool = True,
+) -> str:
+    """Enumerate member functions on a Niagara data interface class.
+
+    These are the functions you see in the right-click "Functions" submenu
+    on a DI pin in the editor — built-in DI members like Array.Length,
+    Array.Get, Array.Add, etc. They aren't UNiagaraScript assets so they
+    don't show up in search_niagara_functions. Pass the result as
+    function_name to add_niagara_graph_node(node_type="DataInterfaceFunction").
+
+    Each entry reports:
+      - name: pass to function_name param
+      - inputs / outputs: pin schema with names + Niagara types
+      - supports_cpu / supports_gpu / read_function / write_function
+      - description (when DI provides it)
+
+    Authoritative source: UNiagaraDataInterface::GetFunctionSignatures
+    (NIAGARA_API exported, NiagaraDataInterface.h:681).
+
+    Args:
+        di_class: Short ("NiagaraDataInterfaceArrayPosition") or full path
+        filter: Optional substring on function name (e.g. "Length", "Get")
+        include_pins: Default True — include input/output pin schema
+    """
+    params: dict = {"di_class": di_class, "include_pins": include_pins}
+    if filter:
+        params["filter"] = filter
+    return _call("list_niagara_data_interface_functions", params)
+
+
+@mcp.tool()
+def delete_niagara_graph_node(
+    system_path: str | None = None,
+    module_name: str | None = None,
+    script_path: str | None = None,
+    node_index: int | None = None,
+    node_id: str | None = None,
+) -> str:
+    """Delete a node from a Niagara graph (asset + edit-copy).
+
+    Provide node_index (ordinal) OR node_id (FGuid string from
+    get_niagara_graph_nodes).
+    """
+    params: dict = {}
+    if system_path:
+        params["system_path"] = system_path
+    if module_name:
+        params["module_name"] = module_name
+    if script_path:
+        params["script_path"] = script_path
+    if node_index is not None:
+        params["node_index"] = node_index
+    if node_id:
+        params["node_id"] = node_id
+    return _call("delete_niagara_graph_node", params)
+
+
+@mcp.tool()
+def list_niagara_ops(
+    filter: str | None = None,
+    category: str | None = None,
+    exact_name: str | None = None,
+    include_pins: bool = True,
+    max_results: int = 500,
+) -> str:
+    """Enumerate all valid UNiagaraNodeOp operations from FNiagaraOpInfo registry.
+
+    This is the authoritative source the editor's context menu reads from —
+    use it BEFORE calling add_niagara_graph_node with node_type="Op" so you
+    pass a real op_name (e.g. "Numeric::Mul" vs the invalid "Numeric::Multiply").
+
+    Each entry reports: name (for op_name param), friendly_name, category,
+    description, keywords, alternate_name, compact_name, supports_added_inputs,
+    and — when include_pins=True — full input/output pin schema with types
+    and defaults.
+
+    Args:
+        filter: Case-insensitive substring, matches name / friendly_name /
+                category / description / keywords / alternate name. E.g.
+                "multiply" finds "Numeric::Mul" via its friendly name.
+        category: Exact category match (e.g. "Math", "Comparison", "Boolean",
+                  "Vector", "Quaternion"). Use the all_categories field in a
+                  first response to discover valid values.
+        exact_name: Return the single op whose internal Name equals this
+                    string (bypasses other filters).
+        include_pins: Include inputs/outputs per op (default True).
+        max_results: Cap on returned entries (default 500).
+    """
+    params: dict = {"include_pins": include_pins, "max_results": max_results}
+    if filter:
+        params["filter"] = filter
+    if category:
+        params["category"] = category
+    if exact_name:
+        params["exact_name"] = exact_name
+    return _call("list_niagara_ops", params)
+
+
+@mcp.tool()
+def get_niagara_module_input_binding(
+    system_path: str,
+    emitter_name: str,
+    module_name: str,
+    script_usage: str,
+    input_filter: str | None = None,
+    max_depth: int = 3,
+) -> str:
+    """Resolve the actual binding of each module input — Default/Local/Linked/Dynamic/Data.
+
+    This answers "what is Spawn Count actually driven by?" — something
+    get_niagara_module_inputs + get_niagara_rapid_iteration_parameters can't
+    do on their own. Returns per-input:
+      - mode: default | local | linked | dynamic | data | function_call | expression | unknown
+      - value: literal string when mode=local
+      - linked_parameter: full parameter name when mode=linked/data
+      - script_path + function_name: when mode=dynamic/function_call
+      - children: recursive — for dynamic inputs, lists their own bound inputs
+
+    Uses FNiagaraStackGraphUtilities::GetStackFunctionInputs (exported) and
+    replicates GetStackFunctionInputOverridePin manually (non-exported).
+
+    Args:
+        system_path: Niagara System asset
+        emitter_name: Emitter in the system
+        module_name: Module display name (e.g. "SpawnPerFrame")
+        script_usage: emitter_spawn|emitter_update|particle_spawn|particle_update|
+                      system_spawn|system_update
+        input_filter: Case-insensitive substring on input name
+        max_depth: Recursive descent cap for dynamic-input children (default 3)
+    """
+    params: dict = {
+        "system_path": system_path,
+        "emitter_name": emitter_name,
+        "module_name": module_name,
+        "script_usage": script_usage,
+        "max_depth": max_depth,
+    }
+    if input_filter:
+        params["input_filter"] = input_filter
+    return _call("get_niagara_module_input_binding", params)
+
+
+@mcp.tool()
+def clear_niagara_module_input(
+    system_path: str,
+    emitter_name: str,
+    module_name: str,
+    script_usage: str,
+    input_name: str,
+) -> str:
+    """Reset a module input to its default — equivalent to "Reset to Default" in the stack UI.
+
+    Finds the override pin, breaks its connections, removes any orphan
+    nodes that were exclusively feeding it (dynamic input node, map get,
+    custom HLSL, etc.), then removes the override pin itself from the
+    ParameterMapSet so the input reverts cleanly.
+
+    Supports nested path syntax: input_name="Spawn Count.Position Array"
+    clears the Position Array binding INSIDE the dynamic input attached
+    to Spawn Count — without touching Spawn Count's own binding.
+
+    Mirrors FNiagaraStackGraphUtilities::RemoveNodesForStackFunctionInputOverridePin
+    (non-exported — replicated here).
+    """
+    return _call("clear_niagara_module_input", {
+        "system_path": system_path,
+        "emitter_name": emitter_name,
+        "module_name": module_name,
+        "script_usage": script_usage,
+        "input_name": input_name,
+    })
+
+
+@mcp.tool()
+def list_niagara_input_source_menu(
+    system_path: str,
+    emitter_name: str,
+    module_name: str,
+    script_usage: str,
+    input_name: str,
+    name_filter: str | None = None,
+) -> str:
+    """Reproduce the stack-UI source dropdown for a specific input.
+
+    Returns the exact options the editor offers when you click the dropdown
+    on a stack input (screenshot reference: "Change Source" menu with
+    Dynamic Inputs / Link Inputs / Make sections). Output:
+      - input_type: the Niagara type of the target input (so you can filter)
+      - dynamic_inputs: every UNiagaraScript with Usage=DynamicInput,
+                        with script_path ready to pass to set_niagara_dynamic_input
+      - link_parameters: well-known engine/particle parameters + this system's
+                         user parameters, grouped by namespace
+
+    Discovery is via:
+      - FNiagaraEditorUtilities::GetFilteredScriptAssets (exported) for dynamic inputs
+      - FNiagaraConstants::GetEngineConstants / GetCommonParticleAttributes for
+        engine-side parameters
+      - UNiagaraSystem::GetExposedParameters for the system's own user params
+    """
+    params: dict = {
+        "system_path": system_path,
+        "emitter_name": emitter_name,
+        "module_name": module_name,
+        "script_usage": script_usage,
+        "input_name": input_name,
+    }
+    if name_filter:
+        params["name_filter"] = name_filter
+    return _call("list_niagara_input_source_menu", params)
+
+
+@mcp.tool()
+def find_niagara_scratch_pad_usage(system_path: str, module_name: str) -> str:
+    """Reverse lookup: find where a scratch pad script is referenced in the stack.
+
+    Scans every emitter/system script graph (system_spawn, system_update,
+    emitter_spawn, emitter_update, particle_spawn, particle_update) for
+    UNiagaraNodeFunctionCall nodes whose FunctionScript matches the named
+    scratch pad. Returns each site as {emitter, script_usage, function_name,
+    node_id, is_dynamic_input}.
+
+    Use this to answer "what uses GetDataInterfaceLength?" without walking
+    every emitter manually.
+    """
+    return _call("find_niagara_scratch_pad_usage", {
+        "system_path": system_path,
+        "module_name": module_name,
+    })
+
+
+@mcp.tool()
+def resolve_niagara_built_in_dynamic_input(
+    name_filter: str | None = None,
+    exact_name: str | None = None,
+    max_results: int = 20,
+) -> str:
+    """Discover built-in dynamic-input script asset paths via AssetRegistry.
+
+    Replaces guessed paths like "/Niagara/Modules/DynamicInputs/UniformRangedFloat"
+    (which vary across UE versions) with a live scan. Returns all UNiagaraScript
+    assets with Usage=DynamicInput matching the filter.
+
+    Args:
+        name_filter: Case-insensitive substring on asset name (e.g. "Random",
+                     "UniformRanged", "Mask", "MultiplyVector")
+        exact_name: If set, return only the asset whose name equals this
+        max_results: Cap on returned entries (default 20)
+    """
+    params: dict = {"max_results": max_results}
+    if name_filter:
+        params["name_filter"] = name_filter
+    if exact_name:
+        params["exact_name"] = exact_name
+    return _call("resolve_niagara_built_in_dynamic_input", params)
 
 
 @mcp.tool()

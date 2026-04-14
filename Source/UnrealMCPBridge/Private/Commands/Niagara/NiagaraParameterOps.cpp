@@ -1,6 +1,7 @@
 #include "Commands/EpicUnrealMCPNiagaraCommands.h"
 #include "Commands/EpicUnrealMCPCommonUtils.h"
 #include "NiagaraHelpers.h"
+#include "NiagaraPropertyIntrospection.h"
 
 #include "NiagaraSystem.h"
 #include "NiagaraEmitter.h"
@@ -9,6 +10,8 @@
 #include "NiagaraActor.h"
 #include "NiagaraParameterStore.h"
 #include "NiagaraTypes.h"
+#include "NiagaraTypeRegistry.h"
+#include "NiagaraDataInterface.h"
 #include "NiagaraScript.h"
 #include "NiagaraScriptSource.h"
 #include "NiagaraGraph.h"
@@ -17,10 +20,14 @@
 #if WITH_EDITORONLY_DATA
 #include "NiagaraScriptVariable.h"
 #include "NiagaraEditorUtilities.h"
+#include "NiagaraCommon.h"
+#include "EdGraphSchema_Niagara.h"
+#include "ScopedTransaction.h"
 #include "ViewModels/Stack/NiagaraParameterHandle.h"
 #include "ViewModels/Stack/NiagaraStackGraphUtilities.h"
 #include "NiagaraNodeInput.h"
 #include "NiagaraNodeOutput.h"
+#include "NiagaraStackPathResolver.h"
 #endif
 
 #include "Editor.h"
@@ -30,46 +37,24 @@
 // ---------------------------------------------------------------------------
 // Helper: Niagara type from string
 // ---------------------------------------------------------------------------
+//
+// Delegates to NiagaraIntrospection::ResolveTypeName which walks the shared
+// NiagaraTypeHelpers::ParseTypeDef table first (primitives, Position, Matrix,
+// Quat, ID, RandInfo, ParameterMap, etc.), then tries UEnum / UScriptStruct /
+// UClass lookups for enums, structs, and Data Interfaces. This means anything
+// FNiagaraTypeRegistry knows about is resolvable from MCP.
+//
+// Returns an invalid type definition on failure so callers can surface a
+// meaningful error to the user instead of silently falling back to float.
 
 static FNiagaraTypeDefinition ResolveNiagaraType(const FString& TypeStr)
 {
-	FString Lower = TypeStr.ToLower();
-
-	if (Lower == TEXT("float") || Lower == TEXT("scalar"))
+	FNiagaraTypeDefinition Resolved;
+	if (NiagaraIntrospection::ResolveTypeName(TypeStr, Resolved))
 	{
-		return FNiagaraTypeDefinition::GetFloatDef();
+		return Resolved;
 	}
-	if (Lower == TEXT("int") || Lower == TEXT("int32"))
-	{
-		return FNiagaraTypeDefinition::GetIntDef();
-	}
-	if (Lower == TEXT("bool"))
-	{
-		return FNiagaraTypeDefinition::GetBoolDef();
-	}
-	if (Lower == TEXT("vector") || Lower == TEXT("vector3") || Lower == TEXT("vec3"))
-	{
-		return FNiagaraTypeDefinition::GetVec3Def();
-	}
-	if (Lower == TEXT("vector2") || Lower == TEXT("vec2"))
-	{
-		return FNiagaraTypeDefinition::GetVec2Def();
-	}
-	if (Lower == TEXT("vector4") || Lower == TEXT("vec4"))
-	{
-		return FNiagaraTypeDefinition::GetVec4Def();
-	}
-	if (Lower == TEXT("color") || Lower == TEXT("linear_color") || Lower == TEXT("linearcolor"))
-	{
-		return FNiagaraTypeDefinition::GetColorDef();
-	}
-	if (Lower == TEXT("quat") || Lower == TEXT("quaternion"))
-	{
-		return FNiagaraTypeDefinition::GetQuatDef();
-	}
-
-	// Default to float
-	return FNiagaraTypeDefinition::GetFloatDef();
+	return FNiagaraTypeDefinition();
 }
 
 // ---------------------------------------------------------------------------
@@ -223,6 +208,14 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleAddNiagaraUserParam
 	}
 
 	FNiagaraTypeDefinition TypeDef = ResolveNiagaraType(ParameterType);
+	if (!TypeDef.IsValid())
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(
+				TEXT("Unknown parameter_type '%s'. Use list_niagara_parameter_types to discover valid names "
+					 "(primitives, structs, enums, and data interfaces)."),
+				*ParameterType));
+	}
 
 	// Build the user parameter variable with "User." namespace prefix
 	FString FullName = ParameterName;
@@ -233,13 +226,22 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleAddNiagaraUserParam
 
 	FNiagaraVariable NewVar(TypeDef, FName(*FullName));
 
-	// Initialize default data
-	NewVar.AllocateData();
+	// Allocate the default storage for primitive/struct types. Data interfaces
+	// don't need AllocateData — their storage is the UNiagaraDataInterface object
+	// pointer which AddParameter creates automatically when bInitInterfaces=true.
+	if (!TypeDef.IsDataInterface())
+	{
+		NewVar.AllocateData();
+	}
+
+	// Parse default value for the common primitive types. For structs/DIs we
+	// leave the default at the CDO/zero — callers can use set_niagara_user_parameter
+	// afterwards for richer initialization.
 	if (TypeDef == FNiagaraTypeDefinition::GetFloatDef())
 	{
-		float Default = 0.0f;
+		double Default = 0.0;
 		Params->TryGetNumberField(TEXT("default_value"), Default);
-		NewVar.SetValue(Default);
+		NewVar.SetValue(static_cast<float>(Default));
 	}
 	else if (TypeDef == FNiagaraTypeDefinition::GetIntDef())
 	{
@@ -255,16 +257,69 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleAddNiagaraUserParam
 		BoolVal.SetValue(bDefault);
 		NewVar.SetValue(BoolVal);
 	}
+	else if (TypeDef == FNiagaraTypeDefinition::GetVec2Def()
+		|| TypeDef == FNiagaraTypeDefinition::GetVec3Def()
+		|| TypeDef == FNiagaraTypeDefinition::GetVec4Def()
+		|| TypeDef == FNiagaraTypeDefinition::GetPositionDef()
+		|| TypeDef == FNiagaraTypeDefinition::GetColorDef()
+		|| TypeDef == FNiagaraTypeDefinition::GetQuatDef())
+	{
+		// Accept both "(X=1,Y=2,Z=3)" style and comma-separated "1,2,3"
+		FString DefaultStr;
+		if (Params->TryGetStringField(TEXT("default_value"), DefaultStr) && !DefaultStr.IsEmpty())
+		{
+			// Use ImportText on the underlying struct so any UE-standard form works.
+			if (UScriptStruct* Struct = TypeDef.GetScriptStruct())
+			{
+				Struct->ImportText(*DefaultStr, NewVar.GetData(), nullptr, PPF_None, nullptr,
+					Struct->GetName());
+			}
+		}
+	}
 
-	// Add to the system's exposed parameters
-	System->GetExposedParameters().AddParameter(NewVar, true);
+	// AddParameter does the right thing for every kind:
+	//   - primitive/struct: copies the default bytes
+	//   - data interface: with bInitInterfaces=true (default) it creates a new
+	//     instance of the DI class and stores it in the internal DI array
+	//   - uobject: tracked via the internal UObject map
+	System->GetExposedParameters().AddParameter(NewVar, /*bInitInterfaces=*/true, /*bTriggerRebind=*/true);
 	System->MarkPackageDirty();
 	System->PostEditChange();
+
+	// Classify for the response so callers can confirm how the parameter was handled.
+	FString Kind = TEXT("primitive");
+	FString ClassPath;
+	if (TypeDef.IsDataInterface())
+	{
+		Kind = TEXT("data_interface");
+		if (UClass* Cls = TypeDef.GetClass())
+		{
+			ClassPath = Cls->GetPathName();
+		}
+	}
+	else if (TypeDef.IsEnum())
+	{
+		Kind = TEXT("enum");
+	}
+	else if (TypeDef.IsUObject())
+	{
+		Kind = TEXT("object");
+	}
+	else if (TypeDef.GetScriptStruct())
+	{
+		Kind = TEXT("struct");
+	}
 
 	auto Result = MakeShared<FJsonObject>();
 	Result->SetBoolField(TEXT("success"), true);
 	Result->SetStringField(TEXT("parameter_name"), FullName);
 	Result->SetStringField(TEXT("parameter_type"), TypeDef.GetName());
+	Result->SetStringField(TEXT("kind"), Kind);
+	if (!ClassPath.IsEmpty())
+	{
+		Result->SetStringField(TEXT("class_path"), ClassPath);
+	}
+	Result->SetNumberField(TEXT("size_bytes"), TypeDef.GetSize());
 	return Result;
 #else
 	return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Editor-only operation"));
@@ -598,40 +653,158 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleLinkNiagaraParamete
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(Error);
 	}
 
-	// Find the input pin on the module node
-	UEdGraphPin* InputPin = nullptr;
+	// Nested-path resolution (Gap #10): "Spawn Count.Position Array" descends
+	// through dynamic-input chains so the link lands on the leaf input.
+	{
+		FString LeafName, DescentError;
+		UNiagaraNodeFunctionCall* TargetCall =
+			NiagaraStackPath::DescendNestedPath(*ModuleNode, InputName, LeafName, DescentError);
+		if (!TargetCall)
+		{
+			return FEpicUnrealMCPCommonUtils::CreateErrorResponse(DescentError);
+		}
+		ModuleNode = TargetCall;
+		InputName = LeafName; // remainder of handler resolves the leaf name
+	}
+
+	// Resolve the module input's FNiagaraVariable and type.
+	// Strategy: first try direct function-call pins, then fall back to
+	// parameter-map stack inputs (Module.*) surfaced via GetStackFunctionInputs.
+	// This is the same two-pass used by HandleGetNiagaraModuleInputs so any input
+	// listable via the query tool is writable via link.
+	const UEdGraphSchema_Niagara* NiagaraSchema = GetDefault<UEdGraphSchema_Niagara>();
+	FNiagaraTypeDefinition InputType;
+	FString ResolvedInputName;
+	FString InputSource;
+
 	for (UEdGraphPin* Pin : ModuleNode->Pins)
 	{
-		if (Pin->Direction == EGPD_Input &&
-			Pin->PinName.ToString().Contains(InputName, ESearchCase::IgnoreCase))
+		if (Pin->Direction != EGPD_Input)
 		{
-			InputPin = Pin;
+			continue;
+		}
+		const FString PinNameStr = Pin->PinName.ToString();
+		if (PinNameStr.Equals(InputName, ESearchCase::IgnoreCase))
+		{
+			InputType = NiagaraSchema->PinToTypeDefinition(Pin);
+			ResolvedInputName = PinNameStr;
+			InputSource = TEXT("function_call_pin");
 			break;
 		}
 	}
 
-	if (!InputPin)
+	if (!InputType.IsValid())
+	{
+		TArray<FNiagaraVariable> StackInputs;
+		FCompileConstantResolver ConstantResolver(System, Usage);
+		FNiagaraStackGraphUtilities::GetStackFunctionInputs(
+			*ModuleNode, StackInputs, ConstantResolver,
+			FNiagaraStackGraphUtilities::ENiagaraGetStackFunctionInputPinsOptions::ModuleInputsOnly);
+
+		const FString ModulePrefix(TEXT("Module."));
+		for (const FNiagaraVariable& Var : StackInputs)
+		{
+			FString DisplayName = Var.GetName().ToString();
+			if (DisplayName.StartsWith(ModulePrefix))
+			{
+				DisplayName.RightChopInline(ModulePrefix.Len());
+			}
+			if (DisplayName.Equals(InputName, ESearchCase::IgnoreCase))
+			{
+				InputType = Var.GetType();
+				ResolvedInputName = DisplayName;
+				InputSource = TEXT("parameter_map_input");
+				break;
+			}
+		}
+	}
+
+	if (!InputType.IsValid())
 	{
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
-			FString::Printf(TEXT("Input pin '%s' not found on module '%s'"), *InputName, *ModuleName));
+			FString::Printf(TEXT("Input '%s' not found on module '%s'"), *InputName, *ModuleName));
 	}
 
-	// Create a parameter map get node (NiagaraNodeInput) for the linked parameter
-	FNiagaraTypeDefinition PinType = FNiagaraTypeDefinition::GetFloatDef();
-	// Infer type from the pin
-	if (InputPin->PinType.PinCategory != NAME_None)
+	// Build the aliased module parameter handle so the override is scoped to
+	// this emitter/particle context (e.g. Particles.Module.Boost, not just Module.Boost).
+	FNiagaraParameterHandle InputHandle =
+		FNiagaraParameterHandle::CreateModuleParameterHandle(FName(*ResolvedInputName));
+	FNiagaraParameterHandle AliasedHandle =
+		FNiagaraParameterHandle::CreateAliasedModuleParameterHandle(InputHandle, ModuleNode);
+
+	// Wrap the whole link operation in a transaction so undo/redo is clean.
+	FScopedTransaction Transaction(
+		NSLOCTEXT("UnrealMCPBridge", "LinkNiagaraParameter", "Link Niagara Parameter"));
+	ModuleNode->Modify();
+	Graph->Modify();
+
+	// GetOrCreateStackFunctionInputOverridePin walks the module's internal override
+	// ParameterMapSet (creating it if needed) and returns the pin that represents
+	// this specific input's override. Same path used by the editor's stack UI.
+	UEdGraphPin& OverridePin = FNiagaraStackGraphUtilities::GetOrCreateStackFunctionInputOverridePin(
+		*ModuleNode, AliasedHandle, InputType, FGuid(), FGuid());
+
+	// Clean any existing override (inline value, dynamic input, previous link).
+	if (OverridePin.LinkedTo.Num() > 0)
 	{
-		FNiagaraVariable TempVar;
-		TempVar.SetName(FName(*LinkedParameterName));
-		// Use the pin's type if it can be resolved
-		PinType = TempVar.GetType().IsValid() ? TempVar.GetType() : FNiagaraTypeDefinition::GetFloatDef();
+		TArray<UEdGraphNode*> NodesToRemove;
+		for (UEdGraphPin* LinkedPin : OverridePin.LinkedTo)
+		{
+			if (LinkedPin && LinkedPin->GetOwningNode())
+			{
+				NodesToRemove.AddUnique(LinkedPin->GetOwningNode());
+			}
+		}
+		OverridePin.BreakAllPinLinks();
+		for (UEdGraphNode* NodeToRemove : NodesToRemove)
+		{
+			if (!NodeToRemove)
+			{
+				continue;
+			}
+			for (UEdGraphPin* Pin : NodeToRemove->Pins)
+			{
+				if (Pin)
+				{
+					Pin->BreakAllPinLinks();
+				}
+			}
+			Graph->RemoveNode(NodeToRemove);
+		}
 	}
 
-	// Set the default value to reference the linked parameter
-	// In Niagara, linking a module input to a parameter is done by setting the
-	// pin's linked default to point to the parameter name.
-	InputPin->DefaultValue = LinkedParameterName;
-	InputPin->bDefaultValueIsIgnored = false;
+	// Known-parameters set lets SetLinkedParameterValueForFunctionInput reuse
+	// existing script-variable definitions instead of inventing new ones.
+	// Pull: (a) system exposed User.* params, (b) emitter-scope params, (c) engine-provided constants.
+	TSet<FNiagaraVariableBase> KnownParameters;
+	{
+		TArray<FNiagaraVariable> UserVars;
+		System->GetExposedParameters().GetParameters(UserVars);
+		for (const FNiagaraVariable& Var : UserVars)
+		{
+			KnownParameters.Add(Var);
+		}
+
+		if (Graph)
+		{
+			for (const auto& It : Graph->GetAllMetaData())
+			{
+				KnownParameters.Add(It.Key);
+			}
+		}
+	}
+
+	// Build the linked parameter variable using the resolved input type so the
+	// override pin matches. If user passed "User.ColorA" and input type is Color,
+	// the linked variable is FNiagaraVariable(Color, "User.ColorA").
+	FNiagaraVariableBase LinkedParameter(InputType, FName(*LinkedParameterName));
+
+	FNiagaraStackGraphUtilities::SetLinkedParameterValueForFunctionInput(
+		OverridePin,
+		LinkedParameter,
+		KnownParameters,
+		ENiagaraDefaultMode::FailIfPreviouslyNotSet,
+		FGuid());
 
 	Graph->NotifyGraphChanged();
 	NiagaraHelpers::CompileAndSync(System);
@@ -639,7 +812,9 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleLinkNiagaraParamete
 	auto Result = MakeShared<FJsonObject>();
 	Result->SetBoolField(TEXT("success"), true);
 	Result->SetStringField(TEXT("module_name"), ModuleName);
-	Result->SetStringField(TEXT("input_name"), InputName);
+	Result->SetStringField(TEXT("input_name"), ResolvedInputName);
+	Result->SetStringField(TEXT("input_source"), InputSource);
+	Result->SetStringField(TEXT("input_type"), InputType.GetName());
 	Result->SetStringField(TEXT("linked_parameter"), LinkedParameterName);
 	Result->SetStringField(TEXT("script_usage"), ScriptUsageStr);
 	return Result;

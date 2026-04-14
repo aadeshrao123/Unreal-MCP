@@ -897,4 +897,590 @@ ue-cli get_niagara_module_versions --system-path /Game/VFX/NS_Fire --emitter-nam
 			{Name: "filter", Type: "string", Help: "Filter modules by name substring"},
 		},
 	},
+
+	// -- Graph Introspection --
+	{
+		Name:  "get_niagara_graph_nodes",
+		Group: "niagara",
+		Short: "Introspect every node inside a Niagara graph",
+		Long: "Three resolver modes: (1) system_path + module_name for scratch pad module, " +
+			"(2) system_path + emitter_name + script_usage for emitter stack graph, " +
+			"(3) script_path for standalone UNiagaraScript asset. Returns nodes with pin/link detail " +
+			"based on verbosity. Token-efficient — use type_filter/name_filter to narrow.",
+		Example: `ue-cli get_niagara_graph_nodes --system-path /Game/VFX/NS_Fire --module-name MyScratchPad
+ue-cli get_niagara_graph_nodes --system-path /Game/VFX/NS_Fire --emitter-name Sparks --script-usage emitter_update --type-filter FunctionCall`,
+		Params: []ParamSpec{
+			{Name: "system_path", Type: "string", Help: "Niagara System asset path"},
+			{Name: "module_name", Type: "string", Help: "Scratch pad module name (mode 1)"},
+			{Name: "emitter_name", Type: "string", Help: "Emitter name (mode 2)"},
+			{Name: "script_usage", Type: "string", Help: "emitter_spawn|emitter_update|particle_spawn|particle_update (mode 2)"},
+			{Name: "script_path", Type: "string", Help: "Standalone UNiagaraScript asset path (mode 3)"},
+			{Name: "verbosity", Type: "string", Default: "connections", Help: "summary | connections | full"},
+			{Name: "type_filter", Type: "string", Help: "Substring on short class name (e.g. MapGet, Op, CustomHlsl)"},
+			{Name: "name_filter", Type: "string", Help: "Substring on node title"},
+		},
+	},
+	{
+		Name:  "get_niagara_node_info",
+		Group: "niagara",
+		Short: "Deep inspect a single Niagara node by index, class, or GUID",
+		Long: "Returns full pin layout, link detail, and node-type-specific fields (op_name for Op, " +
+			"function_script for FunctionCall, hlsl_preview for CustomHlsl, input_name/type for Input).",
+		Example: `ue-cli get_niagara_node_info --system-path /Game/VFX/NS_Fire --module-name MyDI --node-index 2
+ue-cli get_niagara_node_info --script-path /Game/VFX/MyModule --node-class MapGet`,
+		Params: []ParamSpec{
+			{Name: "system_path", Type: "string", Help: "Niagara System asset path"},
+			{Name: "module_name", Type: "string", Help: "Scratch pad module name"},
+			{Name: "script_path", Type: "string", Help: "Standalone script asset path"},
+			{Name: "node_index", Type: "int", Help: "Ordinal index in Graph->Nodes"},
+			{Name: "node_class", Type: "string", Help: "Short ('MapGet') or full ('NiagaraNodeParameterMapGet')"},
+			{Name: "node_id", Type: "string", Help: "FGuid string matching UEdGraphNode::NodeGuid"},
+		},
+	},
+	{
+		Name:  "trace_niagara_connection",
+		Group: "niagara",
+		Short: "BFS trace of connections upstream or downstream from a node",
+		Long: "Walks the graph from a starting node with optional pin_name filter. Returns each visited " +
+			"node with depth so the dependency chain is visible without dumping the whole graph.",
+		Example: `ue-cli trace_niagara_connection --system-path /Game/VFX/NS_Fire --module-name MyDI --node-class MapGet --direction downstream --pin-name "Vector Array"`,
+		Params: []ParamSpec{
+			{Name: "system_path", Type: "string", Help: "Niagara System asset path"},
+			{Name: "module_name", Type: "string", Help: "Scratch pad module name"},
+			{Name: "script_path", Type: "string", Help: "Standalone script asset path"},
+			{Name: "node_index", Type: "int", Help: "Starting node index"},
+			{Name: "node_class", Type: "string", Help: "Starting node class"},
+			{Name: "node_id", Type: "string", Help: "Starting node GUID"},
+			{Name: "direction", Type: "string", Default: "both", Help: "upstream | downstream | both"},
+			{Name: "max_depth", Type: "int", Default: 8, Help: "Max BFS depth"},
+			{Name: "pin_name", Type: "string", Help: "Optional starting-pin name filter"},
+		},
+	},
+	{
+		Name:  "validate_niagara_graph",
+		Group: "niagara",
+		Short: "Classify orphaned, dead-end, and missing-input nodes in a Niagara graph",
+		Long: "Returns three arrays: orphaned (no incoming or outgoing links), dead_ends (inputs connected " +
+			"but no outputs consumed), missing_inputs (no link and no default). Skips +Add placeholder pins.",
+		Example: `ue-cli validate_niagara_graph --system-path /Game/VFX/NS_Fire --module-name MyDI`,
+		Params: []ParamSpec{
+			{Name: "system_path", Type: "string", Help: "Niagara System asset path"},
+			{Name: "module_name", Type: "string", Help: "Scratch pad module name"},
+			{Name: "script_path", Type: "string", Help: "Standalone script asset path"},
+		},
+	},
+
+	// -- Scratch Pad Apply / Save --
+	{
+		Name:  "apply_niagara_scratch_pad",
+		Group: "niagara",
+		Short: "Commit a scratch pad module's edit-copy to the original script (Apply button)",
+		Long:  "Mirrors FNiagaraScratchPadScriptViewModel::ApplyChanges. Requires the Niagara System to be open in the editor.",
+		Example: `ue-cli apply_niagara_scratch_pad --system-path /Game/VFX/NS_Fire --module-name MyDI`,
+		Params: []ParamSpec{
+			{Name: "system_path", Type: "string", Required: true, Help: "Niagara System asset path"},
+			{Name: "module_name", Type: "string", Required: true, Help: "Scratch pad module name"},
+		},
+	},
+	{
+		Name:  "apply_and_save_niagara_scratch_pad",
+		Group: "niagara",
+		Short: "Apply a scratch pad module's edit-copy and save the asset (Apply & Save button)",
+		Long:  "Mirrors FNiagaraScratchPadScriptViewModel::ApplyChangesAndSave.",
+		Example: `ue-cli apply_and_save_niagara_scratch_pad --system-path /Game/VFX/NS_Fire --module-name MyDI`,
+		Params: []ParamSpec{
+			{Name: "system_path", Type: "string", Required: true, Help: "Niagara System asset path"},
+			{Name: "module_name", Type: "string", Required: true, Help: "Scratch pad module name"},
+		},
+	},
+	{
+		Name:  "list_niagara_scratch_pad_modules",
+		Group: "niagara",
+		Short: "List all scratch pad modules on a Niagara System",
+		Long:  "Returns name, path, usage, node counts, and custom HLSL node count per script.",
+		Example: `ue-cli list_niagara_scratch_pad_modules --system-path /Game/VFX/NS_Fire`,
+		Params: []ParamSpec{
+			{Name: "system_path", Type: "string", Required: true, Help: "Niagara System asset path"},
+		},
+	},
+	{
+		Name:  "delete_niagara_scratch_pad_module",
+		Group: "niagara",
+		Short: "Delete a scratch pad module from a Niagara System",
+		Example: `ue-cli delete_niagara_scratch_pad_module --system-path /Game/VFX/NS_Fire --module-name MyDI`,
+		Params: []ParamSpec{
+			{Name: "system_path", Type: "string", Required: true, Help: "Niagara System asset path"},
+			{Name: "module_name", Type: "string", Required: true, Help: "Scratch pad module name"},
+		},
+	},
+	{
+		Name:  "duplicate_niagara_scratch_pad_module",
+		Group: "niagara",
+		Short: "Duplicate a scratch pad module with a new name",
+		Example: `ue-cli duplicate_niagara_scratch_pad_module --system-path /Game/VFX/NS_Fire --module-name MyDI --new-name MyDICopy`,
+		Params: []ParamSpec{
+			{Name: "system_path", Type: "string", Required: true, Help: "Niagara System asset path"},
+			{Name: "module_name", Type: "string", Required: true, Help: "Source scratch pad module name"},
+			{Name: "new_name", Type: "string", Required: true, Help: "New scratch pad module name"},
+		},
+	},
+	{
+		Name:  "rename_niagara_scratch_pad_module",
+		Group: "niagara",
+		Short: "Rename a scratch pad module",
+		Example: `ue-cli rename_niagara_scratch_pad_module --system-path /Game/VFX/NS_Fire --module-name Old --new-name New`,
+		Params: []ParamSpec{
+			{Name: "system_path", Type: "string", Required: true, Help: "Niagara System asset path"},
+			{Name: "module_name", Type: "string", Required: true, Help: "Current scratch pad module name"},
+			{Name: "new_name", Type: "string", Required: true, Help: "New scratch pad module name"},
+		},
+	},
+
+	// -- Script Properties (details panel) --
+	{
+		Name:  "get_niagara_script_properties",
+		Group: "niagara",
+		Short: "Read the details-panel properties of a Niagara script",
+		Long: "Returns Category, Description, Keywords, ModuleUsageBitmask, ProvidedDependencies, " +
+			"RequiredDependencies, LibraryVisibility, bDeprecated, DeprecationMessage, bExperimental, " +
+			"ExperimentalMessage, NumericOutputTypeSelectionMode, ScriptMetaData, ConversionUtility.",
+		Example: `ue-cli get_niagara_script_properties --system-path /Game/VFX/NS_Fire --module-name MyDI`,
+		Params: []ParamSpec{
+			{Name: "system_path", Type: "string", Help: "Niagara System asset path (with module_name)"},
+			{Name: "module_name", Type: "string", Help: "Scratch pad module name"},
+			{Name: "script_path", Type: "string", Help: "Standalone script asset path"},
+		},
+	},
+	{
+		Name:  "set_niagara_script_properties",
+		Group: "niagara",
+		Short: "Batch-set details-panel properties on a Niagara script",
+		Long: "Pass a JSON object under --properties with any subset of the editable fields. " +
+			"ModuleUsageBitmask uses ENiagaraScriptUsage bitmask (e.g. particle spawn + update = (1<<3)|(1<<4)). " +
+			"ProvidedDependencies takes a JSON array of strings; RequiredDependencies an array of objects.",
+		Example: `ue-cli set_niagara_script_properties --system-path /Game/VFX/NS_Fire --module-name MyDI --properties '{"Category":"MCP/DI","bExperimental":true,"ProvidedDependencies":["MCP.ArrayLength"]}'`,
+		Params: []ParamSpec{
+			{Name: "properties", Type: "object", Required: true, Help: "JSON object of property name -> value"},
+			{Name: "system_path", Type: "string", Help: "Niagara System asset path (with module_name)"},
+			{Name: "module_name", Type: "string", Help: "Scratch pad module name"},
+			{Name: "script_path", Type: "string", Help: "Standalone script asset path"},
+		},
+	},
+
+	// -- Script Parameters (input / output) --
+	{
+		Name:  "list_niagara_script_parameters",
+		Group: "niagara",
+		Short: "List input + output parameters of a Niagara script",
+		Long:  "Outputs come from UNiagaraNodeOutput::Outputs. Inputs come from script variable metadata filtered to Module.* / Input.* / User.* namespaces.",
+		Example: `ue-cli list_niagara_script_parameters --system-path /Game/VFX/NS_Fire --module-name MyDI`,
+		Params: []ParamSpec{
+			{Name: "system_path", Type: "string", Help: "Niagara System asset path"},
+			{Name: "module_name", Type: "string", Help: "Scratch pad module name"},
+			{Name: "script_path", Type: "string", Help: "Standalone script asset path"},
+		},
+	},
+	{
+		Name:  "add_niagara_script_parameter",
+		Group: "niagara",
+		Short: "Add an input or output parameter to a Niagara script",
+		Long: "For 'output' direction appends to UNiagaraNodeOutput::Outputs. Type must be a FNiagaraTypeRegistry " +
+			"name (e.g. float, Vector, Vector2D, Vector4, LinearColor, Quat, Position, NiagaraID, int32, bool, " +
+			"Matrix, NiagaraDataInterfaceArrayPosition).",
+		Example: `ue-cli add_niagara_script_parameter --system-path /Game/VFX/NS_Fire --module-name MyDI --name TestFloat --type float --direction output`,
+		Params: []ParamSpec{
+			{Name: "name", Type: "string", Required: true, Help: "Parameter name (no namespace → becomes Module.<name>)"},
+			{Name: "type", Type: "string", Required: true, Help: "Niagara type name"},
+			{Name: "direction", Type: "string", Default: "output", Help: "output | input"},
+			{Name: "system_path", Type: "string", Help: "Niagara System asset path"},
+			{Name: "module_name", Type: "string", Help: "Scratch pad module name"},
+			{Name: "script_path", Type: "string", Help: "Standalone script asset path"},
+		},
+	},
+	{
+		Name:  "remove_niagara_script_parameter",
+		Group: "niagara",
+		Short: "Remove a named input or output parameter — cascades to Map Get/Set pins",
+		Example: `ue-cli remove_niagara_script_parameter --system-path /Game/VFX/NS_Fire --module-name MyDI --name Module.Default --direction input`,
+		Params: []ParamSpec{
+			{Name: "name", Type: "string", Required: true, Help: "Parameter name"},
+			{Name: "direction", Type: "string", Default: "output", Help: "output | input"},
+			{Name: "system_path", Type: "string", Help: "Niagara System asset path"},
+			{Name: "module_name", Type: "string", Help: "Scratch pad module name"},
+			{Name: "script_path", Type: "string", Help: "Standalone script asset path"},
+		},
+	},
+	{
+		Name:  "rename_niagara_script_parameter",
+		Group: "niagara",
+		Short: "Rename a script parameter in-place across asset and edit-copy graphs",
+		Example: `ue-cli rename_niagara_script_parameter --system-path /Game/VFX/NS_Fire --module-name MyDI --old-name NewOutput --new-name FinalNoise --direction output`,
+		Params: []ParamSpec{
+			{Name: "old_name", Type: "string", Required: true, Help: "Current parameter name"},
+			{Name: "new_name", Type: "string", Required: true, Help: "New parameter name"},
+			{Name: "direction", Type: "string", Default: "output", Help: "output | input"},
+			{Name: "system_path", Type: "string", Help: "Niagara System asset path"},
+			{Name: "module_name", Type: "string", Help: "Scratch pad module name"},
+			{Name: "script_path", Type: "string", Help: "Standalone script asset path"},
+		},
+	},
+
+	// -- Graph Node CRUD --
+	{
+		Name:  "add_niagara_graph_node",
+		Group: "niagara",
+		Short: "Create a new node inside a Niagara graph",
+		Long: "node_type options: Op (requires op_name), FunctionCall (requires function_script), " +
+			"DataInterfaceFunction (requires di_class + function_name), ParameterMapGet, ParameterMapSet, " +
+			"Reroute, Input (requires input_name + input_type). Discover op_name via get_niagara_schema_actions " +
+			"and DI function_name via list_niagara_data_interface_functions — never guess.",
+		Example: `ue-cli add_niagara_graph_node --system-path /Game/VFX/NS_Fire --module-name MyDI --node-type Op --op-name "Numeric::Mul" --pos-x 100 --pos-y 100
+ue-cli add_niagara_graph_node --system-path /Game/VFX/NS_Fire --module-name MyDI --node-type DataInterfaceFunction --di-class NiagaraDataInterfaceArrayPosition --function-name Length`,
+		Params: []ParamSpec{
+			{Name: "node_type", Type: "string", Required: true, Help: "Op | FunctionCall | DataInterfaceFunction | ParameterMapGet | ParameterMapSet | Reroute | Input"},
+			{Name: "pos_x", Type: "int", Default: 0, Help: "Graph X position"},
+			{Name: "pos_y", Type: "int", Default: 0, Help: "Graph Y position"},
+			{Name: "op_name", Type: "string", Help: "(Op) e.g. Numeric::Mul, Numeric::Add, Numeric::Length"},
+			{Name: "function_script", Type: "string", Help: "(FunctionCall) UNiagaraScript asset path"},
+			{Name: "input_name", Type: "string", Help: "(Input) variable name"},
+			{Name: "input_type", Type: "string", Help: "(Input) Niagara type"},
+			{Name: "di_class", Type: "string", Help: "(DataInterfaceFunction) DI class name"},
+			{Name: "function_name", Type: "string", Help: "(DataInterfaceFunction) DI member function name"},
+			{Name: "system_path", Type: "string", Help: "Niagara System asset path"},
+			{Name: "module_name", Type: "string", Help: "Scratch pad module name"},
+			{Name: "script_path", Type: "string", Help: "Standalone script asset path"},
+		},
+	},
+	{
+		Name:  "delete_niagara_graph_node",
+		Group: "niagara",
+		Short: "Delete a node from a Niagara graph",
+		Long:  "Provide node_index (ordinal) OR node_id (FGuid from get_niagara_graph_nodes).",
+		Example: `ue-cli delete_niagara_graph_node --system-path /Game/VFX/NS_Fire --module-name MyDI --node-index 4`,
+		Params: []ParamSpec{
+			{Name: "system_path", Type: "string", Help: "Niagara System asset path"},
+			{Name: "module_name", Type: "string", Help: "Scratch pad module name"},
+			{Name: "script_path", Type: "string", Help: "Standalone script asset path"},
+			{Name: "node_index", Type: "int", Help: "Ordinal index"},
+			{Name: "node_id", Type: "string", Help: "FGuid string"},
+		},
+	},
+
+	// -- Custom HLSL Pin Management --
+	{
+		Name:  "add_niagara_custom_hlsl_input",
+		Group: "niagara",
+		Short: "Add an input pin to a Custom HLSL node",
+		Example: `ue-cli add_niagara_custom_hlsl_input --system-path /Game/VFX/NS_Fire --module-name MyDI --pin-name Value --pin-type float`,
+		Params: []ParamSpec{
+			{Name: "system_path", Type: "string", Required: true, Help: "Niagara System asset path"},
+			{Name: "module_name", Type: "string", Required: true, Help: "Scratch pad module name"},
+			{Name: "pin_name", Type: "string", Required: true, Help: "New input pin name"},
+			{Name: "pin_type", Type: "string", Required: true, Help: "Niagara type (float, Vector, int32, etc.)"},
+		},
+	},
+	{
+		Name:  "add_niagara_custom_hlsl_output",
+		Group: "niagara",
+		Short: "Add an output pin to a Custom HLSL node",
+		Example: `ue-cli add_niagara_custom_hlsl_output --system-path /Game/VFX/NS_Fire --module-name MyDI --pin-name Result --pin-type float`,
+		Params: []ParamSpec{
+			{Name: "system_path", Type: "string", Required: true, Help: "Niagara System asset path"},
+			{Name: "module_name", Type: "string", Required: true, Help: "Scratch pad module name"},
+			{Name: "pin_name", Type: "string", Required: true, Help: "New output pin name"},
+			{Name: "pin_type", Type: "string", Required: true, Help: "Niagara type"},
+		},
+	},
+	{
+		Name:  "rename_niagara_custom_hlsl_pin",
+		Group: "niagara",
+		Short: "Rename a Custom HLSL pin (also rewrites {PinName} references in the HLSL body)",
+		Example: `ue-cli rename_niagara_custom_hlsl_pin --system-path /Game/VFX/NS_Fire --module-name MyDI --old-name Value --new-name Scalar`,
+		Params: []ParamSpec{
+			{Name: "system_path", Type: "string", Required: true, Help: "Niagara System asset path"},
+			{Name: "module_name", Type: "string", Required: true, Help: "Scratch pad module name"},
+			{Name: "old_name", Type: "string", Required: true, Help: "Current pin name"},
+			{Name: "new_name", Type: "string", Required: true, Help: "New pin name"},
+		},
+	},
+	{
+		Name:  "remove_niagara_custom_hlsl_pin",
+		Group: "niagara",
+		Short: "Remove a pin from a Custom HLSL node",
+		Example: `ue-cli remove_niagara_custom_hlsl_pin --system-path /Game/VFX/NS_Fire --module-name MyDI --pin-name Value`,
+		Params: []ParamSpec{
+			{Name: "system_path", Type: "string", Required: true, Help: "Niagara System asset path"},
+			{Name: "module_name", Type: "string", Required: true, Help: "Scratch pad module name"},
+			{Name: "pin_name", Type: "string", Required: true, Help: "Pin to remove"},
+		},
+	},
+
+	// -- Map Get / Map Set / Generic Pin CRUD --
+	{
+		Name:  "add_niagara_map_get_pin",
+		Group: "niagara",
+		Short: "Add a typed output pin to the first ParameterMapGet node in a scratch pad graph",
+		Long:  "Mirrors clicking + on a Map Get node in the editor. The pin name becomes the parameter handle (e.g. Module.MyParam, Engine.DeltaTime, User.MyParam).",
+		Example: `ue-cli add_niagara_map_get_pin --system-path /Game/VFX/NS_Fire --module-name MyDI --parameter-name Module.Position --parameter-type Vector`,
+		Params: []ParamSpec{
+			{Name: "system_path", Type: "string", Required: true, Help: "Niagara System asset path"},
+			{Name: "module_name", Type: "string", Required: true, Help: "Scratch pad module name"},
+			{Name: "parameter_name", Type: "string", Required: true, Help: "Variable name including namespace"},
+			{Name: "parameter_type", Type: "string", Default: "float", Help: "Niagara type"},
+		},
+	},
+	{
+		Name:  "add_niagara_map_set_pin",
+		Group: "niagara",
+		Short: "Add a typed input pin to the first ParameterMapSet node in a scratch pad graph",
+		Example: `ue-cli add_niagara_map_set_pin --system-path /Game/VFX/NS_Fire --module-name MyModule --parameter-name Particles.Velocity --parameter-type Vector`,
+		Params: []ParamSpec{
+			{Name: "system_path", Type: "string", Required: true, Help: "Niagara System asset path"},
+			{Name: "module_name", Type: "string", Required: true, Help: "Scratch pad module name"},
+			{Name: "parameter_name", Type: "string", Required: true, Help: "Variable name including namespace"},
+			{Name: "parameter_type", Type: "string", Default: "float", Help: "Niagara type"},
+		},
+	},
+	{
+		Name:  "add_niagara_node_pin",
+		Group: "niagara",
+		Short: "Add a pin to any UNiagaraNodeWithDynamicPins-derived node",
+		Example: `ue-cli add_niagara_node_pin --system-path /Game/VFX/NS_Fire --module-name MyDI --node-index 3 --pin-name Extra --pin-type float --direction output`,
+		Params: []ParamSpec{
+			{Name: "system_path", Type: "string", Required: true, Help: "Niagara System asset path"},
+			{Name: "module_name", Type: "string", Required: true, Help: "Scratch pad module name"},
+			{Name: "pin_name", Type: "string", Required: true, Help: "New pin name"},
+			{Name: "pin_type", Type: "string", Required: true, Help: "Niagara type"},
+			{Name: "direction", Type: "string", Default: "input", Help: "input | output"},
+			{Name: "node_index", Type: "int", Help: "Target node index"},
+			{Name: "node_class", Type: "string", Help: "Target node class"},
+			{Name: "node_id", Type: "string", Help: "Target node GUID"},
+		},
+	},
+	{
+		Name:  "rename_niagara_node_pin",
+		Group: "niagara",
+		Short: "Rename a pin on a dynamic-pin node",
+		Example: `ue-cli rename_niagara_node_pin --system-path /Game/VFX/NS_Fire --module-name MyDI --node-index 3 --old-name Foo --new-name Bar`,
+		Params: []ParamSpec{
+			{Name: "system_path", Type: "string", Required: true, Help: "Niagara System asset path"},
+			{Name: "module_name", Type: "string", Required: true, Help: "Scratch pad module name"},
+			{Name: "old_name", Type: "string", Required: true, Help: "Current pin name"},
+			{Name: "new_name", Type: "string", Required: true, Help: "New pin name"},
+			{Name: "node_index", Type: "int", Help: "Target node index"},
+			{Name: "node_class", Type: "string", Help: "Target node class"},
+			{Name: "node_id", Type: "string", Help: "Target node GUID"},
+		},
+	},
+	{
+		Name:  "remove_niagara_node_pin",
+		Group: "niagara",
+		Short: "Remove a dynamic pin from any node in a scratch pad graph",
+		Example: `ue-cli remove_niagara_node_pin --system-path /Game/VFX/NS_Fire --module-name MyDI --node-index 2 --pin-name Module.Default`,
+		Params: []ParamSpec{
+			{Name: "system_path", Type: "string", Required: true, Help: "Niagara System asset path"},
+			{Name: "module_name", Type: "string", Required: true, Help: "Scratch pad module name"},
+			{Name: "pin_name", Type: "string", Required: true, Help: "Pin name to remove"},
+			{Name: "node_index", Type: "int", Help: "Target node index"},
+			{Name: "node_class", Type: "string", Help: "Target node class"},
+			{Name: "node_id", Type: "string", Help: "Target node GUID"},
+		},
+	},
+
+	// -- Pin Connections --
+	{
+		Name:  "connect_niagara_pins",
+		Group: "niagara",
+		Short: "Wire one node's output pin to another node's input pin inside a scratch pad graph",
+		Long:  "Validated via UEdGraphSchema_Niagara::TryCreateConnection. Identify each side via (class|index|id) + pin name.",
+		Example: `ue-cli connect_niagara_pins --system-path /Game/VFX/NS_Fire --module-name MyDI --from-node-index 2 --from-pin Module.Position --to-node-index 3 --to-pin Array\ interface`,
+		Params: []ParamSpec{
+			{Name: "system_path", Type: "string", Required: true, Help: "Niagara System asset path"},
+			{Name: "module_name", Type: "string", Required: true, Help: "Scratch pad module name"},
+			{Name: "from_pin", Type: "string", Required: true, Help: "Source pin name"},
+			{Name: "to_pin", Type: "string", Required: true, Help: "Destination pin name"},
+			{Name: "from_node_index", Type: "int", Help: "Source node index"},
+			{Name: "from_node_class", Type: "string", Help: "Source node class"},
+			{Name: "from_node_id", Type: "string", Help: "Source node GUID"},
+			{Name: "to_node_index", Type: "int", Help: "Destination node index"},
+			{Name: "to_node_class", Type: "string", Help: "Destination node class"},
+			{Name: "to_node_id", Type: "string", Help: "Destination node GUID"},
+		},
+	},
+	{
+		Name:  "disconnect_niagara_pins",
+		Group: "niagara",
+		Short: "Break a pin connection in a scratch pad graph",
+		Example: `ue-cli disconnect_niagara_pins --system-path /Game/VFX/NS_Fire --module-name MyDI --node-index 3 --pin-name "Array interface"`,
+		Params: []ParamSpec{
+			{Name: "system_path", Type: "string", Required: true, Help: "Niagara System asset path"},
+			{Name: "module_name", Type: "string", Required: true, Help: "Scratch pad module name"},
+			{Name: "pin_name", Type: "string", Required: true, Help: "Pin to break"},
+			{Name: "node_index", Type: "int", Help: "Target node index"},
+			{Name: "node_class", Type: "string", Help: "Target node class"},
+			{Name: "node_id", Type: "string", Help: "Target node GUID"},
+		},
+	},
+
+	// -- Node Discovery / Schema --
+	{
+		Name:  "list_niagara_node_types",
+		Group: "niagara",
+		Short: "Enumerate Niagara node classes available for spawning",
+		Example: `ue-cli list_niagara_node_types --filter Parameter`,
+		Params: []ParamSpec{
+			{Name: "filter", Type: "string", Help: "Case-insensitive substring on class name"},
+		},
+	},
+	{
+		Name:  "get_niagara_node_type_info",
+		Group: "niagara",
+		Short: "Get pin schema for a node class or script asset",
+		Example: `ue-cli get_niagara_node_type_info --class-name NiagaraNodeParameterMapGet`,
+		Params: []ParamSpec{
+			{Name: "class_name", Type: "string", Help: "UClass name (short or full)"},
+			{Name: "script_path", Type: "string", Help: "UNiagaraScript asset path"},
+		},
+	},
+	{
+		Name:  "search_niagara_functions",
+		Group: "niagara",
+		Short: "Find Niagara script assets by usage + name filter",
+		Example: `ue-cli search_niagara_functions --filter Length --usage function`,
+		Params: []ParamSpec{
+			{Name: "filter", Type: "string", Help: "Name/path substring"},
+			{Name: "usage", Type: "string", Default: "function", Help: "module | dynamic_input | function"},
+			{Name: "include_engine", Type: "bool", Default: true, Help: "Include /Niagara/* engine scripts"},
+			{Name: "max_results", Type: "int", Default: 100, Help: "Max returned"},
+		},
+	},
+	{
+		Name:  "get_niagara_schema_actions",
+		Group: "niagara",
+		Short: "Return the full graph context-menu actions for a scratch pad module",
+		Long:  "Wraps UEdGraphSchema_Niagara::GetGraphActions — same data the editor's right-click menu uses. Each entry has display_name, category, tooltip, op_name (for Op), function_script (for FunctionCall), input_name/type (for Input), and full pin schema.",
+		Example: `ue-cli get_niagara_schema_actions --system-path /Game/VFX/NS_Fire --module-name MyDI --filter multiply`,
+		Params: []ParamSpec{
+			{Name: "system_path", Type: "string", Required: true, Help: "Niagara System asset path"},
+			{Name: "module_name", Type: "string", Required: true, Help: "Scratch pad module name"},
+			{Name: "filter", Type: "string", Help: "Case-insensitive substring filter"},
+			{Name: "max_results", Type: "int", Default: 300, Help: "Max returned entries"},
+		},
+	},
+	{
+		Name:  "describe_niagara_type",
+		Group: "niagara",
+		Short: "Generic type query — handles registered Niagara types AND raw UEnums/UScriptStructs",
+		Long:  "First tries FNiagaraTypeRegistry; falls back to UEnum/UScriptStruct reflection for script-property enums like ENiagaraScriptLibraryVisibility or any custom project enum.",
+		Example: `ue-cli describe_niagara_type --type Vector
+ue-cli describe_niagara_type --type ENiagaraScriptLibraryVisibility`,
+		Params: []ParamSpec{
+			{Name: "type", Type: "string", Required: true, Help: "Type name (pin-registered or UEnum/UScriptStruct)"},
+		},
+	},
+	{
+		Name:  "get_niagara_data_interface_schema",
+		Group: "niagara",
+		Short: "Walk a UNiagaraDataInterface class default object and return its editable property schema",
+		Example: `ue-cli get_niagara_data_interface_schema --di-class NiagaraDataInterfaceArrayPosition`,
+		Params: []ParamSpec{
+			{Name: "di_class", Type: "string", Required: true, Help: "DI class short or full name"},
+		},
+	},
+	{
+		Name:  "list_niagara_available_parameters",
+		Group: "niagara",
+		Short: "List available Niagara parameters (Engine.*, Particles.*, Emitter.*, User.*)",
+		Example: `ue-cli list_niagara_available_parameters --namespace engine --filter Time`,
+		Params: []ParamSpec{
+			{Name: "filter", Type: "string", Help: "Case-insensitive substring on parameter name"},
+			{Name: "namespace", Type: "string", Default: "all", Help: "all | engine | particles | emitter | user | system"},
+			{Name: "max_results", Type: "int", Default: 500, Help: "Max returned"},
+			{Name: "system_path", Type: "string", Help: "Optional — include system's user parameters"},
+			{Name: "module_name", Type: "string", Help: "Optional — scope to a scratch pad module's namespace"},
+		},
+	},
+
+	// -- Stack Input Binding (the dropdown loop) --
+	{
+		Name:  "get_niagara_module_input_binding",
+		Group: "niagara",
+		Short: "Resolve the actual binding of each module input — Default / Local / Linked / Dynamic / Data",
+		Long: "Answers 'what is Spawn Count actually driven by?'. Recursively walks dynamic-input children up to max_depth so a single call returns the full binding tree with nested parameter links and literal values.",
+		Example: `ue-cli get_niagara_module_input_binding --system-path /Game/VFX/NS_Fire --emitter-name Sparks --module-name SpawnPerFrame --script-usage emitter_update`,
+		Params: []ParamSpec{
+			{Name: "system_path", Type: "string", Required: true, Help: "Niagara System asset path"},
+			{Name: "emitter_name", Type: "string", Required: true, Help: "Emitter name"},
+			{Name: "module_name", Type: "string", Required: true, Help: "Module display name"},
+			{Name: "script_usage", Type: "string", Required: true, Help: "emitter_spawn|emitter_update|particle_spawn|particle_update|system_spawn|system_update"},
+			{Name: "input_filter", Type: "string", Help: "Case-insensitive substring on input name"},
+			{Name: "max_depth", Type: "int", Default: 3, Help: "Recursive descent cap for dynamic-input children"},
+		},
+	},
+	{
+		Name:  "clear_niagara_module_input",
+		Group: "niagara",
+		Short: "Reset a module input to its default (including nested paths like 'Spawn Count.Position Array')",
+		Long: "Finds the override pin, breaks its connections, removes orphan nodes exclusively feeding it, then removes the override pin. Mirrors 'Reset to Default' in the stack UI. Supports nested path syntax to reach inputs inside dynamic inputs.",
+		Example: `ue-cli clear_niagara_module_input --system-path /Game/VFX/NS_Fire --emitter-name Sparks --module-name SpawnPerFrame --script-usage emitter_update --input-name "Spawn Count.Position Array"`,
+		Params: []ParamSpec{
+			{Name: "system_path", Type: "string", Required: true, Help: "Niagara System asset path"},
+			{Name: "emitter_name", Type: "string", Required: true, Help: "Emitter name"},
+			{Name: "module_name", Type: "string", Required: true, Help: "Module display name"},
+			{Name: "script_usage", Type: "string", Required: true, Help: "Stack the module is in"},
+			{Name: "input_name", Type: "string", Required: true, Help: "Input name (supports 'Parent.Child' nesting)"},
+		},
+	},
+	{
+		Name:  "list_niagara_input_source_menu",
+		Group: "niagara",
+		Short: "Reproduce the stack-UI source dropdown for a specific input",
+		Long: "Returns the exact options the editor offers: dynamic_inputs (engine UNiagaraScript assets + scratch-pad DIs with source='scratch_pad' tag) + link_parameters grouped by namespace. Authoritative — the AI should call this before set_niagara_dynamic_input / link_niagara_parameter to never guess.",
+		Example: `ue-cli list_niagara_input_source_menu --system-path /Game/VFX/NS_Fire --emitter-name Sparks --module-name SpawnPerFrame --script-usage emitter_update --input-name "Spawn Count" --name-filter Length`,
+		Params: []ParamSpec{
+			{Name: "system_path", Type: "string", Required: true, Help: "Niagara System asset path"},
+			{Name: "emitter_name", Type: "string", Required: true, Help: "Emitter name"},
+			{Name: "module_name", Type: "string", Required: true, Help: "Module display name"},
+			{Name: "script_usage", Type: "string", Required: true, Help: "Stack the module is in"},
+			{Name: "input_name", Type: "string", Required: true, Help: "Target input name"},
+			{Name: "name_filter", Type: "string", Help: "Optional substring to narrow dynamic inputs / parameters"},
+		},
+	},
+
+	// -- Reverse Lookup / Built-in Resolution / DI Discovery --
+	{
+		Name:  "find_niagara_scratch_pad_usage",
+		Group: "niagara",
+		Short: "Find where a scratch pad script is referenced across all emitter/system graphs",
+		Long:  "Scans every emitter × {spawn, update, particle_spawn, particle_update} + system_spawn + system_update graphs for UNiagaraNodeFunctionCall nodes whose FunctionScript matches. Returns usage sites as {emitter, script_usage, function_name, node_id, is_dynamic_input}.",
+		Example: `ue-cli find_niagara_scratch_pad_usage --system-path /Game/VFX/NS_Fire --module-name GetDataInterfaceLength`,
+		Params: []ParamSpec{
+			{Name: "system_path", Type: "string", Required: true, Help: "Niagara System asset path"},
+			{Name: "module_name", Type: "string", Required: true, Help: "Scratch pad module name to hunt for"},
+		},
+	},
+	{
+		Name:  "resolve_niagara_built_in_dynamic_input",
+		Group: "niagara",
+		Short: "Discover built-in dynamic-input script paths via AssetRegistry (replaces hardcoded guesses)",
+		Long:  "Replaces guessed paths like /Niagara/Modules/DynamicInputs/UniformRangedFloat (which vary across UE versions) with a live AssetRegistry scan. Returns UNiagaraScript assets with Usage=DynamicInput matching the filter.",
+		Example: `ue-cli resolve_niagara_built_in_dynamic_input --name-filter Random --max-results 10`,
+		Params: []ParamSpec{
+			{Name: "name_filter", Type: "string", Help: "Case-insensitive substring"},
+			{Name: "exact_name", Type: "string", Help: "Return only the asset whose AssetName equals this"},
+			{Name: "max_results", Type: "int", Default: 20, Help: "Max returned"},
+		},
+	},
+	{
+		Name:  "list_niagara_data_interface_functions",
+		Group: "niagara",
+		Short: "Enumerate member functions on a Niagara data interface class",
+		Long: "Returns the functions the editor's right-click 'Functions' submenu shows on a DI pin — built-in DI members like Array.Length, Array.Get, Array.Add. These aren't UNiagaraScript assets so search_niagara_functions won't find them. Pass the result as function_name to add_niagara_graph_node(node_type='DataInterfaceFunction').",
+		Example: `ue-cli list_niagara_data_interface_functions --di-class NiagaraDataInterfaceArrayPosition --filter Length`,
+		Params: []ParamSpec{
+			{Name: "di_class", Type: "string", Required: true, Help: "Short ('NiagaraDataInterfaceArrayPosition') or full path"},
+			{Name: "filter", Type: "string", Help: "Case-insensitive substring on function name"},
+			{Name: "include_pins", Type: "bool", Default: true, Help: "Include input/output pin schema"},
+		},
+	},
 }

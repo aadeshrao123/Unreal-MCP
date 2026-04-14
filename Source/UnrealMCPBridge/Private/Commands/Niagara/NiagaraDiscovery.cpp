@@ -10,6 +10,7 @@
 #include "NiagaraGraph.h"
 #include "NiagaraDataInterface.h"
 #include "NiagaraTypes.h"
+#include "NiagaraTypeRegistry.h"
 #include "NiagaraCommon.h"
 
 #include "AssetRegistry/AssetRegistryModule.h"
@@ -311,84 +312,182 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleListNiagaraDataInte
 // HandleListNiagaraParameterTypes
 // ---------------------------------------------------------------------------
 
+// Live query against FNiagaraTypeRegistry. Mirrors the "+" menu in the Niagara
+// editor's User Parameters panel — any type Niagara knows about (built-in,
+// Niagara-registered struct, enum, or plugin-registered Data Interface) is
+// returned. Filters: name substring, scope (user/system/emitter/particle/all),
+// kind (primitive/struct/enum/data_interface), max_results.
 TSharedPtr<FJsonObject> FEpicUnrealMCPNiagaraCommands::HandleListNiagaraParameterTypes(
 	const TSharedPtr<FJsonObject>& Params)
 {
-	FString Scope = TEXT("all");
+	FString Scope = TEXT("user");
 	Params->TryGetStringField(TEXT("scope"), Scope);
 
-	// Common Niagara parameter types available for user parameters
-	struct FTypeEntry
+	FString Kind = TEXT("all");
+	Params->TryGetStringField(TEXT("kind"), Kind);
+
+	FString NameFilter;
+	Params->TryGetStringField(TEXT("filter"), NameFilter);
+
+	int32 MaxResults = 500;
 	{
-		const TCHAR* Name;
-		const TCHAR* Description;
-		const TCHAR* Scope;
-	};
+		double MaxResultsD = 500.0;
+		if (Params->TryGetNumberField(TEXT("max_results"), MaxResultsD))
+		{
+			MaxResults = static_cast<int32>(MaxResultsD);
+		}
+	}
 
-	static const FTypeEntry Types[] =
+	// Resolve scope → registry query. "all" returns every registered type.
+	TArray<FNiagaraTypeDefinition> Types;
+	const FString LowerScope = Scope.ToLower();
+	if (LowerScope == TEXT("user"))
 	{
-		// Primitive types (available in all scopes)
-		{ TEXT("float"), TEXT("32-bit floating point"), TEXT("all") },
-		{ TEXT("int32"), TEXT("32-bit signed integer"), TEXT("all") },
-		{ TEXT("bool"), TEXT("Boolean value"), TEXT("all") },
+		Types = FNiagaraTypeRegistry::GetRegisteredUserVariableTypes();
+	}
+	else if (LowerScope == TEXT("system"))
+	{
+		Types = FNiagaraTypeRegistry::GetRegisteredSystemVariableTypes();
+	}
+	else if (LowerScope == TEXT("emitter"))
+	{
+		Types = FNiagaraTypeRegistry::GetRegisteredEmitterVariableTypes();
+	}
+	else if (LowerScope == TEXT("particle"))
+	{
+		Types = FNiagaraTypeRegistry::GetRegisteredParticleVariableTypes();
+	}
+	else if (LowerScope == TEXT("parameter"))
+	{
+		Types = FNiagaraTypeRegistry::GetRegisteredParameterTypes();
+	}
+	else if (LowerScope == TEXT("payload"))
+	{
+		Types = FNiagaraTypeRegistry::GetRegisteredPayloadTypes();
+	}
+	else if (LowerScope == TEXT("numeric"))
+	{
+		Types = FNiagaraTypeRegistry::GetNumericTypes();
+	}
+	else if (LowerScope == TEXT("index"))
+	{
+		Types = FNiagaraTypeRegistry::GetIndexTypes();
+	}
+	else
+	{
+		Types = FNiagaraTypeRegistry::GetRegisteredTypes();
+	}
 
-		// Vector types
-		{ TEXT("Vector2D"), TEXT("2D vector (X, Y)"), TEXT("all") },
-		{ TEXT("Vector"), TEXT("3D vector (X, Y, Z)"), TEXT("all") },
-		{ TEXT("Vector4"), TEXT("4D vector (X, Y, Z, W)"), TEXT("all") },
+	const FString LowerKind = Kind.ToLower();
 
-		// Color
-		{ TEXT("LinearColor"), TEXT("Linear color (R, G, B, A)"), TEXT("all") },
-
-		// Transform
-		{ TEXT("Quat"), TEXT("Quaternion rotation"), TEXT("all") },
-		{ TEXT("Matrix"), TEXT("4x4 matrix"), TEXT("particle") },
-		{ TEXT("Position"), TEXT("World-space position (LWC)"), TEXT("all") },
-
-		// Niagara-specific
-		{ TEXT("NiagaraID"), TEXT("Niagara particle ID"), TEXT("particle") },
-		{ TEXT("NiagaraSpawnInfo"), TEXT("Spawn info struct"), TEXT("emitter") },
-		{ TEXT("NiagaraParameterMap"), TEXT("Parameter map"), TEXT("system") },
-
-		// Enums
-		{ TEXT("ENiagaraExecutionState"), TEXT("Emitter execution state enum"), TEXT("emitter") },
-		{ TEXT("ENiagaraCoordinateSpace"), TEXT("Coordinate space enum"), TEXT("all") },
-		{ TEXT("ENiagaraOrientationAxis"), TEXT("Orientation axis enum"), TEXT("all") },
-
-		// Data interfaces (user parameter scope)
-		{ TEXT("Texture2D"), TEXT("2D texture reference"), TEXT("user") },
-		{ TEXT("TextureCube"), TEXT("Cube texture reference"), TEXT("user") },
-		{ TEXT("StaticMesh"), TEXT("Static mesh reference"), TEXT("user") },
-		{ TEXT("SkeletalMesh"), TEXT("Skeletal mesh reference"), TEXT("user") },
+	auto ClassifyKind = [](const FNiagaraTypeDefinition& T) -> FString
+	{
+		if (T.IsDataInterface()) return TEXT("data_interface");
+		if (T.IsEnum())           return TEXT("enum");
+		if (T.IsUObject())        return TEXT("object");
+		if (T.GetScriptStruct())  return TEXT("struct");
+		return TEXT("primitive");
 	};
 
 	TArray<TSharedPtr<FJsonValue>> TypesArr;
-	FString LowerScope = Scope.ToLower();
-
-	for (const FTypeEntry& Entry : Types)
+	int32 TotalMatched = 0;
+	for (const FNiagaraTypeDefinition& TypeDef : Types)
 	{
-		if (LowerScope != TEXT("all"))
+		if (!TypeDef.IsValid())
 		{
-			FString EntryScope = Entry.Scope;
-			if (!EntryScope.Equals(TEXT("all"), ESearchCase::IgnoreCase) &&
-				!EntryScope.Equals(Scope, ESearchCase::IgnoreCase))
+			continue;
+		}
+
+		const FString EntryKind = ClassifyKind(TypeDef);
+		if (LowerKind != TEXT("all") && !EntryKind.Equals(LowerKind, ESearchCase::IgnoreCase))
+		{
+			continue;
+		}
+
+		const FString EntryName = TypeDef.GetName();
+		if (!NameFilter.IsEmpty() && !EntryName.Contains(NameFilter, ESearchCase::IgnoreCase))
+		{
+			// For data interfaces, also allow matching without the "NiagaraDataInterface" prefix
+			if (!(TypeDef.IsDataInterface() && EntryName.Replace(TEXT("NiagaraDataInterface"), TEXT("")).Contains(NameFilter, ESearchCase::IgnoreCase)))
 			{
 				continue;
 			}
 		}
 
+		TotalMatched++;
+		if (TypesArr.Num() >= MaxResults)
+		{
+			continue;
+		}
+
 		auto Obj = MakeShared<FJsonObject>();
-		Obj->SetStringField(TEXT("name"), Entry.Name);
-		Obj->SetStringField(TEXT("description"), Entry.Description);
-		Obj->SetStringField(TEXT("scope"), Entry.Scope);
+		Obj->SetStringField(TEXT("name"), EntryName);
+		Obj->SetStringField(TEXT("kind"), EntryKind);
+		Obj->SetNumberField(TEXT("size_bytes"), TypeDef.GetSize());
+
+		if (TypeDef.IsDataInterface())
+		{
+			if (UClass* Cls = TypeDef.GetClass())
+			{
+				Obj->SetStringField(TEXT("class_path"), Cls->GetPathName());
+				// Convenience short name — strips engine-internal prefix so users
+				// can reference "ArrayFloat" instead of "NiagaraDataInterfaceArrayFloat"
+				FString Short = Cls->GetName();
+				if (Short.StartsWith(TEXT("NiagaraDataInterface")))
+				{
+					Short.RightChopInline(FString(TEXT("NiagaraDataInterface")).Len());
+					Obj->SetStringField(TEXT("short_name"), Short);
+				}
+				// Category from metadata (used by editor "+"-menu grouping)
+#if WITH_EDITOR
+				const FString Category = Cls->GetMetaData(TEXT("Category"));
+				if (!Category.IsEmpty())
+				{
+					Obj->SetStringField(TEXT("category"), Category);
+				}
+				const FString Tooltip = Cls->GetMetaData(TEXT("ToolTip"));
+				if (!Tooltip.IsEmpty())
+				{
+					Obj->SetStringField(TEXT("description"), Tooltip);
+				}
+#endif
+			}
+		}
+		else if (TypeDef.IsEnum())
+		{
+			if (UEnum* Enum = TypeDef.GetEnum())
+			{
+				Obj->SetStringField(TEXT("enum_path"), Enum->GetPathName());
+				Obj->SetNumberField(TEXT("num_entries"), Enum->NumEnums());
+			}
+		}
+		else if (UScriptStruct* Struct = TypeDef.GetScriptStruct())
+		{
+			Obj->SetStringField(TEXT("struct_path"), Struct->GetPathName());
+#if WITH_EDITOR
+			const FString Tooltip = Struct->GetMetaData(TEXT("ToolTip"));
+			if (!Tooltip.IsEmpty())
+			{
+				Obj->SetStringField(TEXT("description"), Tooltip);
+			}
+#endif
+		}
+
 		TypesArr.Add(MakeShared<FJsonValueObject>(Obj));
 	}
 
 	auto Result = MakeShared<FJsonObject>();
 	Result->SetBoolField(TEXT("success"), true);
-	Result->SetStringField(TEXT("scope_filter"), Scope);
+	Result->SetStringField(TEXT("scope"), Scope);
+	Result->SetStringField(TEXT("kind_filter"), Kind);
+	if (!NameFilter.IsEmpty())
+	{
+		Result->SetStringField(TEXT("name_filter"), NameFilter);
+	}
 	Result->SetArrayField(TEXT("types"), TypesArr);
 	Result->SetNumberField(TEXT("count"), TypesArr.Num());
+	Result->SetNumberField(TEXT("total_matched"), TotalMatched);
+	Result->SetNumberField(TEXT("max_results"), MaxResults);
 	return Result;
 }
 

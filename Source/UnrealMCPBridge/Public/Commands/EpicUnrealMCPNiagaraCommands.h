@@ -104,6 +104,39 @@ private:
 	TSharedPtr<FJsonObject> HandleRenameNiagaraCustomHlslPin(const TSharedPtr<FJsonObject>& Params);
 	TSharedPtr<FJsonObject> HandleRemoveNiagaraCustomHlslPin(const TSharedPtr<FJsonObject>& Params);
 
+	// ---- Graph introspection (NiagaraGraphIntrospection.cpp) ----
+	TSharedPtr<FJsonObject> HandleGetNiagaraGraphNodes(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleGetNiagaraNodeInfo(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleTraceNiagaraConnection(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleValidateNiagaraGraph(const TSharedPtr<FJsonObject>& Params);
+
+	// ---- Scratch pad apply + script properties (NiagaraScratchPadApply.cpp) ----
+	TSharedPtr<FJsonObject> HandleApplyNiagaraScratchPad(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleApplyAndSaveNiagaraScratchPad(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleGetNiagaraScriptProperties(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleSetNiagaraScriptProperties(const TSharedPtr<FJsonObject>& Params);
+
+	// ---- Script parameters + type registry + node creation (NiagaraScriptParams.cpp) ----
+	TSharedPtr<FJsonObject> HandleListNiagaraScriptParameters(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleAddNiagaraScriptParameter(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleRemoveNiagaraScriptParameter(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleRenameNiagaraScriptParameter(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleAddNiagaraGraphNode(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleDeleteNiagaraGraphNode(const TSharedPtr<FJsonObject>& Params);
+
+	// ---- Stack input binding query + mutation (NiagaraStackBinding.cpp) ----
+	TSharedPtr<FJsonObject> HandleGetNiagaraModuleInputBinding(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleClearNiagaraModuleInput(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleListNiagaraInputSourceMenu(const TSharedPtr<FJsonObject>& Params);
+
+	// ---- Stack discovery / reverse lookup (NiagaraStackDiscovery.cpp) ----
+	TSharedPtr<FJsonObject> HandleFindNiagaraScratchPadUsage(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleResolveNiagaraBuiltInDynamicInput(const TSharedPtr<FJsonObject>& Params);
+
+	// ---- Data-interface function discovery (NiagaraScriptParams.cpp) ----
+	TSharedPtr<FJsonObject> HandleListNiagaraDataInterfaceFunctions(const TSharedPtr<FJsonObject>& Params);
+
+
 	// ---- Node discovery & schema introspection (NiagaraNodeDiscovery.cpp) ----
 	TSharedPtr<FJsonObject> HandleListNiagaraNodeTypes(const TSharedPtr<FJsonObject>& Params);
 	TSharedPtr<FJsonObject> HandleGetNiagaraNodeTypeInfo(const TSharedPtr<FJsonObject>& Params);
