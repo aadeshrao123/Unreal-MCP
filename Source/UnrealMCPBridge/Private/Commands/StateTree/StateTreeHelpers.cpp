@@ -6,6 +6,7 @@
 #include "StateTreeState.h"
 #include "StateTreeEditorNode.h"
 #include "StateTreeTypes.h"
+#include "StateTreeSchema.h"
 #include "StateTreeCompiler.h"
 #include "StateTreeCompilerLog.h"
 #include "StateTreePropertyBindings.h"
@@ -16,6 +17,7 @@
 #include "StructUtils/PropertyBag.h"
 
 #include "Logging/TokenizedMessage.h"
+#include "UObject/UObjectIterator.h"
 #include "UObject/UnrealType.h"
 
 // ---------------------------------------------------------------------------
@@ -1041,6 +1043,179 @@ FString StateTreeHelpers::TaskCompletionTypeToString(uint8 CompletionType)
 	default:
 		return TEXT("Unknown");
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Enum Parsing / Class Resolution
+// ---------------------------------------------------------------------------
+
+UClass* StateTreeHelpers::ResolveSchemaClass(const FString& SchemaName, FString& OutError)
+{
+	if (SchemaName.IsEmpty())
+	{
+		OutError = TEXT("Empty schema_class");
+		return nullptr;
+	}
+
+	// First, resolve according to the complete object path, and support the caller to directly pass in the exact class path.
+	UClass* Found = FindObject<UClass>(nullptr, *SchemaName);
+	if (Found && Found->IsChildOf(UStateTreeSchema::StaticClass()))
+	{
+		return Found;
+	}
+
+	// Then traverse the derived class by short name, compatible with two writing methods with and without U prefix.
+	TArray<UClass*> Derived;
+	GetDerivedClasses(UStateTreeSchema::StaticClass(), Derived, true);
+	for (UClass* C : Derived)
+	{
+		if (!C || C->HasAnyClassFlags(CLASS_Abstract))
+		{
+			continue;
+		}
+
+		const FString Name = C->GetName();
+		if (Name == SchemaName ||
+			Name == (TEXT("U") + SchemaName) ||
+			(SchemaName.StartsWith(TEXT("U")) && Name == SchemaName.RightChop(1)))
+		{
+			return C;
+		}
+	}
+
+	OutError = FString::Printf(TEXT("Schema class not found: '%s'"), *SchemaName);
+	return nullptr;
+}
+
+bool StateTreeHelpers::ParseStateType(const FString& Str, EStateTreeStateType& OutType)
+{
+	if (Str.IsEmpty() || Str.Equals(TEXT("State"), ESearchCase::IgnoreCase))
+	{
+		OutType = EStateTreeStateType::State;
+		return true;
+	}
+	if (Str.Equals(TEXT("Group"), ESearchCase::IgnoreCase))
+	{
+		OutType = EStateTreeStateType::Group;
+		return true;
+	}
+	if (Str.Equals(TEXT("Linked"), ESearchCase::IgnoreCase))
+	{
+		OutType = EStateTreeStateType::Linked;
+		return true;
+	}
+	if (Str.Equals(TEXT("LinkedAsset"), ESearchCase::IgnoreCase))
+	{
+		OutType = EStateTreeStateType::LinkedAsset;
+		return true;
+	}
+	if (Str.Equals(TEXT("Subtree"), ESearchCase::IgnoreCase))
+	{
+		OutType = EStateTreeStateType::Subtree;
+		return true;
+	}
+	return false;
+}
+
+bool StateTreeHelpers::ParseSelectionBehavior(const FString& Str, EStateTreeStateSelectionBehavior& OutBehavior)
+{
+	if (Str.Equals(TEXT("None"), ESearchCase::IgnoreCase))
+	{
+		OutBehavior = EStateTreeStateSelectionBehavior::None;
+		return true;
+	}
+	if (Str.Equals(TEXT("TryEnterState"), ESearchCase::IgnoreCase) ||
+		Str.Equals(TEXT("TryEnter"), ESearchCase::IgnoreCase))
+	{
+		OutBehavior = EStateTreeStateSelectionBehavior::TryEnterState;
+		return true;
+	}
+	if (Str.Equals(TEXT("TrySelectChildrenInOrder"), ESearchCase::IgnoreCase))
+	{
+		OutBehavior = EStateTreeStateSelectionBehavior::TrySelectChildrenInOrder;
+		return true;
+	}
+	if (Str.Equals(TEXT("TrySelectChildrenAtRandom"), ESearchCase::IgnoreCase))
+	{
+		OutBehavior = EStateTreeStateSelectionBehavior::TrySelectChildrenAtRandom;
+		return true;
+	}
+	if (Str.Equals(TEXT("TrySelectChildrenWithHighestUtility"), ESearchCase::IgnoreCase))
+	{
+		OutBehavior = EStateTreeStateSelectionBehavior::TrySelectChildrenWithHighestUtility;
+		return true;
+	}
+	if (Str.Equals(TEXT("TrySelectChildrenAtRandomWeightedByUtility"), ESearchCase::IgnoreCase))
+	{
+		OutBehavior = EStateTreeStateSelectionBehavior::TrySelectChildrenAtRandomWeightedByUtility;
+		return true;
+	}
+	if (Str.Equals(TEXT("TryFollowTransitions"), ESearchCase::IgnoreCase))
+	{
+		OutBehavior = EStateTreeStateSelectionBehavior::TryFollowTransitions;
+		return true;
+	}
+	return false;
+}
+
+bool StateTreeHelpers::ParseTransitionTrigger(const FString& Str, EStateTreeTransitionTrigger& OutTrigger)
+{
+	if (Str.Equals(TEXT("OnStateCompleted"), ESearchCase::IgnoreCase))
+	{
+		OutTrigger = EStateTreeTransitionTrigger::OnStateCompleted;
+		return true;
+	}
+	if (Str.Equals(TEXT("OnStateSucceeded"), ESearchCase::IgnoreCase))
+	{
+		OutTrigger = EStateTreeTransitionTrigger::OnStateSucceeded;
+		return true;
+	}
+	if (Str.Equals(TEXT("OnStateFailed"), ESearchCase::IgnoreCase))
+	{
+		OutTrigger = EStateTreeTransitionTrigger::OnStateFailed;
+		return true;
+	}
+	if (Str.Equals(TEXT("OnTick"), ESearchCase::IgnoreCase))
+	{
+		OutTrigger = EStateTreeTransitionTrigger::OnTick;
+		return true;
+	}
+	if (Str.Equals(TEXT("OnEvent"), ESearchCase::IgnoreCase))
+	{
+		OutTrigger = EStateTreeTransitionTrigger::OnEvent;
+		return true;
+	}
+	return false;
+}
+
+bool StateTreeHelpers::ParseTransitionPriority(const FString& Str, EStateTreeTransitionPriority& OutPriority)
+{
+	if (Str.IsEmpty() || Str.Equals(TEXT("Normal"), ESearchCase::IgnoreCase))
+	{
+		OutPriority = EStateTreeTransitionPriority::Normal;
+		return true;
+	}
+	if (Str.Equals(TEXT("Low"), ESearchCase::IgnoreCase))
+	{
+		OutPriority = EStateTreeTransitionPriority::Low;
+		return true;
+	}
+	if (Str.Equals(TEXT("Medium"), ESearchCase::IgnoreCase))
+	{
+		OutPriority = EStateTreeTransitionPriority::Medium;
+		return true;
+	}
+	if (Str.Equals(TEXT("High"), ESearchCase::IgnoreCase))
+	{
+		OutPriority = EStateTreeTransitionPriority::High;
+		return true;
+	}
+	if (Str.Equals(TEXT("Critical"), ESearchCase::IgnoreCase))
+	{
+		OutPriority = EStateTreeTransitionPriority::Critical;
+		return true;
+	}
+	return false;
 }
 
 // ---------------------------------------------------------------------------
