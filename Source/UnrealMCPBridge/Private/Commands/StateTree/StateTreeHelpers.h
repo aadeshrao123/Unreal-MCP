@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Json.h"
+#include "StateTreeTypes.h"
 #include "StructUtils/InstancedStruct.h"
 
 class UStateTree;
@@ -138,6 +139,23 @@ namespace StateTreeHelpers
 	FString TransitionPriorityToString(uint8 Priority);
 	FString ExpressionOperandToString(uint8 Operand);
 	FString TaskCompletionTypeToString(uint8 CompletionType);
+
+	// ---- Enum Parsing / Class Resolution ----
+
+	/** Parses an MCP input string to a StateTree state type. */
+	bool ParseStateType(const FString& Str, EStateTreeStateType& OutType);
+
+	/** Parses MCP input string into a StateTree child state selection behavior. */
+	bool ParseSelectionBehavior(const FString& Str, EStateTreeStateSelectionBehavior& OutBehavior);
+
+	/** Parses MCP input string into a StateTree transition trigger type. */
+	bool ParseTransitionTrigger(const FString& Str, EStateTreeTransitionTrigger& OutTrigger);
+
+	/** Parses MCP input string into a StateTree transition priority. */
+	bool ParseTransitionPriority(const FString& Str, EStateTreeTransitionPriority& OutPriority);
+
+	/** Resolves a UStateTreeSchema subclass by short name or full path. */
+	UClass* ResolveSchemaClass(const FString& SchemaName, FString& OutError);
 
 	// ---- Compilation ----
 
