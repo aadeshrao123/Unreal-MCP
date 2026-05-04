@@ -201,10 +201,14 @@ def get_actor_property_metadata(
         "max_entries":          max_entries,
         "cursor":               cursor,
     }
-    if property_path:   params["property_path"]  = property_path
-    if filter:          params["filter"]         = filter
-    if category:        params["category"]       = category
-    if component_name:  params["component_name"] = component_name
+    if property_path:
+        params["property_path"] = property_path
+    if filter:
+        params["filter"] = filter
+    if category:
+        params["category"] = category
+    if component_name:
+        params["component_name"] = component_name
     return _call("get_actor_property_metadata", params)
 
 
@@ -237,10 +241,14 @@ def spawn_actor_by_class(
         scale:      [x, y, z] scale.
     """
     params: dict = {"class_path": class_path}
-    if name:     params["name"]     = name
-    if location: params["location"] = location
-    if rotation: params["rotation"] = rotation
-    if scale:    params["scale"]    = scale
+    if name:
+        params["name"] = name
+    if location:
+        params["location"] = location
+    if rotation:
+        params["rotation"] = rotation
+    if scale:
+        params["scale"] = scale
     return _call("spawn_actor_by_class", params)
 
 
@@ -272,9 +280,17 @@ def find_actors(
         max_results: Cap on returned entries (0 = unlimited; truncated flag set).
         include_transform: Include location/rotation/scale per entry.
     """
-    params: dict = {"max_results": max_results, "exact_class": exact_class, "include_transform": include_transform}
-    if name_pattern:  params["name_pattern"]  = name_pattern
-    if label_pattern: params["label_pattern"] = label_pattern
-    if class_filter:  params["class_filter"]  = class_filter
-    if tag:           params["tag"]           = tag
+    params: dict = {
+        "max_results": max_results,
+        "exact_class": exact_class,
+        "include_transform": include_transform,
+    }
+    if name_pattern:
+        params["name_pattern"] = name_pattern
+    if label_pattern:
+        params["label_pattern"] = label_pattern
+    if class_filter:
+        params["class_filter"] = class_filter
+    if tag:
+        params["tag"] = tag
     return _call("find_actors", params)
