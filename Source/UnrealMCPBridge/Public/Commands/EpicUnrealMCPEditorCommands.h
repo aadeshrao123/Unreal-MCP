@@ -27,5 +27,9 @@ private:
 	TSharedPtr<FJsonObject> HandleGetWorldInfo(const TSharedPtr<FJsonObject>& Params);
 	TSharedPtr<FJsonObject> HandleSpawnActorFromClass(const TSharedPtr<FJsonObject>& Params);
 	TSharedPtr<FJsonObject> HandleGetActorProperties(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleSetActorProperty(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleGetActorPropertyMetadata(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleSpawnActorByClass(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleFindActors(const TSharedPtr<FJsonObject>& Params);
 	TSharedPtr<FJsonObject> HandleTakeScreenshot(const TSharedPtr<FJsonObject>& Params);
 };

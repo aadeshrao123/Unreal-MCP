@@ -1,6 +1,9 @@
 #include "Commands/EpicUnrealMCPEditorCommands.h"
 #include "Commands/EpicUnrealMCPCommonUtils.h"
 #include "Commands/EpicUnrealMCPBlueprintCommands.h"
+#include "Commands/EpicUnrealMCPPropertyUtils.h"
+#include "Subsystems/EditorActorSubsystem.h"
+#include "UObject/UObjectIterator.h"
 #include "JsonObjectConverter.h"
 #include "Editor.h"
 #include "EditorViewportClient.h"
@@ -74,6 +77,22 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleCommand(
 	else if (CommandType == TEXT("get_actor_properties"))
 	{
 		return HandleGetActorProperties(Params);
+	}
+	else if (CommandType == TEXT("set_actor_property"))
+	{
+		return HandleSetActorProperty(Params);
+	}
+	else if (CommandType == TEXT("get_actor_property_metadata"))
+	{
+		return HandleGetActorPropertyMetadata(Params);
+	}
+	else if (CommandType == TEXT("spawn_actor_by_class"))
+	{
+		return HandleSpawnActorByClass(Params);
+	}
+	else if (CommandType == TEXT("find_actors"))
+	{
+		return HandleFindActors(Params);
 	}
 	else if (CommandType == TEXT("take_screenshot"))
 	{
@@ -253,24 +272,51 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleDeleteActor(
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'name' parameter"));
 	}
 
-	TArray<AActor*> AllActors;
-	UGameplayStatics::GetAllActorsOfClass(GWorld, AActor::StaticClass(), AllActors);
-
-	for (AActor* Actor : AllActors)
+	UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : GWorld;
+	if (!World)
 	{
-		if (Actor && Actor->GetName() == ActorName)
-		{
-			TSharedPtr<FJsonObject> ActorInfo = FEpicUnrealMCPCommonUtils::ActorToJsonObject(Actor);
-			Actor->Destroy();
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get editor world"));
+	}
 
-			TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
-			ResultObj->SetObjectField(TEXT("deleted_actor"), ActorInfo);
-			return ResultObj;
+	AActor* Target = nullptr;
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		AActor* A = *It;
+		if (A && (A->GetActorLabel() == ActorName || A->GetName() == ActorName))
+		{
+			Target = A;
+			break;
 		}
 	}
 
-	return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
-		FString::Printf(TEXT("Actor not found: %s"), *ActorName));
+	if (!Target)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Actor not found: %s"), *ActorName));
+	}
+
+	TSharedPtr<FJsonObject> ActorInfo = FEpicUnrealMCPCommonUtils::ActorToJsonObject(Target);
+
+	// Modify() registers with the transaction system so Ctrl+Z restores the actor.
+	Target->Modify();
+	if (ULevel* Level = Target->GetLevel())
+	{
+		Level->Modify();
+	}
+
+	if (UEditorActorSubsystem* EAS = GEditor->GetEditorSubsystem<UEditorActorSubsystem>())
+	{
+		EAS->DestroyActor(Target);
+	}
+	else
+	{
+		World->EditorDestroyActor(Target, true);
+	}
+
+	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	ResultObj->SetBoolField(TEXT("success"), true);
+	ResultObj->SetObjectField(TEXT("deleted_actor"), ActorInfo);
+	return ResultObj;
 }
 
 TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleSetActorTransform(
@@ -473,29 +519,6 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleSpawnActorFromClass(
 	return FEpicUnrealMCPCommonUtils::ActorToJsonObject(NewActor, true);
 }
 
-static TSharedPtr<FJsonObject> SerializeObjectProperties(
-	UObject* Obj, const FString& FilterLower)
-{
-	TSharedPtr<FJsonObject> Props = MakeShared<FJsonObject>();
-	for (TFieldIterator<FProperty> It(Obj->GetClass(), EFieldIteratorFlags::IncludeSuper); It; ++It)
-	{
-		FProperty* Prop = *It;
-		const FString Name = Prop->GetName();
-		if (!FilterLower.IsEmpty() && !Name.ToLower().Contains(FilterLower))
-		{
-			continue;
-		}
-
-		const void* Addr = Prop->ContainerPtrToValuePtr<void>(Obj);
-		TSharedPtr<FJsonValue> Val = FJsonObjectConverter::UPropertyToJsonValue(Prop, Addr);
-		if (Val.IsValid())
-		{
-			Props->SetField(Name, Val);
-		}
-	}
-	return Props;
-}
-
 TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleGetActorProperties(
 	const TSharedPtr<FJsonObject>& Params)
 {
@@ -512,13 +535,30 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleGetActorProperties(
 	bool bIncludeComponents = false;
 	Params->TryGetBoolField(TEXT("include_components"), bIncludeComponents);
 
-	UWorld* World = GEditor->GetEditorWorldContext().World();
+	bool bFlat = false;
+	Params->TryGetBoolField(TEXT("flat"), bFlat);
+
+	bool bIncludeMetadata = false;
+	Params->TryGetBoolField(TEXT("include_metadata"), bIncludeMetadata);
+
+	bool bExpandArrays = true;
+	Params->TryGetBoolField(TEXT("expand_arrays"), bExpandArrays);
+
+	int32 MaxDepth = 0;
+	double MaxDepthD = 0.0;
+	if (Params->TryGetNumberField(TEXT("max_depth"), MaxDepthD)) { MaxDepth = static_cast<int32>(MaxDepthD); }
+	else { MaxDepth = 3; }
+
+	int32 ArrayElementLimit = 16;
+	double ArrLimD = 0.0;
+	if (Params->TryGetNumberField(TEXT("array_element_limit"), ArrLimD)) { ArrayElementLimit = static_cast<int32>(ArrLimD); }
+
+	UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
 	if (!World)
 	{
 		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get editor world"));
 	}
 
-	// Match by editor label or internal name
 	AActor* Target = nullptr;
 	for (TActorIterator<AActor> It(World); It; ++It)
 	{
@@ -540,28 +580,522 @@ TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleGetActorProperties(
 	Result->SetBoolField(TEXT("success"), true);
 	Result->SetStringField(TEXT("actor_name"), Target->GetName());
 	Result->SetStringField(TEXT("actor_label"), Target->GetActorLabel());
-	Result->SetStringField(TEXT("class"), Target->GetClass()->GetName());
-	Result->SetObjectField(TEXT("properties"), SerializeObjectProperties(Target, FilterLower));
+	Result->SetStringField(TEXT("class"), Target->GetClass()->GetPathName());
 
-	if (bIncludeComponents)
+	if (bFlat)
+	{
+		// Flat dotted-path mode — path-aware filtering, depth-limited, AI-friendly.
+		FString Category;
+		Params->TryGetStringField(TEXT("category"), Category);
+
+		bool bIncludeInherited = true;
+		Params->TryGetBoolField(TEXT("include_inherited"), bIncludeInherited);
+
+		int32 MaxEntries = 200;
+		double MaxEntriesD = 0.0;
+		if (Params->TryGetNumberField(TEXT("max_entries"), MaxEntriesD)) { MaxEntries = static_cast<int32>(MaxEntriesD); }
+
+		int32 Cursor = 0;
+		double CursorD = 0.0;
+		if (Params->TryGetNumberField(TEXT("cursor"), CursorD)) { Cursor = static_cast<int32>(CursorD); }
+
+		FPropertyWalkOptions Opts;
+		Opts.FilterLower = FilterLower;
+		Opts.CategoryLower = Category.ToLower();
+		Opts.MaxDepth = MaxDepth;
+		Opts.MaxEntries = MaxEntries;
+		Opts.Cursor = Cursor;
+		Opts.bIncludeMetadata = bIncludeMetadata;
+		Opts.bExpandArrays = bExpandArrays;
+		Opts.ArrayElementLimit = ArrayElementLimit;
+		Opts.bIncludeInherited = bIncludeInherited;
+
+		Result->SetObjectField(TEXT("properties"),
+			FEpicUnrealMCPPropertyUtils::SerializePropertiesFlat(Target, Opts));
+
+		if (bIncludeComponents)
+		{
+			TArray<UActorComponent*> Components;
+			Target->GetComponents(Components);
+			TSharedPtr<FJsonObject> CompMap = MakeShared<FJsonObject>();
+			for (UActorComponent* Comp : Components)
+			{
+				if (!Comp) { continue; }
+				CompMap->SetObjectField(Comp->GetName(),
+					FEpicUnrealMCPPropertyUtils::SerializePropertiesFlat(Comp, Opts));
+			}
+			Result->SetObjectField(TEXT("components"), CompMap);
+		}
+	}
+	else
+	{
+		// Nested mode — top-level FProperty names filtered, structs returned as nested JSON.
+		Result->SetObjectField(TEXT("properties"),
+			FEpicUnrealMCPPropertyUtils::SerializeAllProperties(Target, FilterLower, true));
+
+		if (bIncludeComponents)
+		{
+			TArray<UActorComponent*> Components;
+			Target->GetComponents(Components);
+			TSharedPtr<FJsonObject> CompMap = MakeShared<FJsonObject>();
+			for (UActorComponent* Comp : Components)
+			{
+				if (!Comp) { continue; }
+				const FString CompKey = Comp->GetName() + TEXT(" (") + Comp->GetClass()->GetName() + TEXT(")");
+				CompMap->SetObjectField(CompKey,
+					FEpicUnrealMCPPropertyUtils::SerializeAllProperties(Comp, FilterLower, true));
+			}
+			Result->SetObjectField(TEXT("components"), CompMap);
+		}
+	}
+
+	return Result;
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleSetActorProperty(
+	const TSharedPtr<FJsonObject>& Params)
+{
+	FString ActorLabel;
+	if (!Params->TryGetStringField(TEXT("actor_label"), ActorLabel))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'actor_label' parameter"));
+	}
+
+	FString PropertyPath;
+	if (!Params->TryGetStringField(TEXT("property_path"), PropertyPath))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'property_path' parameter"));
+	}
+
+	const TSharedPtr<FJsonValue> Value = Params->TryGetField(TEXT("property_value"));
+	if (!Value.IsValid())
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'property_value' parameter"));
+	}
+
+	FString ComponentName;
+	Params->TryGetStringField(TEXT("component_name"), ComponentName);
+
+	UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+	if (!World)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get editor world"));
+	}
+
+	AActor* TargetActor = nullptr;
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		AActor* A = *It;
+		if (A && (A->GetActorLabel() == ActorLabel || A->GetName() == ActorLabel))
+		{
+			TargetActor = A;
+			break;
+		}
+	}
+
+	if (!TargetActor)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Actor not found in level: '%s'"), *ActorLabel));
+	}
+
+	UObject* TargetObject = TargetActor;
+	UActorComponent* TargetComponent = nullptr;
+	if (!ComponentName.IsEmpty())
+	{
+		TArray<UActorComponent*> Components;
+		TargetActor->GetComponents(Components);
+		for (UActorComponent* Comp : Components)
+		{
+			if (Comp && (Comp->GetName() == ComponentName || Comp->GetClass()->GetName() == ComponentName))
+			{
+				TargetComponent = Comp;
+				TargetObject = Comp;
+				break;
+			}
+		}
+		if (!TargetComponent)
+		{
+			return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+				FString::Printf(TEXT("Component '%s' not found on actor '%s'"), *ComponentName, *ActorLabel));
+		}
+	}
+
+	TargetActor->Modify();
+	if (TargetComponent) { TargetComponent->Modify(); }
+
+	FProperty* TopLevelProp = nullptr;
+	FString WriteError;
+	const bool bOk = FEpicUnrealMCPPropertyUtils::SetPropertyAtPath(
+		TargetObject, PropertyPath, Value, WriteError, &TopLevelProp);
+
+	if (!bOk)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Failed to set '%s' on '%s': %s"), *PropertyPath, *ActorLabel, *WriteError));
+	}
+
+	if (TopLevelProp)
+	{
+		FPropertyChangedEvent ChangeEvent(TopLevelProp, EPropertyChangeType::ValueSet);
+		TargetObject->PostEditChangeProperty(ChangeEvent);
+	}
+
+	if (TargetActor->GetLevel())
+	{
+		TargetActor->GetLevel()->MarkPackageDirty();
+	}
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetBoolField(TEXT("success"), true);
+	Result->SetStringField(TEXT("actor_label"), TargetActor->GetActorLabel());
+	Result->SetStringField(TEXT("actor_name"), TargetActor->GetName());
+	Result->SetStringField(TEXT("property_path"), PropertyPath);
+	if (TargetComponent) { Result->SetStringField(TEXT("component"), TargetComponent->GetName()); }
+	if (TopLevelProp) { Result->SetStringField(TEXT("top_level_property"), TopLevelProp->GetName()); }
+	return Result;
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleGetActorPropertyMetadata(
+	const TSharedPtr<FJsonObject>& Params)
+{
+	FString ActorLabel;
+	if (!Params->TryGetStringField(TEXT("actor_label"), ActorLabel))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'actor_label' parameter"));
+	}
+
+	FString PropertyPath;
+	Params->TryGetStringField(TEXT("property_path"), PropertyPath);
+
+	FString Filter;
+	Params->TryGetStringField(TEXT("filter"), Filter);
+	const FString FilterLower = Filter.ToLower();
+
+	FString Category;
+	Params->TryGetStringField(TEXT("category"), Category);
+
+	int32 MaxDepth = 1;
+	double DepthD = 0.0;
+	if (Params->TryGetNumberField(TEXT("depth"), DepthD)) { MaxDepth = static_cast<int32>(DepthD); }
+
+	bool bExpandEnums = true;
+	Params->TryGetBoolField(TEXT("expand_enums"), bExpandEnums);
+
+	bool bIncludeInherited = true;
+	Params->TryGetBoolField(TEXT("include_inherited"), bIncludeInherited);
+
+	bool bDescendIntoObjects = false;
+	Params->TryGetBoolField(TEXT("descend_into_objects"), bDescendIntoObjects);
+
+	int32 MaxEntries = 50;
+	double MaxEntriesD = 0.0;
+	if (Params->TryGetNumberField(TEXT("max_entries"), MaxEntriesD)) { MaxEntries = static_cast<int32>(MaxEntriesD); }
+
+	int32 Cursor = 0;
+	double CursorD = 0.0;
+	if (Params->TryGetNumberField(TEXT("cursor"), CursorD)) { Cursor = static_cast<int32>(CursorD); }
+
+	FString ComponentName;
+	Params->TryGetStringField(TEXT("component_name"), ComponentName);
+
+	UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+	if (!World)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get editor world"));
+	}
+
+	AActor* Target = nullptr;
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		AActor* A = *It;
+		if (A && (A->GetActorLabel() == ActorLabel || A->GetName() == ActorLabel))
+		{
+			Target = A;
+			break;
+		}
+	}
+	if (!Target)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Actor not found: '%s'"), *ActorLabel));
+	}
+
+	UObject* TargetObject = Target;
+	if (!ComponentName.IsEmpty())
 	{
 		TArray<UActorComponent*> Components;
 		Target->GetComponents(Components);
-
-		TSharedPtr<FJsonObject> CompMap = MakeShared<FJsonObject>();
-		for (UActorComponent* Comp : Components)
+		UActorComponent* Found = nullptr;
+		for (UActorComponent* C : Components)
 		{
-			if (!Comp)
+			if (C && (C->GetName() == ComponentName || C->GetClass()->GetName() == ComponentName))
 			{
-				continue;
+				Found = C;
+				break;
 			}
-			const FString CompKey =
-				Comp->GetName() + TEXT(" (") + Comp->GetClass()->GetName() + TEXT(")");
-			CompMap->SetObjectField(CompKey, SerializeObjectProperties(Comp, FilterLower));
 		}
-		Result->SetObjectField(TEXT("components"), CompMap);
+		if (!Found)
+		{
+			return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+				FString::Printf(TEXT("Component '%s' not found"), *ComponentName));
+		}
+		TargetObject = Found;
 	}
 
+	FPropertyWalkOptions Opts;
+	Opts.FilterLower = FilterLower;
+	Opts.CategoryLower = Category.ToLower();
+	Opts.MaxDepth = MaxDepth;
+	Opts.MaxEntries = MaxEntries;
+	Opts.Cursor = Cursor;
+	Opts.bExpandEnum = bExpandEnums;
+	Opts.bIncludeInherited = bIncludeInherited;
+	Opts.bDescendIntoObjects = bDescendIntoObjects;
+	Opts.bIncludeMetadata = true;
+
+	TSharedPtr<FJsonObject> Tree = FEpicUnrealMCPPropertyUtils::GetPropertyMetadataTree(
+		TargetObject, PropertyPath, Opts);
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetBoolField(TEXT("success"), true);
+	Result->SetStringField(TEXT("actor_name"), Target->GetName());
+	Result->SetStringField(TEXT("actor_label"), Target->GetActorLabel());
+	Result->SetStringField(TEXT("class"), Target->GetClass()->GetPathName());
+	if (!ComponentName.IsEmpty()) { Result->SetStringField(TEXT("component"), ComponentName); }
+	if (!PropertyPath.IsEmpty()) { Result->SetStringField(TEXT("property_path"), PropertyPath); }
+	Result->SetObjectField(TEXT("metadata"), Tree);
+	return Result;
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleSpawnActorByClass(
+	const TSharedPtr<FJsonObject>& Params)
+{
+	FString ClassPath;
+	if (!Params->TryGetStringField(TEXT("class_path"), ClassPath) || ClassPath.IsEmpty())
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'class_path' parameter"));
+	}
+
+	FString DesiredName;
+	Params->TryGetStringField(TEXT("name"), DesiredName);
+
+	FVector Location = FVector::ZeroVector;
+	FRotator Rotation = FRotator::ZeroRotator;
+	FVector Scale = FVector::OneVector;
+	if (Params->HasField(TEXT("location"))) { Location = FEpicUnrealMCPCommonUtils::GetVectorFromJson(Params, TEXT("location")); }
+	if (Params->HasField(TEXT("rotation"))) { Rotation = FEpicUnrealMCPCommonUtils::GetRotatorFromJson(Params, TEXT("rotation")); }
+	if (Params->HasField(TEXT("scale"))) { Scale = FEpicUnrealMCPCommonUtils::GetVectorFromJson(Params, TEXT("scale")); }
+
+	UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+	if (!World)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get editor world"));
+	}
+
+	UClass* Class = nullptr;
+
+	// 1. Full class path (contains '.' and starts with '/'): direct find/load.
+	if (ClassPath.Contains(TEXT(".")))
+	{
+		Class = FindObject<UClass>(nullptr, *ClassPath);
+		if (!Class) { Class = LoadObject<UClass>(nullptr, *ClassPath); }
+	}
+
+	// 2. Blueprint asset path (e.g. "/Game/Blueprints/BP_Foo"): load asset, get GeneratedClass.
+	if (!Class && ClassPath.StartsWith(TEXT("/")))
+	{
+		FString BPPath = ClassPath;
+		if (!BPPath.Contains(TEXT(".")))
+		{
+			FString PathOnly, AssetName;
+			BPPath.Split(TEXT("/"), &PathOnly, &AssetName, ESearchCase::IgnoreCase, ESearchDir::FromEnd);
+			if (!AssetName.IsEmpty()) { BPPath = ClassPath + TEXT(".") + AssetName; }
+		}
+		UObject* Asset = StaticLoadObject(UObject::StaticClass(), nullptr, *BPPath);
+		if (!Asset) { Asset = UEditorAssetLibrary::LoadAsset(ClassPath); }
+		if (UBlueprint* BP = Cast<UBlueprint>(Asset))
+		{
+			Class = BP->GeneratedClass;
+		}
+		if (!Class)
+		{
+			// Maybe ClassPath is the GeneratedClass itself (ends with _C)
+			Class = LoadObject<UClass>(nullptr, *(ClassPath + TEXT("_C")));
+		}
+	}
+
+	// 3. Short name fallback — iterate UClass to find by short name.
+	if (!Class)
+	{
+		Class = FEpicUnrealMCPPropertyUtils::ResolveAnyClass(ClassPath);
+	}
+
+	if (!Class)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Could not resolve class '%s'"), *ClassPath));
+	}
+	if (!Class->IsChildOf(AActor::StaticClass()))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Class '%s' is not an AActor subclass"), *Class->GetPathName()));
+	}
+	if (Class->HasAnyClassFlags(CLASS_Abstract | CLASS_Deprecated))
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Class '%s' is abstract or deprecated"), *Class->GetPathName()));
+	}
+
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	if (!DesiredName.IsEmpty()) { SpawnParams.Name = FName(*DesiredName); }
+	SpawnParams.NameMode = FActorSpawnParameters::ESpawnActorNameMode::Requested;
+
+	AActor* NewActor = nullptr;
+	if (UEditorActorSubsystem* EAS = GEditor->GetEditorSubsystem<UEditorActorSubsystem>())
+	{
+		// Editor subsystem path — registers with transaction system.
+		NewActor = EAS->SpawnActorFromClass(Class, Location, Rotation, /*bTransient*/ false);
+	}
+	if (!NewActor)
+	{
+		NewActor = World->SpawnActor<AActor>(Class, Location, Rotation, SpawnParams);
+	}
+	if (!NewActor)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("SpawnActor returned null for class '%s'"), *Class->GetPathName()));
+	}
+
+	if (!Scale.Equals(FVector::OneVector))
+	{
+		NewActor->SetActorScale3D(Scale);
+	}
+	if (!DesiredName.IsEmpty())
+	{
+		NewActor->SetActorLabel(DesiredName);
+	}
+
+	if (ULevel* Level = NewActor->GetLevel())
+	{
+		Level->MarkPackageDirty();
+	}
+
+	TSharedPtr<FJsonObject> Result = FEpicUnrealMCPCommonUtils::ActorToJsonObject(NewActor, true);
+	Result->SetBoolField(TEXT("success"), true);
+	Result->SetStringField(TEXT("class_path"), Class->GetPathName());
+	return Result;
+}
+
+TSharedPtr<FJsonObject> FEpicUnrealMCPEditorCommands::HandleFindActors(
+	const TSharedPtr<FJsonObject>& Params)
+{
+	FString NamePattern, LabelPattern, ClassFilter, TagFilter;
+	Params->TryGetStringField(TEXT("name_pattern"), NamePattern);
+	Params->TryGetStringField(TEXT("label_pattern"), LabelPattern);
+	Params->TryGetStringField(TEXT("class_filter"), ClassFilter);
+	Params->TryGetStringField(TEXT("tag"), TagFilter);
+
+	int32 MaxResults = 100;
+	double MaxResultsD = 0.0;
+	if (Params->TryGetNumberField(TEXT("max_results"), MaxResultsD)) { MaxResults = static_cast<int32>(MaxResultsD); }
+
+	bool bExactClass = false;
+	Params->TryGetBoolField(TEXT("exact_class"), bExactClass);
+
+	bool bIncludeTransform = false;
+	Params->TryGetBoolField(TEXT("include_transform"), bIncludeTransform);
+
+	const FString NameLower = NamePattern.ToLower();
+	const FString LabelLower = LabelPattern.ToLower();
+	const FString ClassLower = ClassFilter.ToLower();
+
+	UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+	if (!World)
+	{
+		return FEpicUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get editor world"));
+	}
+
+	// Resolve class filter as a UClass if it looks like a real class (so we can do IsChildOf).
+	UClass* ClassFilterClass = nullptr;
+	if (!ClassFilter.IsEmpty())
+	{
+		ClassFilterClass = FEpicUnrealMCPPropertyUtils::ResolveAnyClass(ClassFilter);
+	}
+
+	TArray<TSharedPtr<FJsonValue>> ActorArr;
+	int32 TotalScanned = 0;
+	int32 TotalMatched = 0;
+
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		AActor* A = *It;
+		if (!A) { continue; }
+		++TotalScanned;
+
+		if (!NameLower.IsEmpty() && !A->GetName().ToLower().Contains(NameLower)) { continue; }
+		if (!LabelLower.IsEmpty() && !A->GetActorLabel().ToLower().Contains(LabelLower)) { continue; }
+
+		if (!ClassFilter.IsEmpty())
+		{
+			if (ClassFilterClass)
+			{
+				if (bExactClass)
+				{
+					if (A->GetClass() != ClassFilterClass) { continue; }
+				}
+				else
+				{
+					if (!A->IsA(ClassFilterClass)) { continue; }
+				}
+			}
+			else
+			{
+				const FString ClassNameLower = A->GetClass()->GetName().ToLower();
+				const FString ClassPathLower = A->GetClass()->GetPathName().ToLower();
+				if (!ClassNameLower.Contains(ClassLower) && !ClassPathLower.Contains(ClassLower)) { continue; }
+			}
+		}
+
+		if (!TagFilter.IsEmpty() && !A->Tags.Contains(FName(*TagFilter))) { continue; }
+
+		++TotalMatched;
+		if (ActorArr.Num() >= MaxResults && MaxResults > 0) { continue; }
+
+		TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+		Entry->SetStringField(TEXT("name"), A->GetName());
+		Entry->SetStringField(TEXT("label"), A->GetActorLabel());
+		Entry->SetStringField(TEXT("class"), A->GetClass()->GetPathName());
+		Entry->SetStringField(TEXT("class_short"), A->GetClass()->GetName());
+		if (bIncludeTransform)
+		{
+			const FVector L = A->GetActorLocation();
+			const FRotator R = A->GetActorRotation();
+			const FVector S = A->GetActorScale3D();
+			TArray<TSharedPtr<FJsonValue>> Loc = { MakeShared<FJsonValueNumber>(L.X), MakeShared<FJsonValueNumber>(L.Y), MakeShared<FJsonValueNumber>(L.Z) };
+			TArray<TSharedPtr<FJsonValue>> Rot = { MakeShared<FJsonValueNumber>(R.Pitch), MakeShared<FJsonValueNumber>(R.Yaw), MakeShared<FJsonValueNumber>(R.Roll) };
+			TArray<TSharedPtr<FJsonValue>> Scl = { MakeShared<FJsonValueNumber>(S.X), MakeShared<FJsonValueNumber>(S.Y), MakeShared<FJsonValueNumber>(S.Z) };
+			Entry->SetArrayField(TEXT("location"), Loc);
+			Entry->SetArrayField(TEXT("rotation"), Rot);
+			Entry->SetArrayField(TEXT("scale"), Scl);
+		}
+		if (A->Tags.Num() > 0)
+		{
+			TArray<TSharedPtr<FJsonValue>> Tags;
+			for (const FName& T : A->Tags) { Tags.Add(MakeShared<FJsonValueString>(T.ToString())); }
+			Entry->SetArrayField(TEXT("tags"), Tags);
+		}
+		ActorArr.Add(MakeShared<FJsonValueObject>(Entry));
+	}
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetBoolField(TEXT("success"), true);
+	Result->SetNumberField(TEXT("total_scanned"), TotalScanned);
+	Result->SetNumberField(TEXT("total_matched"), TotalMatched);
+	Result->SetNumberField(TEXT("returned"), ActorArr.Num());
+	Result->SetBoolField(TEXT("truncated"), TotalMatched > ActorArr.Num());
+	Result->SetArrayField(TEXT("actors"), ActorArr);
 	return Result;
 }
 

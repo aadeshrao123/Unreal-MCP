@@ -242,4 +242,103 @@ var editorCommands = []CommandSpec{
 			{Name: "mode", Type: "string", Default: "viewport", Help: "viewport or window"},
 		},
 	},
+	{
+		Name:  "set_actor_property",
+		Group: "editor",
+		Short: "Set a property at any nested path on a placed actor",
+		Long:  "Writes any property on the actual placed level actor (not the CDO/Blueprint defaults). Walks dotted paths through structs, FArrayProperty, FSetProperty and static C arrays via Field[N] syntax. Fires PostEditChangeProperty on the top-level FProperty so the renderer/component refresh, and marks the level dirty for save.",
+		Example: `  umcp set_actor_property --actor-label "PostProcessVolume_1" --property-path "Settings.BloomIntensity" --property-value 2.0
+  umcp set_actor_property --actor-label "PostProcessVolume_1" --property-path "Settings.bOverride_BloomIntensity" --property-value true
+  umcp set_actor_property --actor-label "PostProcessVolume_1" --property-path "Settings.LensFlareTints[2]" --property-value '{"R":0,"G":1,"B":0,"A":1}'
+  umcp set_actor_property --actor-label "MyMeshActor" --component-name "StaticMeshComponent" --property-path "Mobility" --property-value "Movable"`,
+		Params: []ParamSpec{
+			{Name: "actor_label", Type: "string", Required: true, Help: "Actor outliner label or UObject name"},
+			{Name: "property_path", Type: "string", Required: true, Help: "Dotted property path (e.g. Settings.BloomIntensity)"},
+			{Name: "property_value", Type: "json", Required: true, Help: "JSON-encoded value (number, bool, string, object, array)"},
+			{Name: "component_name", Type: "string", Help: "Optional: anchor path to a named component"},
+		},
+	},
+	{
+		Name:  "get_actor_property_metadata",
+		Group: "editor",
+		Short: "Inspect property type/clamp/enum metadata on a placed actor",
+		Long:  "Returns per-property metadata (cpp_type, ue_type, category, current_value, clamp_min/max, ui_min/max, valid_values for enums, inner/element/key/value types for containers, object_class/meta_class for refs, is_struct/is_array/is_enum/is_object/is_bool flags) PLUS a _summary header (total_available, total_returned, truncated, next_cursor, own_count, inherited_count, class_chain, categories breakdown). Object refs DO NOT auto-descend by default — use component_name to switch context, or pass descend_into_objects=true. max_entries=0 returns only the _summary so you can plan first.",
+		Example: `  umcp get_actor_property_metadata --actor-label "PostProcessVolume_1" --property-path "Settings.AutoExposureMethod"
+  umcp get_actor_property_metadata --actor-label "PostProcessVolume_1" --property-path "Settings" --filter "bloom" --depth 1
+  umcp get_actor_property_metadata --actor-label "MCP_TestPointLight" --component-name "LightComponent0" --category "Light" --max-entries 20
+  umcp get_actor_property_metadata --actor-label "MCP_TestPointLight" --max-entries 0
+  umcp get_actor_property_metadata --actor-label "MCP_TestPointLight" --include-inherited false --component-name "LightComponent0"`,
+		Params: []ParamSpec{
+			{Name: "actor_label", Type: "string", Required: true, Help: "Actor outliner label or UObject name"},
+			{Name: "property_path", Type: "string", Help: "Optional dotted path; empty = top-level"},
+			{Name: "filter", Type: "string", Help: "Case-insensitive substring on full path"},
+			{Name: "category", Type: "string", Help: "UPROPERTY(Category=X) exact match (case-insensitive)"},
+			{Name: "depth", Type: "int", Default: "1", Help: "Struct nesting levels to expand"},
+			{Name: "expand_enums", Type: "bool", Default: "true", Help: "Include valid_values for enum-typed fields"},
+			{Name: "include_inherited", Type: "bool", Default: "true", Help: "Walk super class properties"},
+			{Name: "descend_into_objects", Type: "bool", Default: "false", Help: "If path lands on object ref, enumerate its class"},
+			{Name: "max_entries", Type: "int", Default: "50", Help: "Cap on emitted entries (0 = summary only)"},
+			{Name: "cursor", Type: "int", Default: "0", Help: "Pagination offset (use _summary.next_cursor)"},
+			{Name: "component_name", Type: "string", Help: "Optional: anchor to a named component"},
+		},
+	},
+	{
+		Name:  "spawn_actor_by_class",
+		Group: "editor",
+		Short: "Spawn ANY AActor subclass — engine, plugin, or Blueprint",
+		Long:  "Resolves class_path as full UClass path (\"/Script/Engine.PostProcessVolume\"), Blueprint asset path (\"/Game/BP_Miner\"), or short name (\"PostProcessVolume\"). Validates child of AActor + not abstract + not deprecated. Uses UEditorActorSubsystem::SpawnActorFromClass when available so Ctrl+Z restores. Replaces the legacy whitelist of spawn_actor.",
+		Example: `  umcp spawn_actor_by_class --class-path "/Script/Engine.PostProcessVolume" --name "GlobalPP" --location "[0,0,0]"
+  umcp spawn_actor_by_class --class-path "/Script/Engine.SkyAtmosphere"
+  umcp spawn_actor_by_class --class-path "/Game/Blueprints/BP_Miner.BP_Miner_C" --location "[500,0,100]" --rotation "[0,90,0]"`,
+		Params: []ParamSpec{
+			{Name: "class_path", Type: "string", Required: true, Help: "Full path, BP path, or short name"},
+			{Name: "name", Type: "string", Help: "Optional outliner label"},
+			{Name: "location", Type: "json", Help: "JSON [x,y,z]"},
+			{Name: "rotation", Type: "json", Help: "JSON [pitch,yaw,roll]"},
+			{Name: "scale", Type: "json", Help: "JSON [x,y,z]"},
+		},
+	},
+	{
+		Name:  "find_actors",
+		Group: "editor",
+		Short: "Flexible actor search by name, label, class, or tag",
+		Long:  "Combine any number of filters (all AND'd together) to query the level. Useful to confirm an actor exists, list all of a class, or filter by tag. Returns total_scanned/total_matched even when truncated — so you know if you need to widen max_results.",
+		Example: `  umcp find_actors --label-pattern "Light" --max-results 10
+  umcp find_actors --class-filter "PointLight" --include-transform true
+  umcp find_actors --class-filter "/Script/Engine.PostProcessVolume" --exact-class true
+  umcp find_actors --tag "MCPModified"
+  umcp find_actors --name-pattern "Conveyor" --class-filter "ConveyorBeltActor" --max-results 5`,
+		Params: []ParamSpec{
+			{Name: "name_pattern", Type: "string", Help: "Case-insensitive substring on UObject name"},
+			{Name: "label_pattern", Type: "string", Help: "Case-insensitive substring on outliner label"},
+			{Name: "class_filter", Type: "string", Help: "Class name (short or full path)"},
+			{Name: "tag", Type: "string", Help: "Match actors with this Tag"},
+			{Name: "exact_class", Type: "bool", Default: "false", Help: "Require exact class match (else IsA)"},
+			{Name: "max_results", Type: "int", Default: "100", Help: "Result cap (0 = unlimited)"},
+			{Name: "include_transform", Type: "bool", Default: "false", Help: "Include location/rotation/scale"},
+		},
+	},
+	{
+		Name:  "get_actor_properties",
+		Group: "editor",
+		Short: "Get property values from a live placed actor instance",
+		Long:  "Reads the placed instance (not CDO). flat=false returns nested JSON with top-level filter; flat=true returns dotted-path dict with path-aware filter, depth limit, and optional per-property metadata — use this for searching deep into structs like FPostProcessSettings.",
+		Example: `  umcp get_actor_properties --actor-label "PostProcessVolume_1" --filter "bloom"
+  umcp get_actor_properties --actor-label "PostProcessVolume_1" --flat true --filter "bloom" --max-depth 4
+  umcp get_actor_properties --actor-label "MyActor" --include-components true --flat true --include-metadata true`,
+		Params: []ParamSpec{
+			{Name: "actor_label", Type: "string", Required: true, Help: "Actor label or UObject name"},
+			{Name: "filter", Type: "string", Help: "Substring filter (top-level for nested, full path for flat)"},
+			{Name: "include_components", Type: "bool", Default: "false", Help: "Also return component properties"},
+			{Name: "flat", Type: "bool", Default: "false", Help: "Flat dotted-path dict mode"},
+			{Name: "max_depth", Type: "int", Default: "3", Help: "(flat) max struct nesting"},
+			{Name: "include_metadata", Type: "bool", Default: "false", Help: "(flat) emit metadata blob per leaf"},
+			{Name: "expand_arrays", Type: "bool", Default: "true", Help: "(flat) emit Field[N] entries"},
+			{Name: "array_element_limit", Type: "int", Default: "16", Help: "(flat) max array elements"},
+			{Name: "category", Type: "string", Help: "(flat) UPROPERTY(Category=X) exact match"},
+			{Name: "include_inherited", Type: "bool", Default: "true", Help: "(flat) walk super classes"},
+			{Name: "max_entries", Type: "int", Default: "200", Help: "(flat) cap on emitted entries"},
+			{Name: "cursor", Type: "int", Default: "0", Help: "(flat) pagination offset"},
+		},
+	},
 }
