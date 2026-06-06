@@ -1,5 +1,7 @@
 # UnrealMCP — AI Bridge for Unreal Engine 5
 
+> **Enjoying this?** This is the free, open-source community edition. If you want the fully maintained build — 385+ commands, Niagara, PCG, StateTree, Insights profiling, regular updates for UE 5.7 and 5.8 — check out the **Pro version (CodeFizz Editor Agent)** at **[codefizz.dev](https://codefizz.dev)**.
+
 Control Unreal Engine 5 editor from AI coding assistants (Claude Code, Cursor, Windsurf, etc.). Create materials, blueprints, Niagara VFX, StateTrees, spawn actors, manage data tables, profile performance, and more — **280 commands** across 13 categories, all without leaving your terminal.
 
 **Two ways to use it:**
