@@ -1,19 +1,66 @@
 # UnrealMCP — AI Bridge for Unreal Engine 5
 
-> **Enjoying this?** This is the free, open-source community edition. If you want the fully maintained build — 385+ commands, Niagara, PCG, StateTree, Insights profiling, regular updates for UE 5.7 and 5.8 — check out the **Pro version (CodeFizz Editor Agent)** at **[codefizz.dev](https://codefizz.dev/?utm_source=github&utm_medium=readme&utm_campaign=unreal_mcp_oss)**.
+**Control the Unreal Engine 5 editor from Claude Code, Cursor, Windsurf, or any MCP client.**
+Build materials, wire Blueprint graphs, author Niagara systems, spawn actors, edit data tables and
+profile performance, all by asking for it. **288 commands across 15 categories**, no leaving your
+terminal.
 
-Control Unreal Engine 5 editor from AI coding assistants (Claude Code, Cursor, Windsurf, etc.). Create materials, blueprints, Niagara VFX, StateTrees, spawn actors, manage data tables, profile performance, and more — **280 commands** across 13 categories, all without leaving your terminal.
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![UE 5.3+](https://img.shields.io/badge/Unreal-5.3%2B-black.svg)](https://www.unrealengine.com/)
+[![MCP](https://img.shields.io/badge/Model%20Context%20Protocol-compatible-blue.svg)](https://modelcontextprotocol.io/)
+[![Pro version](https://img.shields.io/badge/Pro-CodeFizz%20Editor%20Agent-e0483d.svg)](https://codefizz.dev/?utm_source=github&utm_medium=readme&utm_campaign=community_badge)
 
-**Two ways to use it:**
+> ### This is the community edition
+>
+> It is **stable and feature complete for what it covers**. It is not abandoned, and it is not in
+> active development either: new subsystem work now goes into
+> **[CodeFizz Editor Agent](https://codefizz.dev/?utm_source=github&utm_medium=readme&utm_campaign=community_notice)**,
+> the maintained commercial build. Everything here keeps working, issues still get read, and the
+> MIT licence is permanent.
+>
+> If you want Control Rig, PCG, Sequencer, Mutable, Procedural Vegetation, audio and MetaSounds,
+> Behavior Trees and EQS, or packaged binaries for UE 5.6 / 5.7 / 5.8, that lives in Pro.
 
-| | CLI (new) | MCP Server |
+---
+
+## Community edition vs Pro
+
+| | **Community** (this repo) | **CodeFizz Editor Agent** (Pro) |
+|---|---|---|
+| **Commands** | 288 | **900+** |
+| **Categories** | 15 | **28** |
+| **Price** | Free, MIT | From $19.99/mo, or $399 once |
+| **Engine support** | Build it yourself | **Packaged binaries for 5.6, 5.7, 5.8** |
+| **Blueprints, Materials, Niagara, StateTree** | Yes | Yes, and deeper |
+| **Control Rig, PCG, Sequencer** | No | Yes |
+| **Mutable, Procedural Vegetation** | No | Yes |
+| **Audio, MetaSounds, Sound Cues** | No | Yes |
+| **Behavior Trees, EQS** | No | Yes |
+| **Insights profiling** | Basic | Full trace analysis |
+| **Install** | Clone, build, configure | One command, no compiler needed |
+| **Updates** | Community pace | Shipped continuously |
+| **Support** | GitHub issues | Priority, private Discord |
+
+[**See the full command list →**](https://codefizz.dev/tools?utm_source=github&utm_medium=readme&utm_campaign=community_table)
+· [**Docs**](https://codefizz.dev/docs?utm_source=github&utm_medium=readme&utm_campaign=community_table)
+· [**3 day free trial**](https://codefizz.dev/account?utm_source=github&utm_medium=readme&utm_campaign=community_trial)
+
+> **Already on UE 5.8?** Epic now ships a first-party MCP server in 5.8 (Experimental, localhost
+> only). It is worth trying before you buy anything. This repo and Pro both also cover **5.6 and
+> 5.7**, which Epic's does not.
+
+---
+
+## Two ways to use this repo
+
+| | CLI | MCP Server |
 |---|---|---|
 | **Install** | `npm install -g unrealcli` | `pip install unrealmcp` |
 | **Dependencies** | None (single binary) | Python 3.10+ |
 | **Works with** | Claude Code (via Bash) | Claude Code, Cursor, Windsurf, VS Code, Gemini CLI, Rider, Zed, Amazon Q |
 | **Protocol** | Direct TCP | MCP over stdio |
 
-Both talk to the same C++ plugin inside the editor. Use whichever fits your workflow — or both.
+Both talk to the same C++ plugin inside the editor. Use whichever fits your workflow, or both.
 
 ---
 
@@ -57,7 +104,7 @@ pip install unrealmcp
                     │                                          │
                     │   C++ Plugin (UnrealMCPBridge)           │
                     │   TCP server on localhost:55557           │
-                    │   280 commands: materials, blueprints,   │
+                    │   288 commands: materials, blueprints,   │
                     │   niagara, statetree, actors, data       │
                     │   tables, profiling, and more            │
                     └──────────────┬───────────────────────────┘
@@ -74,7 +121,7 @@ pip install unrealmcp
           └───────────────────┘              └────────────────────┘
 ```
 
-The C++ plugin runs inside the editor and exposes 280 commands over TCP. The CLI and MCP server are two different front doors to the same plugin.
+The C++ plugin runs inside the editor and exposes 288 commands over TCP. The CLI and MCP server are two different front doors to the same plugin.
 
 ---
 
@@ -441,7 +488,7 @@ The script asks where to create the MCP config:
 
 ---
 
-## All 280 Commands
+## All 288 Commands
 
 | Category | Count | Highlights |
 |----------|------:|-----------|
@@ -925,7 +972,7 @@ Each editor picks a unique port automatically. The CLI and MCP server read the p
 Plugins/UnrealMCP/
 ├── UnrealMCP.uplugin              # Plugin manifest
 ├── cli/                            # Go CLI source (ue-cli)
-│   ├── cmd/                        # Command definitions (280 commands)
+│   ├── cmd/                        # Command definitions (288 commands)
 │   ├── internal/bridge/            # TCP client
 │   ├── internal/project/           # Plugin embedding & project detection
 │   └── npm/                        # npm package wrapper
