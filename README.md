@@ -29,8 +29,7 @@ terminal.
 |---|---|---|
 | **Commands** | 288 | **900+** |
 | **Categories** | 15 | **28** |
-| **Price** | Free, MIT | From $19.99/mo, or $399 once |
-| **Engine support** | Build it yourself | **Packaged binaries for 5.6, 5.7, 5.8** |
+| **Engine support** | Build it yourself | **5.6, 5.7, 5.8** |
 | **Blueprints, Materials, Niagara, StateTree** | Yes | Yes, and deeper |
 | **Control Rig, PCG, Sequencer** | No | Yes |
 | **Mutable, Procedural Vegetation** | No | Yes |
