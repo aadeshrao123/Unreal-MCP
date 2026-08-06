@@ -1,0 +1,23 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.aadeshrao123/unreal-mcp",
+  "title": "UnrealMCP — AI Bridge for Unreal Engine 5",
+  "description": "Control the Unreal Engine 5 editor from any MCP client: Blueprints, materials, Niagara.",
+  "version": "1.3.0",
+  "websiteUrl": "https://codefizz.dev",
+  "repository": {
+    "url": "https://github.com/aadeshrao123/Unreal-MCP",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "pypi",
+      "registryBaseUrl": "https://pypi.org",
+      "identifier": "unrealmcp",
+      "version": "1.3.0",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

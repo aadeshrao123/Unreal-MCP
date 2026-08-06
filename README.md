@@ -1,3 +1,5 @@
+<!-- mcp-name: io.github.aadeshrao123/unreal-mcp -->
+
 # UnrealMCP — AI Bridge for Unreal Engine 5
 
 **Control the Unreal Engine 5 editor from Claude Code, Cursor, Windsurf, or any MCP client.**
