@@ -7,7 +7,7 @@ then checks its own work. More than 1,500 commands on UE 5.6, 5.7 and 5.8 (Windo
 ## Install
 
 ```
-/plugin marketplace add aadeshrao123/Unreal-MCP
+/plugin marketplace add https://github.com/aadeshrao123/Unreal-MCP.git
 /plugin install codefizz-editor-agent@codefizz
 ```
 

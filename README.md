@@ -52,7 +52,7 @@ terminal.
 **Use Claude Code?** Install Pro as a Claude Code plugin, then ask Claude to "set up CodeFizz":
 
 ```
-/plugin marketplace add aadeshrao123/Unreal-MCP
+/plugin marketplace add https://github.com/aadeshrao123/Unreal-MCP.git
 /plugin install codefizz-editor-agent@codefizz
 ```
 
