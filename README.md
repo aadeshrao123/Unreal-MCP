@@ -7,7 +7,7 @@ Build materials, wire Blueprint graphs, author Niagara systems, spawn actors, ed
 profile performance, all by asking for it. **288 commands across 15 categories**, no leaving your
 terminal.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![License: MPL 2.0](https://img.shields.io/badge/License-MPL%202.0-green.svg)](LICENSE)
 [![UE 5.3+](https://img.shields.io/badge/Unreal-5.3%2B-black.svg)](https://www.unrealengine.com/)
 [![MCP](https://img.shields.io/badge/Model%20Context%20Protocol-compatible-blue.svg)](https://modelcontextprotocol.io/)
 [![Pro version](https://img.shields.io/badge/Pro-CodeFizz%20Editor%20Agent-e0483d.svg)](https://codefizz.dev/?utm_source=github&utm_medium=readme&utm_campaign=community_badge)
@@ -18,7 +18,7 @@ terminal.
 > active development either: new subsystem work now goes into
 > **[CodeFizz Editor Agent](https://codefizz.dev/?utm_source=github&utm_medium=readme&utm_campaign=community_notice)**,
 > the maintained commercial build. Everything here keeps working, issues still get read, and the
-> MIT licence is permanent.
+> MPL 2.0 licence is permanent.
 >
 > If you want Control Rig, PCG, Sequencer, Mutable, Procedural Vegetation, audio and MetaSounds,
 > Behavior Trees and EQS, or packaged binaries for UE 5.6 / 5.7 / 5.8, that lives in Pro.
@@ -29,15 +29,18 @@ terminal.
 
 | | **Community** (this repo) | **CodeFizz Editor Agent** (Pro) |
 |---|---|---|
-| **Commands** | 288 | **900+** |
-| **Categories** | 15 | **28** |
+| **Commands** | 288 | **1,500+** |
+| **Categories** | 15 | **44** |
 | **Engine support** | Build it yourself | **5.6, 5.7, 5.8** |
 | **Blueprints, Materials, Niagara, StateTree** | Yes | Yes, and deeper |
 | **Control Rig, PCG, Sequencer** | No | Yes |
 | **Mutable, Procedural Vegetation** | No | Yes |
 | **Audio, MetaSounds, Sound Cues** | No | Yes |
 | **Behavior Trees, EQS** | No | Yes |
+| **Motion Matching, Chooser Tables** | No | Yes |
+| **Play sessions, playtests, packaging** | No | Yes |
 | **Insights profiling** | Basic | Full trace analysis |
+| **Claude Code plugin** | No | Yes, see below |
 | **Install** | Clone, build, configure | One command, no compiler needed |
 | **Updates** | Community pace | Shipped continuously |
 | **Support** | GitHub issues | Priority, private Discord |
@@ -45,6 +48,13 @@ terminal.
 [**See the full command list →**](https://codefizz.dev/tools?utm_source=github&utm_medium=readme&utm_campaign=community_table)
 · [**Docs**](https://codefizz.dev/docs?utm_source=github&utm_medium=readme&utm_campaign=community_table)
 · [**3 day free trial**](https://codefizz.dev/account?utm_source=github&utm_medium=readme&utm_campaign=community_trial)
+
+**Use Claude Code?** Install Pro as a Claude Code plugin, then ask Claude to "set up CodeFizz":
+
+```
+/plugin marketplace add aadeshrao123/Unreal-MCP
+/plugin install codefizz-editor-agent@codefizz
+```
 
 > **Already on UE 5.8?** Epic now ships a first-party MCP server in 5.8 (Experimental, localhost
 > only). It is worth trying before you buy anything. This repo and Pro both also cover **5.6 and

@@ -1,0 +1,14 @@
+{
+  "name": "codefizz",
+  "description": "CodeFizz plugins for Claude Code: drive the Unreal Engine 5 editor with AI.",
+  "owner": { "name": "Aadesh Yadav", "url": "https://codefizz.dev" },
+  "plugins": [
+    {
+      "name": "codefizz-editor-agent",
+      "source": "./plugins/codefizz-editor-agent",
+      "description": "Drive the Unreal Engine 5 editor from Claude Code: Blueprints, materials, Niagara, PCG, Control Rig, Sequencer and more. 1,500+ commands on UE 5.6, 5.7 and 5.8.",
+      "category": "development",
+      "tags": ["unreal-engine", "ue5", "gamedev", "mcp"]
+    }
+  ]
+}
